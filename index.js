@@ -1,4 +1,4 @@
-// Cloudflare Worker for the portfolio app — copied from the app's Settings.
+// Cloudflare Worker for the portfolio app — copied from the app's Settings. git
 // Interface the app uses:  GET /proxy?url=<encoded target URL>
 //   • Forwards ONLY to Yahoo Finance, Twelve Data, Naver Finance and Marketstack (not an open proxy: the
 //     Worker URL is visible in the app, and an open proxy invites abuse that
