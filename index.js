@@ -11,6 +11,7 @@
 const ALLOWED_HOSTS = new Set([
   'query1.finance.yahoo.com',
   'query2.finance.yahoo.com',
+  'giltsyield.com',
   'api.twelvedata.com',
   'm.stock.naver.com',        // Naver Finance: KOSPI 200 history
   'fchart.stock.naver.com',
