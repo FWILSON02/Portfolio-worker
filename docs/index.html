@@ -9795,7 +9795,7 @@ function MoreTab(props) {
 
 // Base static instruments. Holdings added dynamically in PortfolioApp via useMemo.
 // Rule: one row = one canonical symbol; liveSymbol === returnSymbol for all Markets rows.
-// No futures (=F) symbols. schemaVersion 2.
+// Futures (=F) symbols are used only in the Commodities section. schemaVersion 2.
 const BASE_MARKET_OVERVIEW_INSTRUMENTS = [
     // ── Markets ───────────────────────────────────────────────────────────────
     { id: 'SPX',    label: 'S&P 500',       liveSymbol: '^GSPC',     returnSymbol: '^GSPC',     type: 'Index', section: 'Markets', displayKind: 'pctReturn' },
@@ -9813,13 +9813,22 @@ const BASE_MARKET_OVERVIEW_INSTRUMENTS = [
       primarySource: 'naver',  // Naver first for Last, 1D and periods; Yahoo only if Naver fails
       tdSearch: 'KOSPI 200', tdNameMatch: '^KOSPI\\s*200(\\s+index)?$', tdCountry: 'korea' },
     // ── Volatility ────────────────────────────────────────────────────────────
-    { id: 'VIX',    label: 'VIX',            liveSymbol: '^VIX',      returnSymbol: '^VIX',      type: 'Vol',   section: 'Volatility', displayKind: 'pctReturn', nowDecimals: 2, riskColorMode: 'inverse', excludeFromTopMovers: true },
+    { id: 'VIX',    label: 'VIX',            liveSymbol: '^VIX',      returnSymbol: '^VIX',      type: 'Vol',   section: 'Volatility', displayKind: 'ptChange', nowDecimals: 2, riskColorMode: 'inverse', excludeFromTopMovers: true },
     // ── FX ────────────────────────────────────────────────────────────────────
     { id: 'EURUSD', label: 'EUR/USD',        liveSymbol: 'EURUSD=X', returnSymbol: 'EURUSD=X',  type: 'FX',     section: 'FX',      displayKind: 'pctReturn', nowDecimals: 4 },
     { id: 'GBPUSD', label: 'GBP/USD',        liveSymbol: 'GBPUSD=X', returnSymbol: 'GBPUSD=X',  type: 'FX',     section: 'FX',      displayKind: 'pctReturn', nowDecimals: 4 },
     { id: 'USDJPY', label: 'USD/JPY',        liveSymbol: 'JPY=X',    returnSymbol: 'JPY=X',     type: 'FX',     section: 'FX',      displayKind: 'pctReturn', nowDecimals: 2 },
+    { id: 'DXY',    label: 'US Dollar Index', liveSymbol: 'DX-Y.NYB', returnSymbol: 'DX-Y.NYB',  type: 'FX',     section: 'FX',      displayKind: 'pctReturn', nowDecimals: 2 },
+    // ── Commodities — front-month futures (Yahoo continuous symbols); prices roll to the next contract at expiry ──
+    { id: 'GOLD',   label: 'Gold',           liveSymbol: 'GC=F',     returnSymbol: 'GC=F',      type: 'Cmdty',  section: 'Commodities', displayKind: 'pctReturn', nowDecimals: 2 },
+    { id: 'SILVER', label: 'Silver',         liveSymbol: 'SI=F',     returnSymbol: 'SI=F',      type: 'Cmdty',  section: 'Commodities', displayKind: 'pctReturn', nowDecimals: 2 },
+    { id: 'COPPER', label: 'Copper',         liveSymbol: 'HG=F',     returnSymbol: 'HG=F',      type: 'Cmdty',  section: 'Commodities', displayKind: 'pctReturn', nowDecimals: 2 },
+    { id: 'WTI',    label: 'WTI Crude Oil',  liveSymbol: 'CL=F',     returnSymbol: 'CL=F',      type: 'Cmdty',  section: 'Commodities', displayKind: 'pctReturn', nowDecimals: 2 },
+    { id: 'BRENT',  label: 'Brent Crude Oil', liveSymbol: 'BZ=F',    returnSymbol: 'BZ=F',      type: 'Cmdty',  section: 'Commodities', displayKind: 'pctReturn', nowDecimals: 2 },
+    { id: 'NATGAS', label: 'Natural Gas',    liveSymbol: 'NG=F',     returnSymbol: 'NG=F',      type: 'Cmdty',  section: 'Commodities', displayKind: 'pctReturn', nowDecimals: 3 },
     // ── Crypto ────────────────────────────────────────────────────────────────
     { id: 'BTC',    label: 'Bitcoin',        liveSymbol: 'BTC-USD',  returnSymbol: 'BTC-USD',   type: 'Crypto', section: 'Crypto',  displayKind: 'pctReturn', nowDecimals: 0, excludeFromTopMovers: true },
+    { id: 'ETH',    label: 'Ethereum',       liveSymbol: 'ETH-USD',  returnSymbol: 'ETH-USD',   type: 'Crypto', section: 'Crypto',  displayKind: 'pctReturn', nowDecimals: 2, excludeFromTopMovers: true },
     // ── Rates — basis-point changes; US5Y ^FVX, US10Y ^TNX ──────────────────
     { id: 'US5Y',   label: 'US 5Y',          liveSymbol: '^FVX',     returnSymbol: '^FVX',      type: 'Yld',    section: 'Rates',   displayKind: 'bpChange'  },
     { id: 'US10Y',  label: 'US 10Y',         liveSymbol: '^TNX',     returnSymbol: '^TNX',      type: 'Yld',    section: 'Rates',   displayKind: 'bpChange'  },
@@ -9906,6 +9915,7 @@ function mktFmtRowLevel(row, value) {
 function mktFmtRowMove(row, value, decimals) {
     if (value == null || !Number.isFinite(value)) return '\u2014';
     if (row.displayKind === 'bpChange') return mktFmtBp(value);
+    if (row.displayKind === 'ptChange') return (value >= 0 ? '+' : '') + value.toFixed(2);
     return mktFmtPct(value, decimals != null ? decimals : 1);
 }
 
@@ -9940,6 +9950,7 @@ function mktIsExcludedFromTopMovers(row) {
     if (section === 'RATES')              return true;
     if (section === 'HOLDINGS')           return true;
     if (section === 'CRYPTO')             return true;
+    if (section === 'COMMODITIES')        return true;
     if (excludedIds[id])                  return true;
     if (excludedIds[live])                return true;
     if (excludedIds[ret])                 return true;
@@ -10266,6 +10277,7 @@ function mktHistoryCoreFromSeries(series, inst) {
 // Called on EVERY refresh cycle — never cached.
 function mktComputePeriodReturnsFromHistoryCore(historyCore, inst, liveNow, liveDate) {
     var isBp        = (inst.displayKind === 'bpChange');
+    var isPt        = (inst.displayKind === 'ptChange');   // level quoted in points (VIX): change = difference
     var latestDate  = historyCore && historyCore.returnAsOfDate;
     var latestClose = historyCore && historyCore.returnLatestClose;
 
@@ -10298,6 +10310,7 @@ function mktComputePeriodReturnsFromHistoryCore(historyCore, inst, liveNow, live
         if (ratio > 10 || ratio < 0.1) { periodNullReasons[_curKey] = 'scale-break'; return null; }
         var r = isBp
             ? (periodCurrentClose - anchorClose) * 100
+            : isPt ? (periodCurrentClose - anchorClose)
             : (periodCurrentClose / anchorClose - 1) * 100;
         return Number.isFinite(r) ? r : null;
     }
@@ -10348,6 +10361,7 @@ function mktParseReturnHistoryResult(chartResult, inst, liveNow, liveDate) {
 function mktComputeDayFromRows(inst, now, sessionDate, rows) {
     var sym = String(inst.liveSymbol || '').toUpperCase().trim();
     var isBp = inst.displayKind === 'bpChange';
+    var isPt = inst.displayKind === 'ptChange';
     var out = {
         day: null, previousClose: null, previousCloseSource: null, previousCloseDate: null,
         daySource: 'unavailable', dataQuality: 'ok',
@@ -10380,7 +10394,7 @@ function mktComputeDayFromRows(inst, now, sessionDate, rows) {
     out.previousCloseSource = 'series:' + vr.status;
     out.daySource           = vr.status;           // verified | yahoo-only | alt-only
     out.dayCheckStatus      = vr.status;
-    var raw = isBp ? (now - vr.value) * 100 : (now / vr.value - 1) * 100;
+    var raw = isBp ? (now - vr.value) * 100 : isPt ? (now - vr.value) : (now / vr.value - 1) * 100;
     out.day = Number.isFinite(raw) ? raw : null;
     return out;
 }
@@ -10880,6 +10894,7 @@ function mktApplyQuoteWitness(row, w) {
     }
     var prof = dailyCheckProfileFor(row.liveSymbol);
     var isBp = row.displayKind === 'bpChange';
+    var isPt = row.displayKind === 'ptChange';
     var chosen = null, status = null;
     if (row.dayCheckStatus === 'conflict') {
         var y = Number(row.dayCheckYahoo), a = Number(row.dayCheckAlt);
@@ -10892,7 +10907,7 @@ function mktApplyQuoteWitness(row, w) {
         chosen = w.prevClose; status = 'yahoo-quote';
     }
     if (Math.abs(row.now / chosen - 1) > prof.maxMove) { row.dayWitnessNote = 'quote move beyond plausibility limit'; return false; }
-    var raw = isBp ? (row.now - chosen) * 100 : (row.now / chosen - 1) * 100;
+    var raw = isBp ? (row.now - chosen) * 100 : isPt ? (row.now - chosen) : (row.now / chosen - 1) * 100;
     if (!Number.isFinite(raw)) return false;
     row.dayWitnessFrom      = row.dayCheckReason || row.dayCheckStatus;
     row.day                 = raw;
@@ -10954,6 +10969,7 @@ function mktFmtCompact(row, value, decimals) {
     if (row.displayKind === 'bpChange') {
         return (value >= 0 ? '+' : '') + Math.round(value) + 'bp';
     }
+    if (row.displayKind === 'ptChange') return (value >= 0 ? '+' : '') + value.toFixed(2);
     var dp = (decimals != null) ? decimals : 1;
     return (value >= 0 ? '+' : '') + value.toFixed(dp);
 }
@@ -11572,6 +11588,8 @@ function MarketOverviewScreen({ onClose, rows, status, updatedAt, error, onRefre
     // Section column header row (once per section).
     function renderSectionHeader(sec) {
         var isBp = sec.rows.length > 0 && sec.rows[0].displayKind === 'bpChange';
+        var isPt = sec.rows.length > 0 && sec.rows[0].displayKind === 'ptChange';
+        var unit = isBp ? ' bp' : isPt ? ' pt' : ' %';   // move columns: basis points for rates, index points for VIX, else % returns
         return React.createElement('div', {
             key: 'hdr-' + sec.name,
             style: { display: 'flex', flexDirection: 'column' }
@@ -11581,8 +11599,8 @@ function MarketOverviewScreen({ onClose, rows, status, updatedAt, error, onRefre
                 style: { padding: '10px 20px 2px' }
             },
                 React.createElement('span', {
-                    style: { fontFamily: sys, fontSize: 10, color: C.zinc700,
-                             textTransform: 'uppercase', letterSpacing: '0.12em', fontWeight: 600 }
+                    style: { fontFamily: sys, fontSize: 12, color: C.zinc400,
+                             textTransform: 'uppercase', letterSpacing: '0.1em', fontWeight: 700 }
                 }, sec.name)
             ),
             // Column header
@@ -11594,12 +11612,12 @@ function MarketOverviewScreen({ onClose, rows, status, updatedAt, error, onRefre
                 }
             },
                 React.createElement('span', { style: { fontFamily: sys, fontSize: 9, color: C.zinc700 } }, ''),
-                React.createElement('span', { style: { fontFamily: sys, fontSize: 10, color: C.zinc600, letterSpacing: '0.02em' } }, 'Last'),
+                React.createElement('span', { style: { fontFamily: sys, fontSize: 12, fontWeight: 500, color: C.zinc500, letterSpacing: '0.01em' } }, 'Last'),
                 React.createElement('span', { style: { fontFamily: sys, fontSize: 9, color: C.zinc700 } }, ''),
-                React.createElement('span', { style: { fontFamily: sys, fontSize: 10, color: C.zinc600, letterSpacing: '0.02em', textAlign: 'right' } }, '1D'),
-                React.createElement('span', { style: { fontFamily: sys, fontSize: 10, color: C.zinc600, letterSpacing: '0.02em', textAlign: 'right' } }, '1M'),
-                React.createElement('span', { style: { fontFamily: sys, fontSize: 10, color: C.zinc600, letterSpacing: '0.02em', textAlign: 'right' } }, 'YTD'),
-                React.createElement('span', { style: { fontFamily: sys, fontSize: 10, color: C.zinc600, letterSpacing: '0.02em', textAlign: 'right' } }, '12M')
+                React.createElement('span', { style: { fontFamily: sys, fontSize: 12, fontWeight: 500, color: C.zinc500, letterSpacing: '0.01em', textAlign: 'right' } }, '1D' + unit),
+                React.createElement('span', { style: { fontFamily: sys, fontSize: 12, fontWeight: 500, color: C.zinc500, letterSpacing: '0.01em', textAlign: 'right' } }, '1M' + unit),
+                React.createElement('span', { style: { fontFamily: sys, fontSize: 12, fontWeight: 500, color: C.zinc500, letterSpacing: '0.01em', textAlign: 'right' } }, 'YTD' + unit),
+                React.createElement('span', { style: { fontFamily: sys, fontSize: 12, fontWeight: 500, color: C.zinc500, letterSpacing: '0.01em', textAlign: 'right' } }, '12M' + unit)
             )
         );
     }
@@ -11833,69 +11851,68 @@ function MarketOverviewScreen({ onClose, rows, status, updatedAt, error, onRefre
     },
 
         // ── Header ───────────────────────────────────────────────────────────
+        // One compact row: title on the left; Refresh with the "As of" time under it, and Close, on the right.
+        // A warning line (offline, cached, partial) only takes space when there is something to say.
         React.createElement('div', {
             style: {
-                paddingTop: 'max(env(safe-area-inset-top), 16px)',
-                paddingLeft: 20, paddingRight: 20, paddingBottom: 12,
+                paddingTop: 'max(env(safe-area-inset-top), 10px)',
+                paddingLeft: 20, paddingRight: 16, paddingBottom: 8,
                 background: 'rgba(13,18,24,0.98)',
                 borderBottom: '1px solid ' + C.border, flexShrink: 0,
             }
         },
             React.createElement('div', {
-                style: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }
+                style: { display: 'flex', alignItems: 'center', gap: 10, minHeight: 40 }
             },
                 React.createElement('div', {
-                    style: { fontFamily: sys, fontSize: 22, fontWeight: 700,
+                    style: { fontFamily: sys, fontSize: 20, fontWeight: 700, flex: 1, minWidth: 0,
                              color: C.white, letterSpacing: '-0.02em' }
                 }, 'Markets'),
-                React.createElement('button', {
-                    onClick: onClose,
-                    style: {
-                        minHeight: 44, minWidth: 44, display: 'flex',
-                        alignItems: 'center', justifyContent: 'center',
-                        background: C.surfaceHigh, border: '1px solid ' + C.border,
-                        borderRadius: 12, color: C.zinc400,
-                    }
-                }, React.createElement(X, { style: { width: 18, height: 18 }, strokeWidth: 2 }))
-            ),
-            React.createElement('div', {
-                style: { display: 'flex', alignItems: 'flex-start', gap: 8, marginTop: 8 }
-            },
-                React.createElement('span', {
-                    style: { fontFamily: sys, fontSize: 11, color: freshnessColor, flex: 1, paddingTop: 9 }
-                }, freshnessText || ''),
                 React.createElement('div', {
                     style: { display: 'flex', flexDirection: 'column', alignItems: 'flex-end', flexShrink: 0 }
                 },
-                React.createElement('button', {
-                    onClick: onRefresh, disabled: isFetching,
-                    style: {
-                        background: 'none', border: 'none', padding: '2px 8px',
-                        color: isFetching ? C.blue : C.zinc600, fontFamily: sys, fontSize: 11,
-                        display: 'flex', alignItems: 'center', gap: 4,
-                        minHeight: 32, opacity: isFetching ? 0.6 : 1,
-                    }
-                },
-                    React.createElement(RefreshCw, {
-                        className: isFetching ? 'spinning' : '',
-                        style: { width: 10, height: 10 }, strokeWidth: 2
-                    }),
-                    'Refresh'
+                    React.createElement('button', {
+                        onClick: onRefresh, disabled: isFetching,
+                        style: {
+                            background: 'none', border: 'none', padding: '3px 0 1px 8px',
+                            color: isFetching ? C.blue : C.zinc400, fontFamily: sys, fontSize: 12, fontWeight: 500,
+                            display: 'flex', alignItems: 'center', gap: 5,
+                            opacity: isFetching ? 0.6 : 1,
+                        }
+                    },
+                        React.createElement(RefreshCw, {
+                            className: isFetching ? 'spinning' : '',
+                            style: { width: 11, height: 11 }, strokeWidth: 2
+                        }),
+                        'Refresh'
+                    ),
+                    // Time of the last successful refresh, with seconds (device local time)
+                    updatedAt && React.createElement('span', {
+                        style: { fontFamily: rounded, fontSize: 10, color: C.zinc600, fontVariantNumeric: 'tabular-nums',
+                                 whiteSpace: 'nowrap', lineHeight: '14px' }
+                    }, 'As of ' + new Date(updatedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' }))
                 ),
-                // Time of the last successful refresh, with seconds (device local time)
-                updatedAt && React.createElement('span', {
-                    style: { fontFamily: rounded, fontSize: 11, color: C.zinc600, fontVariantNumeric: 'tabular-nums',
-                             paddingRight: 8, whiteSpace: 'nowrap' }
-                }, 'As of ' + new Date(updatedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' }))
-                )
-            )
+                React.createElement('button', {
+                    onClick: onClose,
+                    'aria-label': 'Close',
+                    style: {
+                        height: 36, width: 36, flexShrink: 0, display: 'flex',
+                        alignItems: 'center', justifyContent: 'center',
+                        background: C.surfaceHigh, border: '1px solid ' + C.border,
+                        borderRadius: 10, color: C.zinc400,
+                    }
+                }, React.createElement(X, { style: { width: 16, height: 16 }, strokeWidth: 2 }))
+            ),
+            freshnessText && React.createElement('div', {
+                style: { fontFamily: sys, fontSize: 11, color: freshnessColor, marginTop: 2 }
+            }, freshnessText)
         ),
 
         // ── Top movers strip ──────────────────────────────────────────────────
         React.createElement('div', {
             style: {
                 display: 'flex', alignItems: 'center', gap: 0,
-                paddingLeft: 20, paddingRight: 20, paddingTop: 9, paddingBottom: 9,
+                paddingLeft: 20, paddingRight: 20, paddingTop: 7, paddingBottom: 7,
                 background: C.surfaceHigh, borderBottom: '1px solid ' + C.border,
                 flexShrink: 0, overflow: 'hidden',
             }
