@@ -9813,7 +9813,7 @@ const BASE_MARKET_OVERVIEW_INSTRUMENTS = [
       primarySource: 'naver',  // Naver first for Last, 1D and periods; Yahoo only if Naver fails
       tdSearch: 'KOSPI 200', tdNameMatch: '^KOSPI\\s*200(\\s+index)?$', tdCountry: 'korea' },
     // ── Volatility ────────────────────────────────────────────────────────────
-    { id: 'VIX',    label: 'VIX',            liveSymbol: '^VIX',      returnSymbol: '^VIX',      type: 'Vol',   section: 'Volatility', displayKind: 'pctReturn', nowDecimals: 2, riskColorMode: 'inverse', excludeFromTopMovers: true },
+    { id: 'VIX',    label: 'VIX',            liveSymbol: '^VIX',      returnSymbol: '^VIX',      type: 'Vol',   section: 'Volatility', displayKind: 'ptChange', nowDecimals: 2, riskColorMode: 'inverse', excludeFromTopMovers: true },
     // ── FX ────────────────────────────────────────────────────────────────────
     { id: 'EURUSD', label: 'EUR/USD',        liveSymbol: 'EURUSD=X', returnSymbol: 'EURUSD=X',  type: 'FX',     section: 'FX',      displayKind: 'pctReturn', nowDecimals: 4 },
     { id: 'GBPUSD', label: 'GBP/USD',        liveSymbol: 'GBPUSD=X', returnSymbol: 'GBPUSD=X',  type: 'FX',     section: 'FX',      displayKind: 'pctReturn', nowDecimals: 4 },
@@ -9915,6 +9915,7 @@ function mktFmtRowLevel(row, value) {
 function mktFmtRowMove(row, value, decimals) {
     if (value == null || !Number.isFinite(value)) return '\u2014';
     if (row.displayKind === 'bpChange') return mktFmtBp(value);
+    if (row.displayKind === 'ptChange') return (value >= 0 ? '+' : '') + value.toFixed(2);
     return mktFmtPct(value, decimals != null ? decimals : 1);
 }
 
@@ -10276,6 +10277,7 @@ function mktHistoryCoreFromSeries(series, inst) {
 // Called on EVERY refresh cycle — never cached.
 function mktComputePeriodReturnsFromHistoryCore(historyCore, inst, liveNow, liveDate) {
     var isBp        = (inst.displayKind === 'bpChange');
+    var isPt        = (inst.displayKind === 'ptChange');   // level quoted in points (VIX): change = difference
     var latestDate  = historyCore && historyCore.returnAsOfDate;
     var latestClose = historyCore && historyCore.returnLatestClose;
 
@@ -10308,6 +10310,7 @@ function mktComputePeriodReturnsFromHistoryCore(historyCore, inst, liveNow, live
         if (ratio > 10 || ratio < 0.1) { periodNullReasons[_curKey] = 'scale-break'; return null; }
         var r = isBp
             ? (periodCurrentClose - anchorClose) * 100
+            : isPt ? (periodCurrentClose - anchorClose)
             : (periodCurrentClose / anchorClose - 1) * 100;
         return Number.isFinite(r) ? r : null;
     }
@@ -10358,6 +10361,7 @@ function mktParseReturnHistoryResult(chartResult, inst, liveNow, liveDate) {
 function mktComputeDayFromRows(inst, now, sessionDate, rows) {
     var sym = String(inst.liveSymbol || '').toUpperCase().trim();
     var isBp = inst.displayKind === 'bpChange';
+    var isPt = inst.displayKind === 'ptChange';
     var out = {
         day: null, previousClose: null, previousCloseSource: null, previousCloseDate: null,
         daySource: 'unavailable', dataQuality: 'ok',
@@ -10390,7 +10394,7 @@ function mktComputeDayFromRows(inst, now, sessionDate, rows) {
     out.previousCloseSource = 'series:' + vr.status;
     out.daySource           = vr.status;           // verified | yahoo-only | alt-only
     out.dayCheckStatus      = vr.status;
-    var raw = isBp ? (now - vr.value) * 100 : (now / vr.value - 1) * 100;
+    var raw = isBp ? (now - vr.value) * 100 : isPt ? (now - vr.value) : (now / vr.value - 1) * 100;
     out.day = Number.isFinite(raw) ? raw : null;
     return out;
 }
@@ -10890,6 +10894,7 @@ function mktApplyQuoteWitness(row, w) {
     }
     var prof = dailyCheckProfileFor(row.liveSymbol);
     var isBp = row.displayKind === 'bpChange';
+    var isPt = row.displayKind === 'ptChange';
     var chosen = null, status = null;
     if (row.dayCheckStatus === 'conflict') {
         var y = Number(row.dayCheckYahoo), a = Number(row.dayCheckAlt);
@@ -10902,7 +10907,7 @@ function mktApplyQuoteWitness(row, w) {
         chosen = w.prevClose; status = 'yahoo-quote';
     }
     if (Math.abs(row.now / chosen - 1) > prof.maxMove) { row.dayWitnessNote = 'quote move beyond plausibility limit'; return false; }
-    var raw = isBp ? (row.now - chosen) * 100 : (row.now / chosen - 1) * 100;
+    var raw = isBp ? (row.now - chosen) * 100 : isPt ? (row.now - chosen) : (row.now / chosen - 1) * 100;
     if (!Number.isFinite(raw)) return false;
     row.dayWitnessFrom      = row.dayCheckReason || row.dayCheckStatus;
     row.day                 = raw;
@@ -10964,6 +10969,7 @@ function mktFmtCompact(row, value, decimals) {
     if (row.displayKind === 'bpChange') {
         return (value >= 0 ? '+' : '') + Math.round(value) + 'bp';
     }
+    if (row.displayKind === 'ptChange') return (value >= 0 ? '+' : '') + value.toFixed(2);
     var dp = (decimals != null) ? decimals : 1;
     return (value >= 0 ? '+' : '') + value.toFixed(dp);
 }
@@ -11582,7 +11588,8 @@ function MarketOverviewScreen({ onClose, rows, status, updatedAt, error, onRefre
     // Section column header row (once per section).
     function renderSectionHeader(sec) {
         var isBp = sec.rows.length > 0 && sec.rows[0].displayKind === 'bpChange';
-        var unit = isBp ? ' bp' : ' %';   // move columns are % returns, or basis-point changes for rates
+        var isPt = sec.rows.length > 0 && sec.rows[0].displayKind === 'ptChange';
+        var unit = isBp ? ' bp' : isPt ? ' pt' : ' %';   // move columns: basis points for rates, index points for VIX, else % returns
         return React.createElement('div', {
             key: 'hdr-' + sec.name,
             style: { display: 'flex', flexDirection: 'column' }
