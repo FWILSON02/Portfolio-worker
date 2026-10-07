@@ -9795,7 +9795,7 @@ function MoreTab(props) {
 
 // Base static instruments. Holdings added dynamically in PortfolioApp via useMemo.
 // Rule: one row = one canonical symbol; liveSymbol === returnSymbol for all Markets rows.
-// No futures (=F) symbols. schemaVersion 2.
+// Futures (=F) symbols are used only in the Commodities section. schemaVersion 2.
 const BASE_MARKET_OVERVIEW_INSTRUMENTS = [
     // ── Markets ───────────────────────────────────────────────────────────────
     { id: 'SPX',    label: 'S&P 500',       liveSymbol: '^GSPC',     returnSymbol: '^GSPC',     type: 'Index', section: 'Markets', displayKind: 'pctReturn' },
@@ -9818,8 +9818,17 @@ const BASE_MARKET_OVERVIEW_INSTRUMENTS = [
     { id: 'EURUSD', label: 'EUR/USD',        liveSymbol: 'EURUSD=X', returnSymbol: 'EURUSD=X',  type: 'FX',     section: 'FX',      displayKind: 'pctReturn', nowDecimals: 4 },
     { id: 'GBPUSD', label: 'GBP/USD',        liveSymbol: 'GBPUSD=X', returnSymbol: 'GBPUSD=X',  type: 'FX',     section: 'FX',      displayKind: 'pctReturn', nowDecimals: 4 },
     { id: 'USDJPY', label: 'USD/JPY',        liveSymbol: 'JPY=X',    returnSymbol: 'JPY=X',     type: 'FX',     section: 'FX',      displayKind: 'pctReturn', nowDecimals: 2 },
+    { id: 'DXY',    label: 'US Dollar Index', liveSymbol: 'DX-Y.NYB', returnSymbol: 'DX-Y.NYB',  type: 'FX',     section: 'FX',      displayKind: 'pctReturn', nowDecimals: 2 },
+    // ── Commodities — front-month futures (Yahoo continuous symbols); prices roll to the next contract at expiry ──
+    { id: 'GOLD',   label: 'Gold',           liveSymbol: 'GC=F',     returnSymbol: 'GC=F',      type: 'Cmdty',  section: 'Commodities', displayKind: 'pctReturn', nowDecimals: 2 },
+    { id: 'SILVER', label: 'Silver',         liveSymbol: 'SI=F',     returnSymbol: 'SI=F',      type: 'Cmdty',  section: 'Commodities', displayKind: 'pctReturn', nowDecimals: 2 },
+    { id: 'COPPER', label: 'Copper',         liveSymbol: 'HG=F',     returnSymbol: 'HG=F',      type: 'Cmdty',  section: 'Commodities', displayKind: 'pctReturn', nowDecimals: 2 },
+    { id: 'WTI',    label: 'WTI Crude Oil',  liveSymbol: 'CL=F',     returnSymbol: 'CL=F',      type: 'Cmdty',  section: 'Commodities', displayKind: 'pctReturn', nowDecimals: 2 },
+    { id: 'BRENT',  label: 'Brent Crude Oil', liveSymbol: 'BZ=F',    returnSymbol: 'BZ=F',      type: 'Cmdty',  section: 'Commodities', displayKind: 'pctReturn', nowDecimals: 2 },
+    { id: 'NATGAS', label: 'Natural Gas',    liveSymbol: 'NG=F',     returnSymbol: 'NG=F',      type: 'Cmdty',  section: 'Commodities', displayKind: 'pctReturn', nowDecimals: 3 },
     // ── Crypto ────────────────────────────────────────────────────────────────
     { id: 'BTC',    label: 'Bitcoin',        liveSymbol: 'BTC-USD',  returnSymbol: 'BTC-USD',   type: 'Crypto', section: 'Crypto',  displayKind: 'pctReturn', nowDecimals: 0, excludeFromTopMovers: true },
+    { id: 'ETH',    label: 'Ethereum',       liveSymbol: 'ETH-USD',  returnSymbol: 'ETH-USD',   type: 'Crypto', section: 'Crypto',  displayKind: 'pctReturn', nowDecimals: 2, excludeFromTopMovers: true },
     // ── Rates — basis-point changes; US5Y ^FVX, US10Y ^TNX ──────────────────
     { id: 'US5Y',   label: 'US 5Y',          liveSymbol: '^FVX',     returnSymbol: '^FVX',      type: 'Yld',    section: 'Rates',   displayKind: 'bpChange'  },
     { id: 'US10Y',  label: 'US 10Y',         liveSymbol: '^TNX',     returnSymbol: '^TNX',      type: 'Yld',    section: 'Rates',   displayKind: 'bpChange'  },
@@ -9940,6 +9949,7 @@ function mktIsExcludedFromTopMovers(row) {
     if (section === 'RATES')              return true;
     if (section === 'HOLDINGS')           return true;
     if (section === 'CRYPTO')             return true;
+    if (section === 'COMMODITIES')        return true;
     if (excludedIds[id])                  return true;
     if (excludedIds[live])                return true;
     if (excludedIds[ret])                 return true;
@@ -11572,6 +11582,7 @@ function MarketOverviewScreen({ onClose, rows, status, updatedAt, error, onRefre
     // Section column header row (once per section).
     function renderSectionHeader(sec) {
         var isBp = sec.rows.length > 0 && sec.rows[0].displayKind === 'bpChange';
+        var unit = isBp ? ' bp' : ' %';   // move columns are % returns, or basis-point changes for rates
         return React.createElement('div', {
             key: 'hdr-' + sec.name,
             style: { display: 'flex', flexDirection: 'column' }
@@ -11596,10 +11607,10 @@ function MarketOverviewScreen({ onClose, rows, status, updatedAt, error, onRefre
                 React.createElement('span', { style: { fontFamily: sys, fontSize: 9, color: C.zinc700 } }, ''),
                 React.createElement('span', { style: { fontFamily: sys, fontSize: 10, color: C.zinc600, letterSpacing: '0.02em' } }, 'Last'),
                 React.createElement('span', { style: { fontFamily: sys, fontSize: 9, color: C.zinc700 } }, ''),
-                React.createElement('span', { style: { fontFamily: sys, fontSize: 10, color: C.zinc600, letterSpacing: '0.02em', textAlign: 'right' } }, '1D'),
-                React.createElement('span', { style: { fontFamily: sys, fontSize: 10, color: C.zinc600, letterSpacing: '0.02em', textAlign: 'right' } }, '1M'),
-                React.createElement('span', { style: { fontFamily: sys, fontSize: 10, color: C.zinc600, letterSpacing: '0.02em', textAlign: 'right' } }, 'YTD'),
-                React.createElement('span', { style: { fontFamily: sys, fontSize: 10, color: C.zinc600, letterSpacing: '0.02em', textAlign: 'right' } }, '12M')
+                React.createElement('span', { style: { fontFamily: sys, fontSize: 10, color: C.zinc600, letterSpacing: '0.02em', textAlign: 'right' } }, '1D' + unit),
+                React.createElement('span', { style: { fontFamily: sys, fontSize: 10, color: C.zinc600, letterSpacing: '0.02em', textAlign: 'right' } }, '1M' + unit),
+                React.createElement('span', { style: { fontFamily: sys, fontSize: 10, color: C.zinc600, letterSpacing: '0.02em', textAlign: 'right' } }, 'YTD' + unit),
+                React.createElement('span', { style: { fontFamily: sys, fontSize: 10, color: C.zinc600, letterSpacing: '0.02em', textAlign: 'right' } }, '12M' + unit)
             )
         );
     }
