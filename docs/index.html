@@ -9801,7 +9801,6 @@ const BASE_MARKET_OVERVIEW_INSTRUMENTS = [
     { id: 'SPX',    label: 'S&P 500',       liveSymbol: '^GSPC',     returnSymbol: '^GSPC',     type: 'Index', section: 'Markets', displayKind: 'pctReturn' },
     { id: 'NDX',    label: 'Nasdaq 100',     liveSymbol: '^NDX',      returnSymbol: '^NDX',      type: 'Index', section: 'Markets', displayKind: 'pctReturn' },
     { id: 'RTY',    label: 'Russell 2000',   liveSymbol: '^RUT',      returnSymbol: '^RUT',      type: 'Index', section: 'Markets', displayKind: 'pctReturn' },
-    { id: 'VIX',    label: 'VIX',            liveSymbol: '^VIX',      returnSymbol: '^VIX',      type: 'Vol',   section: 'Markets', displayKind: 'pctReturn', nowDecimals: 2, riskColorMode: 'inverse', excludeFromTopMovers: true },
     { id: 'SX5E',   label: 'Euro Stoxx 50',  liveSymbol: '^STOXX50E', returnSymbol: '^STOXX50E', type: 'Index', section: 'Markets', displayKind: 'pctReturn' },
     { id: 'UKX',    label: 'FTSE 100',       liveSymbol: '^FTSE',     returnSymbol: '^FTSE',     type: 'Index', section: 'Markets', displayKind: 'pctReturn' },
     { id: 'NKY',    label: 'Nikkei 225',     liveSymbol: '^N225',     returnSymbol: '^N225',     type: 'Index', section: 'Markets', displayKind: 'pctReturn' },
@@ -9813,6 +9812,8 @@ const BASE_MARKET_OVERVIEW_INSTRUMENTS = [
       naverCode: 'KPI200',   // Naver Finance's code for the KOSPI 200 index
       primarySource: 'naver',  // Naver first for Last, 1D and periods; Yahoo only if Naver fails
       tdSearch: 'KOSPI 200', tdNameMatch: '^KOSPI\\s*200(\\s+index)?$', tdCountry: 'korea' },
+    // ── Volatility ────────────────────────────────────────────────────────────
+    { id: 'VIX',    label: 'VIX',            liveSymbol: '^VIX',      returnSymbol: '^VIX',      type: 'Vol',   section: 'Volatility', displayKind: 'pctReturn', nowDecimals: 2, riskColorMode: 'inverse', excludeFromTopMovers: true },
     // ── FX ────────────────────────────────────────────────────────────────────
     { id: 'EURUSD', label: 'EUR/USD',        liveSymbol: 'EURUSD=X', returnSymbol: 'EURUSD=X',  type: 'FX',     section: 'FX',      displayKind: 'pctReturn', nowDecimals: 4 },
     { id: 'GBPUSD', label: 'GBP/USD',        liveSymbol: 'GBPUSD=X', returnSymbol: 'GBPUSD=X',  type: 'FX',     section: 'FX',      displayKind: 'pctReturn', nowDecimals: 4 },
@@ -10026,11 +10027,12 @@ function mktRowDegradationLabel(row) {
     return 'check';
 }
 
-// Builds one short global freshness line for the Markets header.
+// Builds one short global freshness line for the Markets header, or null when all is well
+// (the refresh time sits under the Refresh button instead).
 // Priority: fetching → offline → fail → cached → partial → row-level → normal.
 // error alone (without fail) is treated as partial, not fatal.
 function mktBuildGlobalFreshnessLine(rows, status, updatedAt, error) {
-    if (status === 'fetching') return 'Refreshing\u2026';
+    if (status === 'fetching') return null;
     if (status === 'offline')  return 'Offline \u00b7 showing last saved market data';
     if (status === 'fail')     return 'Data unavailable \u00b7 tap Refresh';
     if (status === 'cached')   return 'Cached data \u00b7 pull to refresh';
@@ -10052,23 +10054,7 @@ function mktBuildGlobalFreshnessLine(rows, status, updatedAt, error) {
     // Any row degraded, or a non-fatal error with rows present
     if (degradedCount > 0 || error)        return 'Some returns unavailable \u00b7 tap row for details';
 
-    // Normal: live / delayed with refresh timestamp, plus the 1D cross-check count
-    var checkable = 0, verified = 0;
-    allRows.forEach(function(r) {
-        if (r.dayCheckProvider) {
-            checkable++;
-            if (r.dayCheckStatus === 'verified') verified++;
-        }
-    });
-    var checkStr = checkable > 0 ? ' \u00b7 1D cross-checked ' + verified + '/' + checkable : '';
-    var timeStr = '';
-    if (updatedAt) {
-        var d  = new Date(updatedAt);
-        var hh = String(d.getHours()).padStart(2, '0');
-        var mm = String(d.getMinutes()).padStart(2, '0');
-        timeStr = ' \u00b7 refreshed ' + hh + ':' + mm;
-    }
-    return 'Live where available' + checkStr + timeStr;
+    return null;
 }
 
 function mktFindLatestFiniteClose(timestamps, closes) {
@@ -11552,15 +11538,17 @@ function MarketOverviewScreen({ onClose, rows, status, updatedAt, error, onRefre
     var topMovers = buildMarketTopMovers(rows || []);
 
     // Build section groups preserving instrument order
+    // (grouped by name, in order of first appearance; VIX is forced into Volatility so rows saved
+    // before it had its own section don't split the Markets list)
     var sectionGroups = [];
-    var lastSec = null;
+    var groupByName = {};
     (rows || []).forEach(function(row) {
-        var sec = row.section || 'Markets';
-        if (sec !== lastSec) {
-            sectionGroups.push({ name: sec, rows: [] });
-            lastSec = sec;
+        var sec = row.id === 'VIX' ? 'Volatility' : (row.section || 'Markets');
+        if (!groupByName[sec]) {
+            groupByName[sec] = { name: sec, rows: [] };
+            sectionGroups.push(groupByName[sec]);
         }
-        sectionGroups[sectionGroups.length - 1].rows.push(row);
+        groupByName[sec].rows.push(row);
     });
 
     // Grid columns: ticker | last+chip | 1D | 1M | YTD | 12M
@@ -11856,15 +11844,10 @@ function MarketOverviewScreen({ onClose, rows, status, updatedAt, error, onRefre
             React.createElement('div', {
                 style: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }
             },
-                React.createElement('div', null,
-                    React.createElement('div', {
-                        style: { fontFamily: sys, fontSize: 22, fontWeight: 700,
-                                 color: C.white, letterSpacing: '-0.02em' }
-                    }, 'Markets'),
-                    React.createElement('div', {
-                        style: { fontFamily: sys, fontSize: 12, color: C.zinc500, marginTop: 2 }
-                    }, 'Global markets, FX & rates')
-                ),
+                React.createElement('div', {
+                    style: { fontFamily: sys, fontSize: 22, fontWeight: 700,
+                             color: C.white, letterSpacing: '-0.02em' }
+                }, 'Markets'),
                 React.createElement('button', {
                     onClick: onClose,
                     style: {
@@ -11876,11 +11859,14 @@ function MarketOverviewScreen({ onClose, rows, status, updatedAt, error, onRefre
                 }, React.createElement(X, { style: { width: 18, height: 18 }, strokeWidth: 2 }))
             ),
             React.createElement('div', {
-                style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }
+                style: { display: 'flex', alignItems: 'flex-start', gap: 8, marginTop: 8 }
             },
                 React.createElement('span', {
-                    style: { fontFamily: sys, fontSize: 11, color: freshnessColor, flex: 1 }
-                }, freshnessText),
+                    style: { fontFamily: sys, fontSize: 11, color: freshnessColor, flex: 1, paddingTop: 9 }
+                }, freshnessText || ''),
+                React.createElement('div', {
+                    style: { display: 'flex', flexDirection: 'column', alignItems: 'flex-end', flexShrink: 0 }
+                },
                 React.createElement('button', {
                     onClick: onRefresh, disabled: isFetching,
                     style: {
@@ -11895,6 +11881,12 @@ function MarketOverviewScreen({ onClose, rows, status, updatedAt, error, onRefre
                         style: { width: 10, height: 10 }, strokeWidth: 2
                     }),
                     'Refresh'
+                ),
+                // Time of the last successful refresh, with seconds (device local time)
+                updatedAt && React.createElement('span', {
+                    style: { fontFamily: rounded, fontSize: 11, color: C.zinc600, fontVariantNumeric: 'tabular-nums',
+                             paddingRight: 8, whiteSpace: 'nowrap' }
+                }, 'As of ' + new Date(updatedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' }))
                 )
             )
         ),
