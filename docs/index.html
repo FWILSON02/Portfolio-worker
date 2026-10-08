@@ -11436,7 +11436,7 @@ async function fetchMarketOverviewData(opts) {
 
     // ── 1D cross-check: merge each row's second source (same module as Holdings) ─
     // Twelve Data is fetched here (one batch, within its 8-credit/minute budget —
-    // anything over the budget is picked up on the next 60-second refresh). Alpha
+    // anything over the budget is picked up on a later 15-second refresh). Alpha
     // Vantage is cache-only here: its calls are spaced 13 s apart, so the Holdings
     // pipeline fetches it in the background and Markets reuses that cache — the
     // LSE rows in Markets are your holdings, so the data is shared.
@@ -12880,7 +12880,7 @@ function PortfolioApp() {
                 const v = m[k] || {};
                 return k + ':' + (v.error || '') + ':' + (v.altRows ?? '') + ':' + (v.unitFactor ?? '') + ':' + (v.provider || '') + ':' + (v.pending ? 1 : 0) + ':' + dailyCheckSourcesSig(v.sources);
             }).join('|');
-            // Only re-render when the diagnostic content actually changed (polls run every 30 s).
+            // Only re-render when the diagnostic content actually changed (polls run every 15 s).
             setDailyCheckStatus(prev => dailyCheckSig(prev) === dailyCheckSig(newDailyCheckStatus) ? prev : newDailyCheckStatus);
 
             // ── Live-quote gate (see assessLiveQuote) ─────────────────────────────
@@ -13029,7 +13029,7 @@ function PortfolioApp() {
         }, [tickersUsed, compConfigs, externalHoldings, checkAssetOpenInLast3M, configCurrencyMap]);
 
         // Public entry point. Each run gets an id; only the newest run may commit, so a
-        // slow request can never overwrite fresher prices. A silent 30-second poll is
+        // slow request can never overwrite fresher prices. A silent 15-second poll is
         // skipped while a run is still in flight (network timeouts cap a run's length),
         // so polls cannot pile up; a user-initiated refresh always starts a new run.
         const fetchLivePrices = useCallback(async (opts = {}) => {
@@ -13073,10 +13073,10 @@ function PortfolioApp() {
 
                     // 3. Conditional polling: only set up the interval during active trading
                     if (isPageVisible && isMarketOpen && !isIdle) {
-                        // MODE A: ACTIVE LIVE TRADING — 30-second polling (silent, no loading flash)
+                        // MODE A: ACTIVE LIVE TRADING — 15-second polling (silent, no loading flash)
                         liveInterval = setInterval(() => {
                             fetchLivePrices({ silent: true });
-                        }, 30000);
+                        }, 15000);
                     } else {
                         // MODE B: NO TRACKED MARKET OPEN, OR IDLE — the one-shot fetch above is
                         // sufficient. Schedule one reconciliation 30 minutes after each market
@@ -16574,10 +16574,10 @@ function PortfolioApp() {
             }
         }, []); // stable — all deps are refs or module-scope
 
-        // Auto-fetch when Markets screen opens; 60-second silent live-only refresh while open.
+        // Auto-fetch when Markets screen opens; 15-second silent live-only refresh while open and on screen.
         React.useEffect(function() {
             if (!showMarketOverview) return;
-            var STALE_MS = 60000;
+            var STALE_MS = 15000;
             var now      = Date.now();
             var hasRows  = !!marketCacheRef.current.rows;
             var isStale  = (now - (marketCacheRef.current.at || 0)) > STALE_MS;
@@ -16588,7 +16588,8 @@ function PortfolioApp() {
                 // Stale live rows — silent refresh; history cache will be reused unless expired.
                 refreshMarketOverview({ silent: true, forceHistory: false });
             }
-            // 60-second interval: live data only (history served from cache).
+            // 15-second interval: live data only (history served from cache). Skipped while the page is hidden,
+            // and refreshMarketOverview's _fetching guard skips a tick while the previous refresh is still running.
             var timer = setInterval(function() {
                 if (!document.hidden) refreshMarketOverview({ silent: true, forceHistory: false });
             }, STALE_MS);
