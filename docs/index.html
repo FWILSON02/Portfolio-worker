@@ -9826,12 +9826,12 @@ const BASE_MARKET_OVERVIEW_INSTRUMENTS = [
     { id: 'WTI',    label: 'WTI Crude Oil',  liveSymbol: 'CL=F',     returnSymbol: 'CL=F',      type: 'Cmdty',  section: 'Commodities', displayKind: 'pctReturn', nowDecimals: 2 },
     { id: 'BRENT',  label: 'Brent Crude Oil', liveSymbol: 'BZ=F',    returnSymbol: 'BZ=F',      type: 'Cmdty',  section: 'Commodities', displayKind: 'pctReturn', nowDecimals: 2 },
     { id: 'NATGAS', label: 'Natural Gas',    liveSymbol: 'NG=F',     returnSymbol: 'NG=F',      type: 'Cmdty',  section: 'Commodities', displayKind: 'pctReturn', nowDecimals: 3 },
-    // ── Crypto ────────────────────────────────────────────────────────────────
-    { id: 'BTC',    label: 'Bitcoin',        liveSymbol: 'BTC-USD',  returnSymbol: 'BTC-USD',   type: 'Crypto', section: 'Crypto',  displayKind: 'pctReturn', nowDecimals: 0, excludeFromTopMovers: true },
-    { id: 'ETH',    label: 'Ethereum',       liveSymbol: 'ETH-USD',  returnSymbol: 'ETH-USD',   type: 'Crypto', section: 'Crypto',  displayKind: 'pctReturn', nowDecimals: 2, excludeFromTopMovers: true },
     // ── Rates — basis-point changes; US5Y ^FVX, US10Y ^TNX ──────────────────
     { id: 'US5Y',   label: 'US 5Y',          liveSymbol: '^FVX',     returnSymbol: '^FVX',      type: 'Yld',    section: 'Rates',   displayKind: 'bpChange'  },
     { id: 'US10Y',  label: 'US 10Y',         liveSymbol: '^TNX',     returnSymbol: '^TNX',      type: 'Yld',    section: 'Rates',   displayKind: 'bpChange'  },
+    // ── Crypto ────────────────────────────────────────────────────────────────
+    { id: 'BTC',    label: 'Bitcoin',        liveSymbol: 'BTC-USD',  returnSymbol: 'BTC-USD',   type: 'Crypto', section: 'Crypto',  displayKind: 'pctReturn', nowDecimals: 0, excludeFromTopMovers: true },
+    { id: 'ETH',    label: 'Ethereum',       liveSymbol: 'ETH-USD',  returnSymbol: 'ETH-USD',   type: 'Crypto', section: 'Crypto',  displayKind: 'pctReturn', nowDecimals: 2, excludeFromTopMovers: true },
     // ── Mag7 ─────────────────────────────────────────────────────────────────
     { id: 'AAPL',   label: 'Apple',          liveSymbol: 'AAPL',     returnSymbol: 'AAPL',      type: 'Equity', section: 'Mag7',    displayKind: 'pctReturn', excludeFromTopMovers: true },
     { id: 'MSFT',   label: 'Microsoft',      liveSymbol: 'MSFT',     returnSymbol: 'MSFT',      type: 'Equity', section: 'Mag7',    displayKind: 'pctReturn', excludeFromTopMovers: true },
@@ -9927,53 +9927,6 @@ function mktMoveColor(row, value) {
     var inverse = row && (row.riskColorMode === 'inverse' || row.id === 'VIX');
     if (inverse) return value >= 0 ? C.rose : C.emerald;
     return value >= 0 ? C.emerald : C.rose;
-}
-
-// Rows excluded from the Top Movers ribbon.
-// VIX is a vol indicator; BTC can dominate; Mag7 can crowd out broader signals.
-// Re-derives exclusion from id/symbol/section so imported JSON rows stay safe.
-function mktIsExcludedFromTopMovers(row) {
-    if (!row) return true;
-    var id      = String(row.id           || '').toUpperCase();
-    var live    = String(row.liveSymbol   || '').toUpperCase();
-    var ret     = String(row.returnSymbol || '').toUpperCase();
-    var section = String(row.section      || '').toUpperCase();
-    var dq      = String(row.dataQuality  || '').toLowerCase();
-    var excludedIds = {
-        VIX: true, '^VIX': true,
-        BTC: true, 'BTC-USD': true, BTCUSD: true,
-        AAPL: true, MSFT: true, GOOGL: true, GOOG: true,
-        AMZN: true, NVDA: true, META: true, TSLA: true,
-    };
-    if (row.excludeFromTopMovers)         return true;
-    if (section === 'MAG7')               return true;
-    if (section === 'RATES')              return true;
-    if (section === 'HOLDINGS')           return true;
-    if (section === 'CRYPTO')             return true;
-    if (section === 'COMMODITIES')        return true;
-    if (excludedIds[id])                  return true;
-    if (excludedIds[live])                return true;
-    if (excludedIds[ret])                 return true;
-    // Exclude rows with unreliable data
-    if (dq === 'stale' || dq === 'unavailable' ||
-        dq === 'mixed-symbol' || dq === 'chartfallback1d-suppressed') return true;
-    return false;
-}
-
-// Pick the top 3 biggest absolute 1D movers from the current rows array.
-// Only includes clean (non-degraded) rows — no stale, cached or bad-DQ rows.
-// VIX, BTC, Mag7, Rates, Holdings, Crypto excluded — see mktIsExcludedFromTopMovers.
-function buildMarketTopMovers(rows) {
-    if (!Array.isArray(rows) || rows.length === 0) return [];
-    var candidates = [];
-    rows.forEach(function(r) {
-        if (mktIsExcludedFromTopMovers(r))             return;
-        if (mktRowIsDegraded(r))                       return;
-        if (r.day == null || !Number.isFinite(r.day))  return;
-        candidates.push(r);
-    });
-    candidates.sort(function(a, b) { return Math.abs(b.day) - Math.abs(a.day); });
-    return candidates.slice(0, 3);
 }
 
 // ── Market Overview display helpers ──────────────────────────────────────────
@@ -11551,22 +11504,27 @@ function MarketOverviewScreen({ onClose, rows, status, updatedAt, error, onRefre
                        : (status === 'partial') ? C.amber
                        : C.zinc600;
 
-    // Top 3 day movers — replaces the old fixed SPX/GBPUSD/US10Y strip.
-    var topMovers = buildMarketTopMovers(rows || []);
-
-    // Build section groups preserving instrument order
-    // (grouped by name, in order of first appearance; VIX is forced into Volatility so rows saved
-    // before it had its own section don't split the Markets list)
+    // Build section groups, in the order below (anything unlisted follows, in order of first appearance).
+    // Grouping uses the stored section name; MKT_SECTION_LABEL is only what the header says. VIX is forced
+    // into Volatility so rows saved before it had its own section don't split the Markets list. Sorting here
+    // (not just in the instrument list) means rows saved in an older order still display in this order.
+    var MKT_SECTION_ORDER = ['Markets', 'Volatility', 'FX', 'Commodities', 'Rates', 'Crypto', 'Mag7'];
+    var MKT_SECTION_LABEL = { Markets: 'EQ Indices', Volatility: 'Vol' };
     var sectionGroups = [];
     var groupByName = {};
     (rows || []).forEach(function(row) {
         var sec = row.id === 'VIX' ? 'Volatility' : (row.section || 'Markets');
         if (!groupByName[sec]) {
-            groupByName[sec] = { name: sec, rows: [] };
+            groupByName[sec] = { name: sec, label: MKT_SECTION_LABEL[sec] || sec, rows: [] };
             sectionGroups.push(groupByName[sec]);
         }
         groupByName[sec].rows.push(row);
     });
+    function mktSectionRank(name) { var i = MKT_SECTION_ORDER.indexOf(name); return i < 0 ? MKT_SECTION_ORDER.length : i; }
+    sectionGroups = sectionGroups
+        .map(function(g, i) { return { g: g, i: i }; })
+        .sort(function(a, b) { return (mktSectionRank(a.g.name) - mktSectionRank(b.g.name)) || (a.i - b.i); })
+        .map(function(x) { return x.g; });
 
     // Grid columns: ticker | last+chip | 1D | 1M | YTD | 12M
     // Same template used by both section header and data rows for alignment.
@@ -11603,7 +11561,7 @@ function MarketOverviewScreen({ onClose, rows, status, updatedAt, error, onRefre
                 React.createElement('span', {
                     style: { fontFamily: sys, fontSize: 17, color: C.white,
                              letterSpacing: '-0.01em', fontWeight: 700 }
-                }, sec.name)
+                }, sec.label)
             ),
             // Column header
             React.createElement('div', {
@@ -11908,45 +11866,6 @@ function MarketOverviewScreen({ onClose, rows, status, updatedAt, error, onRefre
             freshnessText && React.createElement('div', {
                 style: { fontFamily: sys, fontSize: 11, color: freshnessColor, marginTop: 2 }
             }, freshnessText)
-        ),
-
-        // ── Top movers strip ──────────────────────────────────────────────────
-        React.createElement('div', {
-            style: {
-                display: 'flex', alignItems: 'center', gap: 0,
-                paddingLeft: 20, paddingRight: 20, paddingTop: 7, paddingBottom: 7,
-                background: C.surfaceHigh, borderBottom: '1px solid ' + C.border,
-                flexShrink: 0, overflow: 'hidden',
-            }
-        },
-            React.createElement('span', {
-                style: { fontFamily: sys, fontSize: 10, color: C.zinc700,
-                         letterSpacing: '0.06em', textTransform: 'uppercase',
-                         marginRight: 12, flexShrink: 0, whiteSpace: 'nowrap' }
-            }, 'Top movers today'),
-            topMovers.length === 0
-                ? React.createElement('span', {
-                    style: { fontFamily: sys, fontSize: 11, color: C.zinc600 }
-                  }, 'Market movers unavailable')
-                : topMovers.map(function(r) {
-                    var sc  = mktMoveColor(r, r.day);
-                    var val = mktFmtCompact(r, r.day, 2);
-                    var lbl = r.id.replace(/^HOLDING:/, '');
-                    return React.createElement('span', {
-                        key: r.id,
-                        style: { display: 'inline-flex', alignItems: 'baseline', gap: 3,
-                                 marginRight: 14, flexShrink: 0, whiteSpace: 'nowrap' }
-                    },
-                        React.createElement('span', {
-                            style: { fontFamily: sys, fontSize: 12, color: C.zinc400,
-                                     fontWeight: 500 }
-                        }, lbl),
-                        React.createElement('span', {
-                            style: { fontFamily: rounded, fontSize: 12,
-                                     fontWeight: 400, color: sc, fontVariantNumeric: 'tabular-nums' }
-                        }, val)
-                    );
-                  })
         ),
 
         // ── Scrollable body ────────────────────────────────────────────────────
