@@ -5623,6 +5623,11 @@ function restrictedDailyPass({ plans, livePrices, tickerCurrencyMap, dollarRate,
     return { instDailyPnL, instPricedPrev, instPricedCount, optPlanDailyPnL, optPlanPrevVal, optPlanPrevTotal, byUnderlying };
 }
 
+// All Holdings title for a restricted row: the institution, as a short ticker-style label ("HSBC", "CITI").
+function restrictedInstTicker(inst) {
+    return String(inst || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 5) || 'REST';
+}
+
 // ── computeRestrictedDisplayRows — CANONICAL restricted P&L row normalizer ────
 // Single source of truth for the per-row numbers shown in BOTH:
 //   a) RestrictedSchemesWidget hero (group rows / option rows), and
@@ -5698,10 +5703,14 @@ function computeRestrictedDisplayRows({
         const grpTotalPct = (grpTotalPnl != null && totalBasis > 0) ? grpTotalPnl / totalBasis : null;
         const grpBasis    = grpTotalPnl != null ? totalBasis : 0;
 
-        const instTicker = inst.replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 5) || 'REST';
+        const instTicker = restrictedInstTicker(inst);
+        // Subheading names the scheme, not the institution again: RSUs are "Unvested", SIP is "Share incentive plan".
+        const cats = new Set(grp.map(p => String(p.category || p.restricted_category || '').toUpperCase().trim()));
+        const schemeName = [cats.has('RSU') ? 'Unvested' : null, cats.has('SIP') ? 'Share incentive plan' : null]
+            .filter(Boolean).join(' · ') || inst;
         rows.push({
             // HoldingRow-compatible shape
-            ticker: instTicker, name: inst, account: 'Restricted Asset',
+            ticker: instTicker, name: schemeName, account: 'Restricted Asset',
             marketValue: totalVal, value: totalVal,
             todayAbsChange: dAbs,
             todayPctChange: dPct,
@@ -5744,7 +5753,7 @@ function computeRestrictedDisplayRows({
         const totalPnlPct = acc > 0 ? totalPnl / acc : null;
 
         rows.push({
-            ticker: 'SAYE', name: p.planName || p.planId || 'Sharesave',
+            ticker: p.institution ? restrictedInstTicker(p.institution) : 'SAYE', name: p.planName || p.planId || 'Sharesave',
             account: 'Restricted Asset',
             marketValue: vGBP, value: vGBP,
             todayAbsChange: dAbs,
