@@ -7702,8 +7702,11 @@ function makeContribRange(S, topN) {
 
 const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, setTimeframe, mode, setMode, privacyMode, spxLatestPrice, spxSessionDate, contribFn }) {
     const [scrubIdx, setScrubIdx] = React.useState(null);
-    // The contributors table (% mode) is pinned to the last pressed day until dismissed (x), a new press replaces it,
-    // and it clears when the timeframe or mode changes. Stored as a date so it survives data refreshes.
+    // The contributors table (% mode) only opens from a timeframe chip or the Analyse button, never from a press on the
+    // chart (a finger landing on the chart while scrolling used to open it). Once open, it is pinned to the last pressed
+    // day until dismissed (x), a new press replaces it, and it clears when the timeframe or mode changes. The day is
+    // stored as a date so it survives data refreshes.
+    const [tableOpen, setTableOpen] = React.useState(false);
     const [pinDate, setPinDate] = React.useState(null);
     const [prevPinDate, setPrevPinDate] = React.useState(null);   // the press before the pinned one (for "vs last press")
     const [cmpMode, setCmpMode] = React.useState('start');        // 'start' = window start -> day, 'prev' = last press <-> day
@@ -7712,7 +7715,7 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
     const lastTouchRef = React.useRef(0);                         // when a finger last touched the chart (see touchedRecently)
     const pinRef = React.useRef(null);
     pinRef.current = pinDate;
-    const hideTable = () => { setPinDate(null); setPrevPinDate(null); setCmpMode('start'); setOtherOpen(false); setScrubIdx(null); lastScrubRef.current = null; };
+    const hideTable = () => { setTableOpen(false); setPinDate(null); setPrevPinDate(null); setCmpMode('start'); setOtherOpen(false); setScrubIdx(null); lastScrubRef.current = null; };
     // iPhone Safari follows every tap with emulated mouse events. On the chart those used to re-start a "scrub" right after
     // the finger lifted (the crosshair stuck on), and the next tap anywhere else then made Safari fire mouseleave on the chart,
     // which changed the page, and Safari drops the click when a mouse event changes the page. That is how a tap on the x or
@@ -7732,7 +7735,17 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
         if (!(data && data.length >= 2)) return;
         autoShowRef.current = false;
         setPinDate(data[data.length - 1].date);
+        setTableOpen(true);
     }, [data, timeframe, mode]);
+    // Analyse (and a tap on the timeframe already selected): open the table for the whole window. From £ mode it switches
+    // to % first; the flag is then consumed by the effect above once the mode change has cleared the old state.
+    const openTable = () => {
+        if (mode !== 'twr') { autoShowRef.current = true; setMode('twr'); return; }
+        if (!(data && data.length >= 2)) return;
+        setPrevPinDate(null); setCmpMode('start'); setOtherOpen(false);
+        setPinDate(data[data.length - 1].date);
+        setTableOpen(true);
+    };
     const containerRef = React.useRef(null);
     const { width: cw } = useDimensions(containerRef);
 
@@ -7898,7 +7911,7 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
     const loIdx = segActive ? Math.min(_cmpIdx, focusIdx) : 0;
     const hiIdx = segActive ? Math.max(_cmpIdx, focusIdx) : focusIdx;
     let tableContrib = null;
-    if (mode === 'twr' && typeof contribFn === 'function' && hasData && focusIdx != null && hiIdx > loIdx
+    if (tableOpen && mode === 'twr' && typeof contribFn === 'function' && hasData && focusIdx != null && hiIdx > loIdx
         && data[loIdx] && data[hiIdx] && data[loIdx].date && data[hiIdx].date) {
         const _vLo = data[loIdx][yKey], _vHi = data[hiIdx][yKey];
         const _den = loIdx === 0 ? 100 : _vLo;
@@ -7942,7 +7955,7 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
     function pinLastScrub() {
         const li = lastScrubRef.current;
         lastScrubRef.current = null;
-        if (!(mode === 'twr' && hasData && li != null && li >= 1 && data[li])) return;
+        if (!(tableOpen && mode === 'twr' && hasData && li != null && li >= 1 && data[li])) return;
         const nd = data[li].date, cur = pinRef.current;
         if (cur && cur !== nd) setPrevPinDate(cur);
         setPinDate(nd);
@@ -7998,8 +8011,9 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
     }
 
     // ── Contributors table, under the chart (% mode) ──
-    // Appears when the chart is pressed (live while the finger moves), stays pinned after lifting, refreshes on the next
-    // press, and the x hides it. Three columns: Holding (dimmed + "sold" if no longer held on the end day), pp = contribution
+    // Opens from a timeframe chip or Analyse; while open it follows presses on the chart (live while the finger moves),
+    // stays pinned after lifting, and the x hides it. Three columns: Holding (dimmed + "sold" if no longer held on the end
+    // day), Contrib = contribution in percentage points
     // to the range's move (rows + Other add up to it; the faint bar is its size relative to the largest), and Held return =
     // price return only over the stretches it was held ("/yr" when held a year or more, a plain total otherwise).
     // "Other (n)" expands to the smaller holdings plus a "Costs & other" remainder. When two days have been pressed, the
@@ -8064,7 +8078,7 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
         );
         const colHead = React.createElement('div', { style: { display: 'grid', gridTemplateColumns: cols, columnGap: 6,
             paddingBottom: 4, borderBottom: '1px solid ' + C.border } },
-            hdrCell('Holding'), hdrCell('pp', 1), hdrCell('Held return', 1));
+            hdrCell('Holding'), hdrCell('Contrib', 1), hdrCell('Held return', 1));
 
         const maxAbs = Math.max.apply(null, T.rows.map(r => Math.abs(r.c)).concat([1e-9]));
         const retCell = r => {
@@ -8137,7 +8151,7 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
             // Timeframe chips
             TF.map(tf =>
                 React.createElement('button', {
-                    key: tf, onClick: () => setTimeframe(tf),
+                    key: tf, onClick: () => (tf === timeframe ? openTable() : setTimeframe(tf)),
                     style: {
                         fontFamily: mono, fontSize: 10, fontWeight: 600, lineHeight: '12px',
                         padding: '4px 0', borderRadius: 5, flex: 1, textAlign: 'center',
@@ -8398,14 +8412,24 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
             }, fmtDelta(displayAbs, displayDeltaShown))
         ),
         // (The notes and money-weighted figures that used to sit here now live in Settings -> Performance Metrics.)
-        mode === 'twr' && benchLinePath && React.createElement('div', {
-            style: { display: 'flex', alignItems: 'center', gap: 5, marginTop: 5, justifyContent: 'flex-end' }
+        // Row under the chart: Analyse on the left (opens the contributors table), S&P legend on the right.
+        ((hasData && typeof contribFn === 'function' && !tableOpen) || (mode === 'twr' && benchLinePath)) && React.createElement('div', {
+            style: { display: 'flex', alignItems: 'center', gap: 5, marginTop: 5 }
         },
-            React.createElement('svg', { width: 20, height: 6, style: { display: 'block' } },
+            hasData && typeof contribFn === 'function' && !tableOpen && React.createElement('button', {
+                onClick: openTable,
+                style: {
+                    fontFamily: mono, fontSize: 10, fontWeight: 600, lineHeight: '12px', flexShrink: 0,
+                    padding: '4px 10px', borderRadius: 5, border: `1px solid ${C.border}`,
+                    background: 'transparent', color: C.zinc600, cursor: 'pointer',
+                }
+            }, 'Analyse'),
+            React.createElement('span', { style: { flex: 1 } }),
+            mode === 'twr' && benchLinePath && React.createElement('svg', { width: 20, height: 6, style: { display: 'block' } },
                 React.createElement('line', { x1: '0', y1: '3', x2: '20', y2: '3',
                     stroke: C.blue, strokeWidth: '1.5', strokeDasharray: '3 2', opacity: '0.75' })
             ),
-            React.createElement('span', {
+            mode === 'twr' && benchLinePath && React.createElement('span', {
                 style: { fontFamily: sys, fontSize: 9, color: C.blue, opacity: 0.75, letterSpacing: '0.04em' }
             }, (() => {
                 // Base label
