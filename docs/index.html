@@ -3928,6 +3928,7 @@ function buildRestrictedTimeline(compConfigs, weeklyDates, prices, tickerCurrenc
                     custodyPlatform: plan.custody_platform || null,
                     actualNetUnits:  plan.actual_net_units  != null ? plan.actual_net_units : null,
                     grantPrice:      Number(plan.grant_price ?? 0) > 0 ? Number(plan.grant_price) : null, // native-currency grant price for widget total P&L
+                    grantDate:       plan.grant_date || null,    // the chart counts an RSU only from its grant
                 };
 
             // ══════════════════════════════════════════════════════════════════
@@ -5538,66 +5539,36 @@ function resolveRestrictedDailyPricePair({ ticker, currency, dollarRate, livePri
              source, reason: source };
 }
 
-// ── computeRestrictedDisplayRows — CANONICAL restricted P&L row normalizer ────
-// Single source of truth for the per-row numbers shown in BOTH:
-//   a) RestrictedSchemesWidget hero (group rows / option rows), and
-//   b) the All Holdings bottom-sheet "Restricted Corporate Schemes" section.
-// Every formula below mirrors RestrictedSchemesWidget line-for-line:
-//   - daily P&L: resolveRestrictedDailyPricePair (gated live px +
-//     resolveVerifiedDailyPrevClose) with per-ticker effective session dates
-//     via getEffectiveDateForTicker;
-//   - RSU/SIP group total P&L: grant-price GBP basis vs current valueGBP;
-//   - OPTION (Sharesave) total P&L: optionValue + accruedBonus vs accruedCash;
-//   - OPTION daily display: suppressed when |move| < £0.50 (hero rule);
-//     pct denominator = the line's own PREVIOUS value (saved cash + accrued
-//     bonus + prev intrinsic value), so it is comparable with the share's own %.
-// GUARDRAIL: output rows are display-only (isRestrictedDisplayOnly: true) and
-// must NEVER be fed into masterPortfolio, account totals, TWR, charts,
-// attribution, or insights.
-// ⚠️ PARITY CONTRACT: see the matching comment above RestrictedSchemesWidget.
-// If a formula changes in either place, change both. Per output row, the
-// fields that must stay numerically aligned with the hero are:
-//   marketValue / value, todayAbsChange, todayPctChange,
-//   unrealisedPL, restrictedTotalPnl, restrictedTotalPnlPct, totalCost.
-function computeRestrictedDisplayRows({
-    currentCompState, livePrices, tickerCurrencyMap, gbpusdRate,
-    prices, liveStatus, liveAt, liveDailyCloses, liveQuoteSessionDates,
-    latestSession,
-}) {
-    const plans = (currentCompState && currentCompState.currentRestrictedPlans) || [];
-    if (plans.length === 0) return [];
-
+// ── restrictedDailyPass — pass 1 of computeRestrictedDisplayRows ─────────────
+// Today's move per restricted plan, accumulated three ways: by institution (RSU/SIP group rows), by option plan
+// (Sharesave rows), and by underlying share (byUnderlying: the HSBC (R) / Citi (R) positions). Same rules as the
+// RestrictedSchemesWidget hero (see its PARITY CONTRACT); the option moves here are raw (no £0.50 display floor).
+function restrictedDailyPass({ plans, livePrices, tickerCurrencyMap, dollarRate, liveAt, liveDailyCloses,
+                               liveQuoteSessionDates, latestSession }) {
     const KNOWN_RESTRICTED_CCY = { 'C': 'USD', 'HSBA.L': 'GBX' };
-    const dollarRate = gbpusdRate ;
-
-    // Case-insensitive map lookup — identical to the hero's getMapValueCI.
-    function ci(map, ticker) {
-        const norm = String(ticker || '').toUpperCase().trim();
-        if (!map || !norm) return null;
-        if (map[norm] != null) return map[norm];
-        const key = Object.keys(map).find(k => String(k).toUpperCase().trim() === norm);
-        return key ? map[key] : null;
-    }
-    // Ticker resolver — identical priority order to the hero's getRestrictedTicker.
     function rTicker(plan) {
         return (plan.yahooTicker || plan.yahoo_ticker || plan.ticker ||
                 plan.instrumentTicker || plan.underlyingTicker || '')
             .toString().toUpperCase().trim();
     }
-
     // Session dates — same fallback chain as the hero (global eff || candidate).
     const _candidate = getCurrentPnlSessionDateStr();
     const _globalEff = getEffectivePnlSessionDateStr(liveAt, _candidate);
     const todayStr   = _globalEff || _candidate;
 
-    // ── Pass 1: daily-delta accumulation — mirror of the hero's plan loop ────
+    // Daily-delta accumulation — mirror of the hero's plan loop.
     const instDailyPnL    = {};   // institution → daily P&L
     const instPricedPrev  = {};   // institution → prev-day value (denominator)
     const instPricedCount = {};   // institution → priced-plan count
     const optPlanDailyPnL = {};   // option planKey → daily P&L
     const optPlanPrevVal  = {};   // option planKey → prev intrinsic value
     const optPlanPrevTotal = {};  // option planKey → prev TOTAL value (cash + bonus + intrinsic): the % base
+    const byUnderlying    = {};   // ticker → { abs, prev, count, liveRaw, liveGBP }: every plan on that share, options included
 
+    function addU(tk, pair, abs, prev) {
+        const u = byUnderlying[tk] || (byUnderlying[tk] = { abs: 0, prev: 0, count: 0, liveRaw: pair.liveRaw, liveGBP: pair.liveGBP });
+        u.abs += abs; u.prev += prev; u.count += 1;
+    }
     for (const plan of plans) {
         const units = Number(
             plan.current_units != null ? plan.current_units :
@@ -5630,6 +5601,7 @@ function computeRestrictedDisplayRows({
             instDailyPnL[ik]    = (instDailyPnL[ik]    || 0) + units * (livePxGBP - prevPxGBP);
             instPricedPrev[ik]  = (instPricedPrev[ik]  || 0) + units * prevPxGBP;
             instPricedCount[ik] = (instPricedCount[ik] || 0) + 1;
+            addU(normTk, pair, units * (livePxGBP - prevPxGBP), units * prevPxGBP);
         } else if (category === 'OPTION') {
             const strike   = Number(plan.strikePrice ?? plan.strike_price ?? 0);
             const prevSprd = Math.max(0, prevPxGBP - strike);
@@ -5644,8 +5616,49 @@ function computeRestrictedDisplayRows({
             // shown on the line, so they belong in the base of its daily %.
             optPlanPrevTotal[optPk] = (optPlanPrevTotal[optPk] || 0)
                 + Number(plan.accruedCash ?? 0) + Number(plan.accruedBonus ?? 0) + pu * prevSprd;
+            addU(normTk, pair, pu * (liveSprd - prevSprd),
+                Number(plan.accruedCash ?? 0) + Number(plan.accruedBonus ?? 0) + pu * prevSprd);
         }
     }
+    return { instDailyPnL, instPricedPrev, instPricedCount, optPlanDailyPnL, optPlanPrevVal, optPlanPrevTotal, byUnderlying };
+}
+
+// ── computeRestrictedDisplayRows — CANONICAL restricted P&L row normalizer ────
+// Single source of truth for the per-row numbers shown in BOTH:
+//   a) RestrictedSchemesWidget hero (group rows / option rows), and
+//   b) the All Holdings bottom-sheet "Restricted Corporate Schemes" section.
+// Every formula below mirrors RestrictedSchemesWidget line-for-line:
+//   - daily P&L: resolveRestrictedDailyPricePair (gated live px +
+//     resolveVerifiedDailyPrevClose) with per-ticker effective session dates
+//     via getEffectiveDateForTicker;
+//   - RSU/SIP group total P&L: grant-price GBP basis vs current valueGBP;
+//   - OPTION (Sharesave) total P&L: optionValue + accruedBonus vs accruedCash;
+//   - OPTION daily display: suppressed when |move| < £0.50 (hero rule);
+//     pct denominator = the line's own PREVIOUS value (saved cash + accrued
+//     bonus + prev intrinsic value), so it is comparable with the share's own %.
+// GUARDRAIL: output rows are display-only (isRestrictedDisplayOnly: true) and
+// must NEVER be fed into masterPortfolio, account totals or TWR. (The hero total,
+// Daily Insights and the chart take restricted capital from their own paths:
+// computeRestrictedPositions and restrictedChartPoint, never from these rows.)
+// ⚠️ PARITY CONTRACT: see the matching comment above RestrictedSchemesWidget.
+// If a formula changes in either place, change both. Per output row, the
+// fields that must stay numerically aligned with the hero are:
+//   marketValue / value, todayAbsChange, todayPctChange,
+//   unrealisedPL, restrictedTotalPnl, restrictedTotalPnlPct, totalCost.
+function computeRestrictedDisplayRows({
+    currentCompState, livePrices, tickerCurrencyMap, gbpusdRate,
+    prices, liveStatus, liveAt, liveDailyCloses, liveQuoteSessionDates,
+    latestSession,
+}) {
+    const plans = (currentCompState && currentCompState.currentRestrictedPlans) || [];
+    if (plans.length === 0) return [];
+
+    const dollarRate = gbpusdRate ;
+
+    // ── Pass 1: daily-delta accumulation (shared with the restricted positions) ─
+    const { instDailyPnL, instPricedPrev, instPricedCount, optPlanDailyPnL, optPlanPrevVal, optPlanPrevTotal } =
+        restrictedDailyPass({ plans, livePrices, tickerCurrencyMap, dollarRate, liveAt, liveDailyCloses,
+                              liveQuoteSessionDates, latestSession });
 
     // ── Pass 2: build HoldingRow-compatible display rows ─────────────────────
     const byInst = new Map();
@@ -5748,6 +5761,112 @@ function computeRestrictedDisplayRows({
         });
     }
     return rows;
+}
+
+// ── Restricted positions: HSBC (R) and Citi (R) ──────────────────────────────
+// Every restricted plan (RSU, SIP and Sharesave alike) is grouped by the share it is on, and each share is one
+// position labelled with an "(R)", so the hero, Daily Insights and the chart can show the restricted moves next to
+// the ordinary holdings without mistaking them for shares that can be sold.
+function restrictedPositionLabel(ticker, institution) {
+    const tk = String(ticker || '').toUpperCase().trim();
+    if (tk === 'HSBA.L' || tk === 'HSBA') return 'HSBC (R)';
+    if (tk === 'C') return 'Citi (R)';
+    return String(institution || tk || 'Restricted').trim() + ' (R)';
+}
+function restrictedPlanTicker(plan) {
+    return (plan.yahooTicker || plan.yahoo_ticker || plan.ticker || plan.instrumentTicker || plan.underlyingTicker || '')
+        .toString().toUpperCase().trim();
+}
+// One row per underlying share: value = the restricted value of every plan on it (what the restricted card shows);
+// Today = the summed move of the plans that are priced on the latest session (null when none is), % against their
+// previous value. currentPriceRaw / currentPriceGBP feed the Spot column in Daily Insights.
+function computeRestrictedPositions({
+    currentCompState, livePrices, tickerCurrencyMap, gbpusdRate,
+    liveAt, liveDailyCloses, liveQuoteSessionDates, latestSession,
+}) {
+    const plans = (currentCompState && currentCompState.currentRestrictedPlans) || [];
+    if (plans.length === 0) return [];
+    const { byUnderlying } = restrictedDailyPass({ plans, livePrices, tickerCurrencyMap, dollarRate: gbpusdRate, liveAt,
+        liveDailyCloses, liveQuoteSessionDates, latestSession });
+    const groups = new Map();
+    for (const p of plans) {
+        const tk = restrictedPlanTicker(p);
+        if (!tk || tk === 'UNTICKERED') continue;
+        if (!groups.has(tk)) groups.set(tk, { tk, institution: p.institution, value: 0, plans: 0 });
+        const g = groups.get(tk);
+        g.value += Number(p.valueGBP || 0);
+        g.plans += 1;
+    }
+    const out = [];
+    for (const g of groups.values()) {
+        const d = byUnderlying[g.tk];
+        const abs = d && d.count > 0 ? d.abs : null;
+        out.push({
+            ticker: restrictedPositionLabel(g.tk, g.institution), name: restrictedPositionLabel(g.tk, g.institution),
+            underlyingTicker: g.tk, account: 'Restricted Asset',
+            marketValue: g.value, units: g.plans,
+            todayAbsChange: abs,
+            todayPctChange: abs != null && d.prev > 0 ? abs / d.prev : null,
+            todayPrevValue: abs != null ? d.prev : null,
+            currentPriceRaw: d ? d.liveRaw : null, currentPriceGBP: d ? d.liveGBP : null,
+            isRestrictedPosition: true,
+        });
+    }
+    return out.sort((a, b) => b.marketValue - a.marketValue);
+}
+
+// Restricted capital on one chart date, from that date's planDetails (buildRestrictedTimeline): value per position
+// (by), the share price in GBP per position (px, for the Held return column), and each plan's exposure (exp: q units
+// whose value moves with price p) so a week's change can be split into market move and flows (restrictedChartFlows).
+// An RSU counts from its grant date; before that it was not yet held.
+//   RSU  q = units,                        p = value / units
+//   SIP  q = units,                        p = share price (saved cash is a flow)
+//   SAYE q = units saved for so far,       p = intrinsic spread (saved cash and bonus are flows)
+function restrictedChartPoint(planDetails, dateStr) {
+    const by = {}, px = {}, exp = {};
+    let total = 0;
+    for (const [key, p] of Object.entries(planDetails || {})) {
+        if (!p || p.phase !== 'RESTRICTED') continue;
+        if (p.grantDate && dateStr < p.grantDate) continue;
+        const v = Number(p.valueGBP);
+        if (!Number.isFinite(v)) continue;
+        const tk = restrictedPlanTicker(p);
+        const label = restrictedPositionLabel(tk, p.institution);
+        by[label] = (by[label] || 0) + v;
+        total += v;
+        const cat = String(p.category || '').toUpperCase();
+        const units = Number(p.units) || 0;
+        let q = 0, pr = null, share = null;
+        if (cat === 'RSU') { if (units > 0) { q = units; pr = v / units; share = pr; } }
+        else if (cat === 'SIP') { q = units; pr = Number(p.priceGBP); share = pr; }
+        else if (cat === 'OPTION') {
+            const tcm = Number(p.totalContractMonths) || 0;
+            q = tcm > 0 ? (Number(p.elapsedMonths) || 0) / tcm * units : 0;
+            pr = Number(p.spread); share = Number(p.priceGBP);
+        }
+        if (Number.isFinite(share) && share > 0 && px[label] == null) px[label] = share;
+        exp[key] = { label, q, p: Number.isFinite(pr) ? pr : null };
+    }
+    return { by, px, exp, total };
+}
+// Flows between two restricted chart points, per position: the change in value that the price move does not
+// explain (a grant arriving, a tranche vesting out, Sharesave contributions). Market move = q (previous) × change in p,
+// for plans held at both dates.
+function restrictedChartFlows(prev, curr) {
+    const flow = {};
+    let total = 0;
+    const labels = new Set([...Object.keys(prev.by), ...Object.keys(curr.by)]);
+    for (const label of labels) {
+        let gain = 0;
+        for (const key of Object.keys(curr.exp)) {
+            const c = curr.exp[key], p = prev.exp[key];
+            if (!p || c.label !== label || p.p == null || c.p == null) continue;
+            gain += p.q * (c.p - p.p);
+        }
+        const f = (curr.by[label] || 0) - (prev.by[label] || 0) - gain;
+        if (Math.abs(f) > 1e-9) { flow[label] = f; total += f; }
+    }
+    return { flow, total };
 }
 
 // RestrictedSchemesWidget — Interactive account hero card with live delta and grouped RSU tranches.
@@ -7158,19 +7277,12 @@ function Group({ title, children }) {
     );
 }
 
-const HeroCard = React.memo(function HeroCard({ onTap, onSegmentTap, transactions, masterPortfolio, sheetContext, liveStatus, privacyMode, accountGroups, currentCompState, processedExternalHoldings, heroTodayAbs, heroTodayPct }) {
+// One total: the portfolio plus employer equity (restricted capital and any modelled vested comp), with Today and
+// Total covering all of it. The figures are combined in PortfolioApp (heroCombined); the restricted card further down
+// still shows the schemes on their own.
+const HeroCard = React.memo(function HeroCard({ onTap, transactions, masterPortfolio, sheetContext, liveStatus, privacyMode, heroValue, heroTodayAbs, heroTodayPct, heroTotalAbs, heroTotalPct }) {
     const hasData = transactions.length > 0;
     const isEmpty = !hasData || masterPortfolio.totalValue === 0;
-    // Safe defaults — renders cleanly when comp config not yet loaded
-    const cs  = currentCompState || { currentLiquidComp: 0, currentRestrictedComp: 0 };
-    const extVal = 0;   // external custody (CPWM etc.) is part of Portfolio Value itself now — nothing extra to add
-    const hasCompData = cs.currentLiquidComp > 0 || cs.currentRestrictedComp > 0 || extVal > 0;
-    // Fix 2: display-only all-in wealth figure — never fed into performance metrics
-    const displayTotalWealth =
-        (masterPortfolio.totalValue || 0)
-        + (cs.currentLiquidComp   || 0)
-        + (cs.currentRestrictedComp || 0)
-        + extVal;
     return React.createElement('div', {
         onClick: onTap,
         style: {
@@ -7180,7 +7292,6 @@ const HeroCard = React.memo(function HeroCard({ onTap, onSegmentTap, transaction
     },
         card(
             React.createElement('div', null,
-                // Label row — honest: "Portfolio Value" not "Consolidated Wealth"
                 React.createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 } },
                     React.createElement('span', { style: { fontFamily: sys, fontSize: 10, color: C.zinc500, textTransform: 'uppercase', letterSpacing: '0.18em' } }, 'Portfolio Value'),
                     liveStatus === 'fetching'
@@ -7189,71 +7300,25 @@ const HeroCard = React.memo(function HeroCard({ onTap, onSegmentTap, transaction
                             ? React.createElement('div', { style: { width: 6, height: 6, borderRadius: '50%', background: C.emerald } })
                             : React.createElement('div', { style: { width: 6, height: 6, borderRadius: '50%', background: C.zinc700 } })
                 ),
-                // Main metrics — pure HL ledger value unchanged
                 isEmpty
                     ? React.createElement('div', { style: { fontFamily: serif, fontSize: 15, fontStyle: 'italic', color: C.zinc600, paddingTop: 4, paddingBottom: 4 } }, 'Upload a CSV to begin')
-                    : React.createElement('div', null,
-                        // Compact two-zone row: Portfolio Value left, Today/Total table right.
-                        // (No cash line here — the master portfolio carries no cash figure.)
-                        (() => {
-                            const heroRealText = fmtV(masterPortfolio.totalValue);
-                            // Caps at 32px; shrinks only if the width can't hold value + table.
-                            const heroSize = compactFitSize(32, heroRealText.length, 20);
-                            return React.createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 } },
-                                React.createElement('div', { style: compactValueStyle(heroSize, privacyMode) },
-                                    privacyMode ? '£ •••,•••' : heroRealText),
-                                React.createElement(CompactMetricGrid, {
-                                    todayAbs: heroTodayAbs,
-                                    todayPct: heroTodayPct,
-                                    totalAbs: masterPortfolio.unrealisedPL,
-                                    totalPct: masterPortfolio.totalPctChange,
-                                    privacyMode,
-                                })
-                            );
-                        })(),
-                        // Employer equity + external custody breakdown — display only
-                        hasCompData && React.createElement('div', {
-                            style: { marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.border}` }
-                        },
-                            // Row A — Vested Comp (blue): visible only when > 0
-                            cs.currentLiquidComp > 0 && React.createElement('div', {
-                                style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 5 }
-                            },
-                                React.createElement('span', {
-                                    style: { fontFamily: sys, fontSize: 11, color: C.zinc600, textTransform: 'uppercase', letterSpacing: '0.08em' }
-                                }, '+ Vested Comp'),
-                                React.createElement('span', {
-                                    style: { fontFamily: sys, fontSize: 13, fontWeight: 600, color: C.blue,
-                                             fontVariantNumeric: 'tabular-nums', filter: privacyMode ? 'blur(6px)' : 'none' }
-                                }, fmtV(cs.currentLiquidComp))
-                            ),
-                            // Row B — Restricted Capital (muted gray)
-                            cs.currentRestrictedComp > 0 && React.createElement('div', {
-                                style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 5 }
-                            },
-                                React.createElement('span', {
-                                    style: { fontFamily: sys, fontSize: 11, color: C.zinc600, textTransform: 'uppercase', letterSpacing: '0.08em' }
-                                }, 'Restricted Capital'),
-                                React.createElement('span', {
-                                    style: { fontFamily: sys, fontSize: 13, fontWeight: 500, color: C.zinc500,
-                                             fontVariantNumeric: 'tabular-nums', filter: privacyMode ? 'blur(6px)' : 'none' }
-                                }, fmtV(cs.currentRestrictedComp))
-                            ),
-                            // Roll-up: Total Wealth = HL + comp + custody (display only)
-                            React.createElement('div', {
-                                style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                                         paddingTop: 8, marginTop: 4, borderTop: `1px solid ${C.border}` }
-                            },
-                                React.createElement('span', {
-                                    style: { fontFamily: sys, fontSize: 11, color: C.zinc500, textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 600 }
-                                }, 'Total Wealth'),
-                                React.createElement('span', {
-                                    style: { fontFamily: sys, fontSize: 14, fontWeight: 700, color: C.text,
-                                             fontVariantNumeric: 'tabular-nums', filter: privacyMode ? 'blur(6px)' : 'none' }
-                                }, fmtV(displayTotalWealth))
-                            )
-                        )
-                    )
+                    : (() => {
+                        // Compact two-zone row: the total left, Today/Total table right.
+                        const heroRealText = fmtV(heroValue);
+                        // Caps at 32px; shrinks only if the width can't hold value + table.
+                        const heroSize = compactFitSize(32, heroRealText.length, 20);
+                        return React.createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 } },
+                            React.createElement('div', { style: compactValueStyle(heroSize, privacyMode) },
+                                privacyMode ? '£ •••,•••' : heroRealText),
+                            React.createElement(CompactMetricGrid, {
+                                todayAbs: heroTodayAbs,
+                                todayPct: heroTodayPct,
+                                totalAbs: heroTotalAbs,
+                                totalPct: heroTotalPct,
+                                privacyMode,
+                            })
+                        );
+                    })()
             ),
             { cursor: 'pointer', transition: 'border-color 120ms', borderColor: sheetContext === 'all' ? C.amber + '55' : C.border }
         )
@@ -7552,6 +7617,8 @@ function isSPXBenchmarkKey(key) {
 //   other = r - sum(c_k)                      untickered items, dealing costs, the +/-50% clamp: so the rows always add up.
 // Steps are then linked over any window with Carino smoothing: sum_k contribution_k + other = window return exactly,
 // and the window return is exactly the bubble's "Port" figure because both come from the same series.
+// The plotted line is investedAll: the restricted positions (HSBC (R), Citi (R)) ride along as holdings, from each
+// row's rBy / rPx, with their flows (rFlow) booked at the end of the step exactly as the line books them.
 function buildContribSteps(performanceChart, benchmarkTimeline, perfLedger) {
     if (!performanceChart || performanceChart.length < 2 || !benchmarkTimeline || benchmarkTimeline.length === 0) return null;
     const rowsByDate = new Map(benchmarkTimeline.map(r => [r.date, r]));
@@ -7564,19 +7631,23 @@ function buildContribSteps(performanceChart, benchmarkTimeline, perfLedger) {
     const dates = new Array(n).fill(null);
     const inv = new Array(n).fill(null);
     const by = new Array(n).fill(null);
+    const rSum = row => { let t = 0; for (const k in (row && row.rBy) || {}) t += row.rBy[k]; return t; };
+    const withR = (base, extra) => (extra && Object.keys(extra).length) ? Object.assign({}, base || {}, extra) : (base || null);
     let txPtr = 0;
     for (let i = 0; i < n; i++) {
         const date = performanceChart[i].date;
         idxByDate.set(date, i);
         dates[i] = date;
         const cRow = rowsByDate.get(date);
-        px[i] = (cRow && cRow.pxTicker) || null;
-        by[i] = (cRow && cRow.byTicker) || null;
-        inv[i] = cRow ? cRow.holdingsValue + (cRow.untickeredValue || 0) : null;
+        const pc = performanceChart[i], pp = i > 0 ? performanceChart[i - 1] : null;
+        px[i] = withR(cRow && cRow.pxTicker, pc.rPx);
+        by[i] = withR(cRow && cRow.byTicker, pc.rBy);
+        inv[i] = cRow ? cRow.holdingsValue + (cRow.untickeredValue || 0) + rSum(pc) : null;
         if (i === 0) continue;
-        const prevDate = performanceChart[i - 1].date;
+        const prevDate = pp.date;
         const pRow = rowsByDate.get(prevDate);
-        const invPrev = performanceChart[i - 1].invested, invCurr = performanceChart[i].invested;
+        const lineKey = pc.investedAll !== undefined ? 'investedAll' : 'invested';
+        const invPrev = pp[lineKey], invCurr = pc[lineKey];
         const okSeries = invPrev != null && invCurr != null && isFinite(invPrev) && isFinite(invCurr) && invPrev > 0 && invCurr > 0;
         const r = okSeries ? (invCurr / invPrev - 1) : 0;
         if (Math.abs(r) < 1e-12) { steps[i] = { r: 0, c: null, o: 0 }; continue; }
@@ -7601,15 +7672,17 @@ function buildContribSteps(performanceChart, benchmarkTimeline, perfLedger) {
             const tk = t.instrument && t.instrument.ticker;
             if (tk && tk !== 'UNTICKERED') cf[tk] = (cf[tk] || 0) + f;
         }
-        const prevInv = pRow.holdingsValue + (pRow.untickeredValue || 0);
-        const currInv = cRow.holdingsValue + (cRow.untickeredValue || 0);
+        // Restricted flows: end of step (weight 0), as in the line.
+        for (const k in (pc.rFlow || {})) { cf[k] = (cf[k] || 0) + pc.rFlow[k]; netCF += pc.rFlow[k]; }
+        const prevInv = pRow.holdingsValue + (pRow.untickeredValue || 0) + rSum(pp);
+        const currInv = cRow.holdingsValue + (cRow.untickeredValue || 0) + rSum(pc);
         const denom = prevInv + wCF;
         if (!(denom > 1)) { steps[i] = { r, c: null, o: r }; continue; }
         const rawR = (currInv - prevInv - netCF) / denom;
         // If the line clamped this step (|r| capped at 50%), scale the holdings the same way; fall back to 1 on anything odd.
         let scale = Math.abs(rawR) > 1e-9 ? r / rawR : 1;
         if (!isFinite(scale) || scale <= 0 || scale > 5) scale = 1;
-        const prevBy = pRow.byTicker || {}, currBy = cRow.byTicker || {};
+        const prevBy = by[i - 1] || {}, currBy = by[i] || {};
         const keys = new Set([...Object.keys(prevBy), ...Object.keys(currBy), ...Object.keys(cf)]);
         const c = {};
         let sumC = 0;
@@ -7756,8 +7829,9 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
     const CH = SVG_H - PAD.top - PAD.bottom;
 
     const hasData = data && data.length >= 2;
-    // The line always shows the equity-only series (cash excluded, so cash never drags the return).
-    const yKey = mode === 'twr' ? 'invested' : 'investedRawValue';
+    // The line always shows the equity-only series (cash excluded, so cash never drags the return), with the restricted
+    // schemes in as HSBC (R) / Citi (R).
+    const yKey = mode === 'twr' ? 'investedAll' : 'investedAllRawValue';
     const values = hasData ? data.map(d => d[yKey]).filter(v => v != null && isFinite(v)) : [];
 
     // ── Aligned SPX series (display-only, same row spine as portfolio) ─────────
@@ -8101,7 +8175,8 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
                     React.createElement('span', { style: { display: 'flex', alignItems: 'baseline', gap: 5, minWidth: 0, paddingLeft: 3 + (indent || 0) } },
                         React.createElement('span', { style: { fontFamily: mono, fontSize: 12, fontWeight: 700, color: C.amber,
                             opacity: r.sold ? 0.55 : 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, label),
-                        r.sold ? React.createElement('span', { style: { fontFamily: sys, fontSize: 9, fontStyle: 'italic', color: C.zinc700, flexShrink: 0 } }, 'sold') : null
+                        r.sold ? React.createElement('span', { style: { fontFamily: sys, fontSize: 9, fontStyle: 'italic', color: C.zinc700, flexShrink: 0 } },
+                            / \(R\)$/.test(r.tk) ? 'vested' : 'sold') : null
                     ),
                     numCell(fmtPPn(r.c), pos ? C.emerald : C.rose),
                     retCell(r)
@@ -8646,7 +8721,9 @@ const InsightsPanel = React.memo(function InsightsPanel({ data, privacyMode, las
                 React.createElement('div', { style: {
                     fontFamily: mono, fontSize: velocityTickerSize, color: col,
                     minWidth: 0, overflow: 'hidden', textOverflow: 'clip', whiteSpace: 'nowrap',
-                } }, velocityCode(mover)),
+                } }, velocityCode(mover),
+                    // A restricted position keeps its (R), set smaller so the tile still fits.
+                    mover.isRestrictedPosition && React.createElement('span', { style: { fontSize: '0.7em', marginLeft: 2 } }, '(R)')),
                 React.createElement('div', { style: {
                     fontFamily: sys, fontSize: pctSize, lineHeight: 1.2, fontWeight: 700,
                     fontVariantNumeric: 'tabular-nums', letterSpacing: '-0.02em',
@@ -14209,6 +14286,13 @@ function PortfolioApp() {
             // rawValue, portfolioIndex, investedIndex and all benchmark indices are
             // left strictly unmodified; these two fields are purely additive.
             const compMap = new Map(consolidatedTimeline.map(p => [p.date, p]));
+            // ── investedAll: the chart's line. The same invested-only chain with the restricted schemes added as
+            // positions (HSBC (R), Citi (R)): their price moves count as return; grants arriving, tranches vesting out
+            // and Sharesave contributions are flows (restrictedChartFlows), booked at the end of the step. `invested`
+            // itself stays ledger-only for the stats that compare it with the cash-inclusive return.
+            let investedAllIndex = 100;
+            let prevRP = null;
+            let investedAllAnchorValue = 0;
             const result = [];
             for (let i = 0; i < filtered.length; i++) {
                 const row = filtered[i];
@@ -14223,12 +14307,16 @@ function PortfolioApp() {
                     const base = benchBase[b.id];
                     benchSeries[`bench_${b.id}`] = (px != null && base != null && base > 0) ? (px / base) * 100 : null;
                 }
+                const rp = restrictedChartPoint((compMap.get(row.date) || {}).planDetails, row.date);
+                const investedAllValue = investedValue + rp.total;
                 if (i === 0) {
                     const c0 = compMap.get(row.date) || {};
+                    investedAllAnchorValue = investedAllValue;
+                    prevRP = rp;
                     // benchmark at the anchor row: 100 (the first row with an S&P close on or before it).
                     const _b0x = _benchFor(row.date);
                     const _b0 = _b0x.benchmark;
-                    result.push(Object.assign({ date: row.date, portfolio: 100, invested: investedValue > 0 ? 100 : null, benchmark: _b0, spxNative: _b0x.spxNative, spxGbp: _b0x.spxGbp, spxSourceDate: _b0x.spxSourceDate, spxStale: _b0x.spxStale, rawValue: row.portfolioValue, investedRawValue: investedValue, contributed: row.contributed, liquidNetWorthValue: c0.liquidNetWorth != null ? c0.liquidNetWorth : (row.portfolioValue || 0), totalWealthValue: c0.totalNetWorth != null ? c0.totalNetWorth : (row.portfolioValue || 0) }, benchSeries));
+                    result.push(Object.assign({ date: row.date, portfolio: 100, invested: investedValue > 0 ? 100 : null, benchmark: _b0, spxNative: _b0x.spxNative, spxGbp: _b0x.spxGbp, spxSourceDate: _b0x.spxSourceDate, spxStale: _b0x.spxStale, rawValue: row.portfolioValue, investedRawValue: investedValue, contributed: row.contributed, liquidNetWorthValue: c0.liquidNetWorth != null ? c0.liquidNetWorth : (row.portfolioValue || 0), totalWealthValue: c0.totalNetWorth != null ? c0.totalNetWorth : (row.portfolioValue || 0), investedAll: investedAllValue > 0 ? 100 : null, investedAllRawValue: investedAllValue, rBy: rp.by, rPx: rp.px, rFlow: {}, rFlowTotal: 0 }, benchSeries));
                     continue;
                 }
                 const prev = filtered[i - 1];
@@ -14318,11 +14406,24 @@ function PortfolioApp() {
                 else if (investedDenom > 1) {
                     investedIndex *= (1 + investedR);
                 }
+                // investedAll: same step with the restricted positions in (see above).
+                const rFl = restrictedChartFlows(prevRP, rp);
+                const prevInvestedAllValue = prevInvestedValue + prevRP.total;
+                const investedAllDenom = prevInvestedAllValue + weightedInvestedCF;
+                let investedAllR = 0;
+                if (investedAllDenom > 1) {
+                    investedAllR = (investedAllValue - prevInvestedAllValue - netInvestedCF - rFl.total) / investedAllDenom;
+                    if (investedAllR < -0.5) investedAllR = -0.5;
+                    if (investedAllR > 0.5) investedAllR = 0.5;
+                }
+                if (investedAllAnchorValue <= 0 && investedAllValue > 0) investedAllAnchorValue = investedAllValue;
+                else if (investedAllDenom > 1) investedAllIndex *= (1 + investedAllR);
+                prevRP = rp;
                 const c = compMap.get(row.date) || {};
                 // benchmark: S&P 500 in GBP at this row (latest close on or before the row date), rebased to 100 at the first row.
                 const _rowX = _benchFor(row.date);
                 const _rowBench = _rowX.benchmark;
-                result.push(Object.assign({ date: row.date, portfolio: portfolioIndex, invested: investedValue > 0 ? investedIndex : null, benchmark: _rowBench, spxNative: _rowX.spxNative, spxGbp: _rowX.spxGbp, spxSourceDate: _rowX.spxSourceDate, spxStale: _rowX.spxStale, rawValue: row.portfolioValue, investedRawValue: investedValue, contributed: row.contributed, liquidNetWorthValue: c.liquidNetWorth != null ? c.liquidNetWorth : (row.portfolioValue || 0), totalWealthValue: c.totalNetWorth != null ? c.totalNetWorth : (row.portfolioValue || 0) }, benchSeries));
+                result.push(Object.assign({ date: row.date, portfolio: portfolioIndex, invested: investedValue > 0 ? investedIndex : null, benchmark: _rowBench, spxNative: _rowX.spxNative, spxGbp: _rowX.spxGbp, spxSourceDate: _rowX.spxSourceDate, spxStale: _rowX.spxStale, rawValue: row.portfolioValue, investedRawValue: investedValue, contributed: row.contributed, liquidNetWorthValue: c.liquidNetWorth != null ? c.liquidNetWorth : (row.portfolioValue || 0), totalWealthValue: c.totalNetWorth != null ? c.totalNetWorth : (row.portfolioValue || 0), investedAll: investedAllValue > 0 ? investedAllIndex : null, investedAllRawValue: investedAllValue, rBy: rp.by, rPx: rp.px, rFlow: rFl.flow, rFlowTotal: rFl.total }, benchSeries));
             }
             return result;
         }, [benchmarkTimeline, perfLedger, startDate, endDate, consolidatedTimeline, prices, livePrices, liveQuoteSessionDates, resolvedPricesMap, spxGbpSeries]);
@@ -14729,7 +14830,7 @@ function PortfolioApp() {
             const pc = performanceChart, last = pc.length - 1;
             const res = contribForRange(pc[0].date, pc[last].date);
             if (!res) return null;
-            const plotted = pc[last].invested / pc[0].invested - 1;
+            const plotted = pc[last].investedAll / pc[0].investedAll - 1;
             const sum = res.rows.reduce((t, r) => t + r.c, 0) + res.other;
             let bigOther = 0;
             for (let i = 1; i <= last; i++) if (Math.abs(perfContribSteps.steps[i].o) > 0.002) bigOther++;
@@ -15158,7 +15259,7 @@ function PortfolioApp() {
             const ledgerPrev      = ledgerTotal - (ledgerTodayAbs || 0);
             const ledger = { totalValue: ledgerTotal, todayAbsChange: ledgerTodayAbs,
                              todayPctChange: (ledgerTodayAbs != null && ledgerPrev > 0) ? ledgerTodayAbs / ledgerPrev : null };
-            return { totalValue, totalInvested, todayAbsChange: hasTodayData ? todayAbsChange : null, todayPctChange, unrealisedPL, totalPctChange, ledger, custodyValue };
+            return { totalValue, totalInvested, todayAbsChange: hasTodayData ? todayAbsChange : null, todayPctChange, unrealisedPL, totalPctChange, netCost, ledger, custodyValue };
         }, [accountGroups, activeHoldingsWithDelta]);
 
         // ── Track B Parity Sentinel (Spec §IV 2.5 item 2) ──────────────────────────
@@ -15170,6 +15271,13 @@ function PortfolioApp() {
             return Math.abs(masterPortfolio.totalValue - rollup);
         }, [masterPortfolio.totalValue, accountGroups]);
         const hasParityMismatch = parityDelta > 0.01;
+
+        // ── Restricted positions: HSBC (R) / Citi (R) ─────────────────────────────
+        // One row per share the restricted schemes are on, with today's move. Feeds the hero's Today and Daily Insights.
+        const restrictedPositions = React.useMemo(() => computeRestrictedPositions({
+            currentCompState, livePrices, tickerCurrencyMap, gbpusdRate,
+            liveAt, liveDailyCloses, liveQuoteSessionDates, latestSession,
+        }), [currentCompState, livePrices, tickerCurrencyMap, gbpusdRate, liveAt, liveDailyCloses, liveQuoteSessionDates, latestSession]);
 
         // ── Phase 3: Insights data ───────────────────────────────────────────────
         // Spec §IV Phase 3: Core Weight Concentration, ΔP×U Cash Contributors, Velocity Margins.
@@ -15264,7 +15372,10 @@ function PortfolioApp() {
 
             // 2. ΔP × U contributors — every holding with a move, sorted by absolute £ change. A holding behind the latest
             // session already has no Today (withLatestSessionToday), so the rows here and the hero total are on the same session.
-            const withToday = holdings.filter(h => h.todayAbsChange != null);
+            // The restricted schemes join as HSBC (R) / Citi (R) once their share has a move today; they count in the hero's
+            // Today too. They are never the dominant position (that is about the holdings you can trade).
+            const withToday = holdings.filter(h => h.todayAbsChange != null)
+                .concat(restrictedPositions.filter(h => h.todayAbsChange != null));
             const contributors = [...withToday]
                 .sort((a, b) => Math.abs(b.todayAbsChange) - Math.abs(a.todayAbsChange));
 
@@ -15314,7 +15425,7 @@ function PortfolioApp() {
                 giltCount: withToday.filter(h => h._giltLike).length,
                 return12mAbs, return12mPct,
             };
-        }, [activeHoldingsWithDelta, masterPortfolio, resolvedPricesMap, tickerCurrencyMap]);
+        }, [activeHoldingsWithDelta, masterPortfolio, resolvedPricesMap, tickerCurrencyMap, restrictedPositions]);
 
         // ── Per-ticker drill-down detail ─────────────────────────────────────────
         // Builds full trade history + a price line with buy/sell markers for the selected ticker.
@@ -16795,6 +16906,7 @@ function PortfolioApp() {
             const twrBase     = base[0].portfolio  || 100;
             const benchBase   = (base.find(p => p.benchmark != null && p.benchmark > 0) || {}).benchmark || null;   // first row that has a benchmark
             const investedBase = base[0].invested  || 100;
+            const investedAllBase = base[0].investedAll || 100;
             // Collect bases for secondary benchmark overlays (bench_<id> keys)
             const secondaryBases = {};
             Object.keys(base[0]).forEach(k => {
@@ -16806,6 +16918,7 @@ function PortfolioApp() {
                     portfolio: twrBase     > 0 ? (p.portfolio  / twrBase)     * 100 : p.portfolio,
                     benchmark: (p.benchmark != null && benchBase > 0) ? (p.benchmark / benchBase) * 100 : null,
                     invested:  investedBase > 0 ? (p.invested  / investedBase) * 100 : p.invested,
+                    investedAll: (p.investedAll != null && investedAllBase > 0) ? (p.investedAll / investedAllBase) * 100 : p.investedAll,
                 };
                 Object.keys(secondaryBases).forEach(k => {
                     const bBase = secondaryBases[k];
@@ -16920,6 +17033,30 @@ function PortfolioApp() {
                 liveQuoteSessionDates, latestSession,
             });
         }, [currentCompState, livePrices, liveDailyCloses, liveQuoteSessionDates, tickerCurrencyMap, gbpusdRate, prices, liveStatus, liveAt, latestSession]);
+
+        // ── Hero: one total, restricted capital included ────────────────────────
+        // Value = portfolio + restricted capital + modelled vested comp (the old "Total Wealth" line).
+        // Today = the portfolio's Today + the HSBC (R) / Citi (R) moves, % against the previous total (the same
+        //         convention as the portfolio's own Today: value minus today's move).
+        // Total = the portfolio's gain + the restricted card's Total (value less grant / purchase basis), % against the
+        //         portfolio's net cost + that basis. When the restricted Total is unknown ("—" on the card) it is left out.
+        const heroCombined = React.useMemo(() => {
+            const cs = currentCompState || {};
+            const value = (masterPortfolio.totalValue || 0) + (cs.currentLiquidComp || 0) + (cs.currentRestrictedComp || 0);
+            let rAbs = 0, rKnown = 0;
+            for (const p of restrictedPositions) if (p.todayAbsChange != null) { rAbs += p.todayAbsChange; rKnown++; }
+            const todayAbs = (heroTodayPnl.abs == null && rKnown === 0) ? null : (heroTodayPnl.abs || 0) + rAbs;
+            const prevTotal = todayAbs != null ? value - todayAbs : null;
+            const todayPct = todayAbs != null && prevTotal > 0 ? todayAbs / prevTotal : null;
+            let totalAbs = masterPortfolio.unrealisedPL, basis = masterPortfolio.netCost || 0;
+            const rPnl = cs.currentRestrictedPerformancePnL;
+            if (rPnl != null && Number.isFinite(rPnl) && cs.currentRestrictedPerformanceBasis > 0) {
+                totalAbs = (totalAbs || 0) + rPnl;
+                basis += cs.currentRestrictedPerformanceBasis;
+            }
+            const totalPct = totalAbs != null && basis > 0 ? totalAbs / basis : null;
+            return { value, todayAbs, todayPct, totalAbs, totalPct };
+        }, [masterPortfolio, currentCompState, restrictedPositions, heroTodayPnl]);
 
         // ─── RENDER ───────────────────────────────────────────────────────────
         // Spec §II.2: native iOS typography engine for all financial data and labels.
@@ -17355,11 +17492,12 @@ function PortfolioApp() {
                 React.createElement('div', { style: { marginBottom: 12 } },
                     React.createElement(HeroCard, {
                         onTap: () => { if (transactions.length > 0) { setSheetContext('all'); setSheetSearch(''); } },
-                        onSegmentTap: (acctName) => { setSheetContext(acctName); setSheetSearch(''); },
-                        transactions, masterPortfolio, sheetContext, liveStatus, privacyMode, accountGroups,
-                        currentCompState, processedExternalHoldings,
-                        heroTodayAbs: heroTodayPnl.abs,
-                        heroTodayPct: heroTodayPnl.pct,
+                        transactions, masterPortfolio, sheetContext, liveStatus, privacyMode,
+                        heroValue: heroCombined.value,
+                        heroTodayAbs: heroCombined.todayAbs,
+                        heroTodayPct: heroCombined.todayPct,
+                        heroTotalAbs: heroCombined.totalAbs,
+                        heroTotalPct: heroCombined.totalPct,
                     })
                 ),
 
