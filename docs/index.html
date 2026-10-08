@@ -10963,11 +10963,12 @@ function mktBuildSourceLine(row) {
 }
 
 // Compact move: drops the % sign for pctReturn rows (colour + sign are enough
-// in the table context), keeps bp suffix for rates rows.
-function mktFmtCompact(row, value, decimals) {
+// in the table context). Rates keep the bp suffix unless noUnit is set — the
+// Markets table passes it because its column headers already say "bp".
+function mktFmtCompact(row, value, decimals, noUnit) {
     if (value == null || !Number.isFinite(value)) return '\u2014';
     if (row.displayKind === 'bpChange') {
-        return (value >= 0 ? '+' : '') + Math.round(value) + 'bp';
+        return (value >= 0 ? '+' : '') + Math.round(value) + (noUnit ? '' : 'bp');
     }
     if (row.displayKind === 'ptChange') return (value >= 0 ? '+' : '') + value.toFixed(2);
     var dp = (decimals != null) ? decimals : 1;
@@ -11594,13 +11595,15 @@ function MarketOverviewScreen({ onClose, rows, status, updatedAt, error, onRefre
             key: 'hdr-' + sec.name,
             style: { display: 'flex', flexDirection: 'column' }
         },
-            // Section label
+            // Section label — a title-case heading on a tinted band, so it reads as a different kind of line from the
+            // uppercase ticker codes below it (same-size uppercase bold looked like just another row).
             React.createElement('div', {
-                style: { padding: '10px 20px 2px' }
+                style: { padding: '14px 20px 4px', marginTop: 8, background: C.surfaceHigh,
+                         borderTop: '1px solid ' + C.border }
             },
                 React.createElement('span', {
-                    style: { fontFamily: sys, fontSize: 12, color: C.zinc400,
-                             textTransform: 'uppercase', letterSpacing: '0.1em', fontWeight: 700 }
+                    style: { fontFamily: sys, fontSize: 17, color: C.white,
+                             letterSpacing: '-0.01em', fontWeight: 700 }
                 }, sec.name)
             ),
             // Column header
@@ -11608,7 +11611,7 @@ function MarketOverviewScreen({ onClose, rows, status, updatedAt, error, onRefre
                 style: {
                     display: 'grid', gridTemplateColumns: MKT_GRID,
                     padding: MKT_GRID_PAD, gap: '0 4px', alignItems: 'baseline',
-                    borderBottom: '1px solid rgba(255,255,255,0.06)',
+                    background: C.surfaceHigh, borderBottom: '1px solid ' + C.border,
                 }
             },
                 React.createElement('span', { style: { fontFamily: sys, fontSize: 9, color: C.zinc700 } }, ''),
@@ -11769,25 +11772,25 @@ function MarketOverviewScreen({ onClose, rows, status, updatedAt, error, onRefre
                     style: { fontFamily: rounded, fontSize: 13, fontWeight: 400, letterSpacing: '-0.02em',
                              color: hasDay ? mktMoveColor(row, row.day) : C.zinc700,
                              textAlign: 'right', fontVariantNumeric: 'tabular-nums' }
-                }, hasDay ? mktFmtCompact(row, row.day, 2) : '\u2014'),
+                }, hasDay ? mktFmtCompact(row, row.day, 2, true) : '\u2014'),
                 // Col 5: 1M
                 React.createElement('span', {
                     style: { fontFamily: rounded, fontSize: 13, fontWeight: 400, letterSpacing: '-0.02em',
                              color: hasM1 ? mktMoveColor(row, row.m1) : C.zinc700,
                              textAlign: 'right', fontVariantNumeric: 'tabular-nums' }
-                }, hasM1 ? mktFmtCompact(row, row.m1, 1) : '\u2014'),
+                }, hasM1 ? mktFmtCompact(row, row.m1, 1, true) : '\u2014'),
                 // Col 6: YTD
                 React.createElement('span', {
                     style: { fontFamily: rounded, fontSize: 13, fontWeight: 400, letterSpacing: '-0.02em',
                              color: hasYTD ? mktMoveColor(row, row.ytd) : C.zinc700,
                              textAlign: 'right', fontVariantNumeric: 'tabular-nums' }
-                }, hasYTD ? mktFmtCompact(row, row.ytd, 1) : '\u2014'),
+                }, hasYTD ? mktFmtCompact(row, row.ytd, 1, true) : '\u2014'),
                 // Col 7: 12M
                 React.createElement('span', {
                     style: { fontFamily: rounded, fontSize: 13, fontWeight: 400, letterSpacing: '-0.02em',
                              color: hasY1 ? mktMoveColor(row, row.y1) : C.zinc700,
                              textAlign: 'right', fontVariantNumeric: 'tabular-nums' }
-                }, hasY1 ? mktFmtCompact(row, row.y1, 1) : '\u2014')
+                }, hasY1 ? mktFmtCompact(row, row.y1, 1, true) : '\u2014')
             ),
 
             // ── Compact degraded detail (degraded rows only, tap to expand) ──
