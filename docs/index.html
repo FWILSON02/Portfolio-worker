@@ -11573,7 +11573,6 @@ function MarketOverviewScreen({ onClose, rows, status, updatedAt, error, onRefre
     // ticker | last | chip | 1D | 1M | YTD | 12M. The four move columns are minmax(0,1fr) so they share what is left and can
     // never widen the row past the screen.
     var MKT_GRID = '56px minmax(54px,auto) 22px repeat(4, minmax(0, 1fr))';
-    var MKT_GRID_PAD = '6px 20px';
 
     function mktStatusChipColor(kind) {
         var map = {
@@ -11598,7 +11597,7 @@ function MarketOverviewScreen({ onClose, rows, status, updatedAt, error, onRefre
             // Section label — a title-case heading on a tinted band, so it reads as a different kind of line from the
             // uppercase ticker codes below it (same-size uppercase bold looked like just another row).
             React.createElement('div', {
-                style: { padding: '14px 20px 4px', marginTop: 8, background: C.surfaceHigh,
+                style: { padding: '7px 20px 0', background: C.surfaceHigh,
                          borderTop: '1px solid ' + C.border }
             },
                 React.createElement('span', {
@@ -11610,7 +11609,7 @@ function MarketOverviewScreen({ onClose, rows, status, updatedAt, error, onRefre
             React.createElement('div', {
                 style: {
                     display: 'grid', gridTemplateColumns: MKT_GRID,
-                    padding: MKT_GRID_PAD, gap: '0 4px', alignItems: 'baseline',
+                    padding: '1px 20px 4px', gap: '0 4px', alignItems: 'baseline',
                     background: C.surfaceHigh, borderBottom: '1px solid ' + C.border,
                 }
             },
