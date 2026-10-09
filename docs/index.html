@@ -4793,9 +4793,9 @@ function mergeHistorySeries(existing, weeklyRows, dailyRows) {
 
 // cleanHistorySeries: removes bars that are data errors, never real moves.
 //   unit-flip — bars on a different unit scale (~×100 / ÷100) from most of the series
-//   spike     — an isolated reversal: moves in AND out both beyond the instrument's
-//               plausibility ceiling, in opposite directions, with the bars either
-//               side within half the ceiling of each other
+//   spike     — an isolated bar beyond the instrument's plausibility ceiling from BOTH
+//               neighbouring bars, in the same direction, with the bars either side
+//               within half the ceiling of each other
 //   disagrees-with-<provider> — where a second source's cached closes cover the
 //               dates, BOTH the return into and out of the bar differ from the
 //               second source's returns by more than its tolerance. Returns, not
@@ -4857,8 +4857,11 @@ function cleanHistorySeries(rows, profile, altRows, altName) {
     for (let i = 0; i < pass2.length; i++) {
         const prev = out[out.length - 1], cur = pass2[i], next = pass2[i + 1];
         if (prev && next) {
-            const mIn = cur.close / prev.close - 1, mOut = next.close / cur.close - 1, net = next.close / prev.close - 1;
-            if (Math.abs(mIn) > lim && Math.abs(mOut) > lim && Math.sign(mIn) !== Math.sign(mOut) && Math.abs(net) < lim / 2) {
+            // Both legs measured from the suspect bar, as mktAnchorIsSpike does. Measured as the move in and the move out,
+            // the way back down from a bad high print is always smaller (+34% in is only -25% out), so XSPX.L's bad
+            // 24 Oct 2025 print (+34.6% in, -24.3% out) slipped under the 25% ceiling and stayed in the history.
+            const vsPrev = cur.close / prev.close - 1, vsNext = cur.close / next.close - 1, net = next.close / prev.close - 1;
+            if (Math.abs(vsPrev) > lim && Math.abs(vsNext) > lim && Math.sign(vsPrev) === Math.sign(vsNext) && Math.abs(net) < lim / 2) {
                 dropped.push({ date: cur.date, close: cur.close, reason: 'spike' });
                 continue;
             }
