@@ -8051,12 +8051,17 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
         const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(ds || '');
         return m ? (+m[3]) + ' ' + _MONTHS[+m[2] - 1] + ' ' + m[1].slice(2) : (ds || '');
     }
-    // Length of a selected range for the "(23d)" / "(9m)" tag after its dates: calendar days under two months, whole months after.
+    // A length of time as "23d" / "9m" / "2.4y": calendar days under two months, rounded months under a year, years after.
+    // Used by both the range header and the Held return rows, so a holding held for the whole window shows the same length.
+    function fmtSpanDays(days) {
+        days = Math.round(days);
+        return days < 60 ? Math.max(1, days) + 'd' : days < 365 ? Math.round(days / 30.4375) + 'm' : (days / 365.25).toFixed(1) + 'y';
+    }
+    // Length of a selected range for the "(23d)" / "(9m)" tag after its dates.
     function fmtRangeSpan(a, b) {
         const ta = Date.parse(String(a || '').slice(0, 10) + 'T12:00:00Z'), tb = Date.parse(String(b || '').slice(0, 10) + 'T12:00:00Z');
         if (!Number.isFinite(ta) || !Number.isFinite(tb) || tb < ta) return '';
-        const days = Math.round((tb - ta) / 86400000);
-        return days < 60 ? days + 'd' : Math.round(days / 30.4375) + 'm';
+        return fmtSpanDays((tb - ta) / 86400000);
     }
 
     function fmtXLabel(dateStr) {
@@ -8115,7 +8120,6 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
             if (n === 0) n = 0;
             return (n >= 0 ? '+' : '') + n.toFixed(dp) + '%';
         };
-        const fmtFor = d => d >= 365 ? (d / 365.25).toFixed(1) + 'y' : d >= 45 ? Math.floor(d / 30.4375) + 'm' : Math.max(1, Math.round(d)) + 'd';   // months rounded down: "12m" never appears without a /yr
         const cols = 'minmax(0, 1.05fr) 0.85fr 1.8fr';
         const hdrCell = (txt, right) => React.createElement('span', { style: {
             fontFamily: sys, fontSize: 9, fontWeight: 600, color: C.zinc600, textTransform: 'uppercase',
@@ -8169,7 +8173,7 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
         const maxAbs = Math.max.apply(null, T.rows.map(r => Math.abs(r.c)).concat([1e-9]));
         const retCell = r => {
             if (r.held == null) return numCell('\u2014', C.zinc700, { fontSize: 11, fontWeight: 600 });
-            const dur = fmtFor(r.heldDays);
+            const dur = fmtSpanDays(r.heldDays);
             return r.pa != null
                 ? numCell(fmtPctN(r.pa, 1) + '/yr \u00b7 ' + dur, C.zinc400, { fontSize: 11, fontWeight: 600 })
                 : numCell(fmtPctN(r.held, 1) + ' \u00b7 ' + dur, C.zinc600, { fontSize: 11, fontWeight: 500 });
