@@ -8115,7 +8115,9 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
             if (n === 0) n = 0;
             return (n >= 0 ? '+' : '') + n.toFixed(dp) + '%';
         };
-        const fmtFor = d => d >= 365 ? (d / 365.25).toFixed(1) + 'y' : d >= 45 ? Math.floor(d / 30.4375) + 'm' : Math.max(1, Math.round(d)) + 'd';   // months rounded down: "12m" never appears without a /yr
+        // Months rounded the same way as the header's span (fmtRangeSpan), so a holding held for the whole window shows
+        // the window's length ("12m" for 13 Oct -> 9 Oct, not "11m", which read as a shorter holding period).
+        const fmtFor = d => d >= 365 ? (d / 365.25).toFixed(1) + 'y' : d >= 45 ? Math.round(d / 30.4375) + 'm' : Math.max(1, Math.round(d)) + 'd';
         const cols = 'minmax(0, 1.05fr) 0.85fr 1.8fr';
         const hdrCell = (txt, right) => React.createElement('span', { style: {
             fontFamily: sys, fontSize: 9, fontWeight: 600, color: C.zinc600, textTransform: 'uppercase',
