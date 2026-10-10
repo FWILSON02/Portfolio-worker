@@ -7828,12 +7828,12 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
     const [prevPinDate, setPrevPinDate] = React.useState(null);   // the press before the pinned one (for "vs last press")
     const [cmpMode, setCmpMode] = React.useState('start');        // 'start' = window start -> day, 'prev' = last press <-> day
     const [otherOpen, setOtherOpen] = React.useState(false);      // "Other (n)" expanded
-    const [selTk, setSelTk] = React.useState(null);               // holding drawn instead of the portfolio (tap a table row)
+    const [sel, setSel] = React.useState([]);                      // holdings drawn instead of the portfolio: [{ tk, slot }]
     const lastScrubRef = React.useRef(null);
     const lastTouchRef = React.useRef(0);                         // when a finger last touched the chart (see touchedRecently)
     const pinRef = React.useRef(null);
     pinRef.current = pinDate;
-    const hideTable = () => { setTableOpen(false); setPinDate(null); setPrevPinDate(null); setCmpMode('start'); setOtherOpen(false); setSelTk(null); setScrubIdx(null); lastScrubRef.current = null; };
+    const hideTable = () => { setTableOpen(false); setPinDate(null); setPrevPinDate(null); setCmpMode('start'); setOtherOpen(false); setSel([]); setScrubIdx(null); lastScrubRef.current = null; };
     // iPhone Safari follows every tap with emulated mouse events. On the chart those used to re-start a "scrub" right after
     // the finger lifted (the crosshair stuck on), and the next tap anywhere else then made Safari fire mouseleave on the chart,
     // which changed the page, and Safari drops the click when a mouse event changes the page. That is how a tap on the x or
@@ -7877,14 +7877,32 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
     // The line always shows the equity-only series (cash excluded, so cash never drags the return), with the restricted
     // schemes in as HSBC (R) / Citi (R).
     const yKey = mode === 'twr' ? 'investedAll' : 'investedAllRawValue';
-    // Tapping a holding in the table swaps the line for that holding's own price line over the same window (% mode, table
-    // open), so it can be read against the S&P. The table, its Portfolio figure and the line colour stay the portfolio's.
-    const holdVals = (selTk && tableOpen && mode === 'twr' && hasData && contribFn && typeof contribFn.holdingSeries === 'function')
-        ? contribFn.holdingSeries(selTk, data.map(d => d.date)) : null;
-    const showHold = !!holdVals;
+    // Tapping holdings in the table (up to three) swaps the portfolio line for each holding's own price line over the same
+    // window (% mode, table open), so they can be read against the S&P. The table, its Portfolio figure and the line colour
+    // stay the portfolio's, and the portfolio stays on the chart as a dashed grey line (the same grey as its label above the
+    // table). Each holding keeps the colour slot it was given while it stays selected: slot 0 is the line colour (yellow, or
+    // red when the portfolio is down), then teal and fuchsia. Those two stay well apart from yellow, red, the S&P blue and
+    // the grey portfolio line; violet sits too close to the blue, pink and orange too close to the red, and an off-white
+    // third line read as a second neutral next to the grey portfolio.
+    const HOLD_MAX = 3;
+    const holdLines = (sel.length && tableOpen && mode === 'twr' && hasData && contribFn && typeof contribFn.holdingSeries === 'function')
+        ? sel.slice().sort((a, b) => a.slot - b.slot)
+            .map(s => ({ tk: s.tk, slot: s.slot, vals: contribFn.holdingSeries(s.tk, data.map(d => d.date)) }))
+            .filter(l => l.vals)
+        : [];
+    const showHold = holdLines.length > 0;
+    const holdVals = showHold ? holdLines[0].vals : null;           // the first line: area fill, chip, markers
     const lineV = i => (showHold ? holdVals[i] : (data[i] ? data[i][yKey] : null));
     const portValues = hasData ? data.map(d => d[yKey]).filter(v => v != null && isFinite(v)) : [];
     const values = showHold ? holdVals.filter(v => v != null && isFinite(v)) : portValues;
+    const scaleValues = showHold ? [].concat(portValues, ...holdLines.map(l => l.vals.filter(v => v != null && isFinite(v)))) : portValues;
+    const toggleSel = tk => setSel(cur => {
+        if (cur.some(s => s.tk === tk)) return cur.filter(s => s.tk !== tk);
+        if (cur.length >= HOLD_MAX) return cur.slice(1).concat([{ tk, slot: cur[0].slot }]);   // a fourth replaces the oldest
+        let slot = 0;
+        while (cur.some(s => s.slot === slot)) slot++;
+        return cur.concat([{ tk, slot }]);
+    });
 
     // ── Aligned SPX series (display-only, same row spine as portfolio) ─────────
     // Benchmark: S&P 500 in GBP (price only). It is read from the data rows, so it sits on exactly the same dates as the
@@ -7905,7 +7923,7 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
             return acc;
           }, [])
         : [];
-    const allScaleValues = [...values, ...benchValues];
+    const allScaleValues = [...scaleValues, ...benchValues];
 
     const yMin = allScaleValues.length ? Math.min(...allScaleValues) : 0;
     const yMax = allScaleValues.length ? Math.max(...allScaleValues) : 1;
@@ -7954,7 +7972,8 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
         : [];
 
     const linePath = pts.map(([x, y], i) => `${i === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`).join(' ');
-    const areaPath = pts.length >= 2
+    // With more than one holding drawn there is no fill, so no line looks more important than the others.
+    const areaPath = pts.length >= 2 && holdLines.length < 2
         ? `${linePath} L ${pts[pts.length-1][0].toFixed(1)} ${CH} L ${pts[0][0].toFixed(1)} ${CH} Z`
         : '';
 
@@ -8015,6 +8034,21 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
     const periodDelta = portValues[0] > 0 ? (portValues[portValues.length - 1] - portValues[0]) / portValues[0] : null;
     const isUp = periodDelta == null || periodDelta >= 0;
     const lineCol = isUp ? C.amber : C.rose;
+    const HOLD_COLS = [lineCol, '#2dd4bf', '#e879f9'];
+    // The portfolio, kept as a dashed grey line under the holdings while any are drawn.
+    const portPath = showHold ? data.reduce((acc, d, i) => {
+        const v = d[yKey];
+        if (v != null && isFinite(v)) acc.push((acc.length ? 'L ' : 'M ') + xP(i).toFixed(1) + ' ' + yP(v).toFixed(1));
+        return acc;
+    }, []).join(' ') : '';
+    const holdCol = slot => HOLD_COLS[slot] || lineCol;
+    // The other drawn holdings (after the first), with their paths and colours.
+    const extraLines = holdLines.slice(1).map(l => {
+        const p = [];
+        l.vals.forEach((v, i) => { if (v != null && isFinite(v)) p.push((p.length ? 'L ' : 'M ') + xP(i).toFixed(1) + ' ' + yP(v).toFixed(1)); });
+        return { tk: l.tk, vals: l.vals, col: holdCol(l.slot), path: p.join(' ') };
+    });
+    const firstCol = showHold ? holdCol(holdLines[0].slot) : lineCol;
     const gradId = `pcg${timeframe.replace(/[^a-z0-9]/gi,'_')}${mode}`;
 
     // Scrub
@@ -8069,8 +8103,8 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
     const displayAbs   = displayV != null && firstV != null ? displayV - firstV : null;
     // While pressing in "vs last press", the chip (like the pop-out) shows the compared range's move, not the window's
     // (the holding's, when one is drawn).
-    const holdSeg = (showHold && segActive && holdVals[loIdx] > 0 && holdVals[hiIdx] > 0) ? holdVals[hiIdx] / holdVals[loIdx] - 1 : null;
-    const segDelta = showHold ? holdSeg : (tableContrib ? tableContrib.total : null);
+    const segOf = vals => (segActive && vals[loIdx] > 0 && vals[hiIdx] > 0) ? vals[hiIdx] / vals[loIdx] - 1 : null;
+    const segDelta = showHold ? segOf(holdVals) : (tableContrib ? tableContrib.total : null);
     const displayDeltaShown = (scrubIdx != null && segActive && tableContrib && segDelta != null) ? segDelta : displayDelta;
     const shortTk = tk => (tk.length > 9 ? tk.slice(0, 8) + '\u2026' : tk);
 
@@ -8195,7 +8229,7 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
             gcell('pl', 2, 1, { fontFamily: mono, fontSize: 12, fontWeight: 700, color: showHold ? C.zinc600 : lineCol }, 'Portfolio'),
             gcell('pv', 3, 1, { fontFamily: mono, fontSize: 12, fontWeight: 700, color: showHold ? C.zinc600 : lineCol, textAlign: 'right',
                 fontVariantNumeric: 'tabular-nums' }, fmtPctN(T.total, 2)),
-            showHold ? React.createElement('button', { key: 'pback', onClick: () => setSelTk(null), 'aria-label': 'Show the portfolio line',
+            showHold ? React.createElement('button', { key: 'pback', onClick: () => setSel([]), 'aria-label': 'Show the portfolio line',
                 style: { gridColumn: '2 / span 2', gridRow: 1, alignSelf: 'stretch', margin: '-8px -4px', padding: 0, border: 'none',
                          background: 'transparent', cursor: 'pointer' } }) : null,
             React.createElement('button', {
@@ -8231,21 +8265,26 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
             const pos = r.c >= 0;
             const barPct = Math.max(2, Math.min(100, Math.round(Math.abs(r.c) / maxAbs * 100)));
             const label = shortTk(r.tk);
-            // Tap a holding to draw its own line instead of the portfolio's; tap it again (or the grey Portfolio) to go back.
+            // Tap holdings (up to three) to draw their own lines instead of the portfolio's; tap one again to drop it, or tap
+            // the grey Portfolio to go back. A drawn row is outlined in its line's colour and carries a swatch of it (the legend).
             const canPick = r.held != null && typeof contribFn.holdingSeries === 'function';
-            const picked = showHold && selTk === r.tk;
+            const pickedLine = holdLines.find(l => l.tk === r.tk);
+            const picked = !!pickedLine;
+            const pCol = picked ? holdCol(pickedLine.slot) : null;
             return React.createElement('div', { key: r.tk,
-                onClick: canPick ? () => setSelTk(t => (t === r.tk ? null : r.tk)) : undefined,
+                onClick: canPick ? () => toggleSel(r.tk) : undefined,
                 role: canPick ? 'button' : undefined, 'aria-pressed': canPick ? picked : undefined,
                 style: { position: 'relative', borderTop: i === 0 ? 'none' : '1px solid ' + C.border, cursor: canPick ? 'pointer' : 'default',
-                         borderRadius: 3, outline: picked ? '1px solid ' + C.amber + '99' : 'none', outlineOffset: 0, zIndex: picked ? 1 : 'auto',
-                         background: picked ? C.amber + '12' : 'transparent' } },
+                         borderRadius: 3, outline: picked ? '1px solid ' + pCol + '99' : 'none', outlineOffset: 0, zIndex: picked ? 1 : 'auto',
+                         background: picked ? pCol + '12' : 'transparent' } },
                 // faint bar: this row's size relative to the largest contributor shown
                 React.createElement('div', { style: { position: 'absolute', left: 0, top: 1, bottom: 1, width: barPct + '%',
                     background: (pos ? C.emerald : C.rose) + '1c', borderRadius: 3, pointerEvents: 'none' } }),
                 React.createElement('div', { style: { position: 'relative', display: 'grid', gridTemplateColumns: cols,
                     columnGap: 6, alignItems: 'center', padding: '7px 0' } },
                     React.createElement('span', { style: { display: 'flex', alignItems: 'baseline', gap: 5, minWidth: 0, paddingLeft: 3 + (indent || 0) } },
+                        picked ? React.createElement('span', { 'aria-hidden': true, style: { alignSelf: 'center', flexShrink: 0, width: 10, height: 3,
+                            borderRadius: 2, background: pCol } }) : null,
                         React.createElement('span', { style: { fontFamily: mono, fontSize: 12, fontWeight: 700, color: C.amber,
                             opacity: r.sold ? 0.55 : 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, label),
                         r.sold ? React.createElement('span', { style: { fontFamily: sys, fontSize: 9, fontStyle: 'italic', color: C.zinc700, flexShrink: 0 } },
@@ -8350,8 +8389,8 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
                   },
                     React.createElement('defs', null,
                         React.createElement('linearGradient', { id: gradId, x1: '0', y1: '0', x2: '0', y2: '1' },
-                            React.createElement('stop', { offset: '0%', stopColor: lineCol, stopOpacity: '0.25' }),
-                            React.createElement('stop', { offset: '85%', stopColor: lineCol, stopOpacity: '0.02' })
+                            React.createElement('stop', { offset: '0%', stopColor: firstCol, stopOpacity: '0.25' }),
+                            React.createElement('stop', { offset: '85%', stopColor: firstCol, stopOpacity: '0.02' })
                         ),
                         // Fade mask at left/right edges
                         React.createElement('linearGradient', { id: gradId + '_fade', x1: '0', y1: '0', x2: '1', y2: '0' },
@@ -8389,10 +8428,20 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
                         areaPath && React.createElement('path', {
                             d: areaPath, fill: `url(#${gradId})`, stroke: 'none',
                         }),
+                        // The portfolio, dashed grey, under the holdings
+                        portPath && React.createElement('path', {
+                            d: portPath, fill: 'none', stroke: C.zinc600, strokeWidth: 1.4,
+                            strokeDasharray: '5 3', strokeOpacity: 0.85, strokeLinejoin: 'round',
+                        }),
+                        // The other drawn holdings, under the first one
+                        extraLines.map(l => l.path && React.createElement('path', {
+                            key: 'hl_' + l.tk, d: l.path, fill: 'none',
+                            stroke: l.col, strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round',
+                        })),
                         // Line stroke
                         linePath && React.createElement('path', {
                             d: linePath, fill: 'none',
-                            stroke: lineCol, strokeWidth: 1.8,
+                            stroke: firstCol, strokeWidth: 1.8,
                             strokeLinecap: 'round', strokeLinejoin: 'round',
                         }),
                         // S&P 500 benchmark comparison (dashed blue, TWR only)
@@ -8422,7 +8471,7 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
                             }),
                             React.createElement('circle', {
                                 cx: xP(_cmpIdx), cy: yP(lineV(_cmpIdx)), r: 3.5,
-                                fill: lineCol, stroke: C.bg, strokeWidth: 2,
+                                fill: firstCol, stroke: C.bg, strokeWidth: 2,
                             })
                         ),
                         // Pinned day marker: shows which day the table below describes once the finger is lifted
@@ -8433,8 +8482,12 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
                             }),
                             React.createElement('circle', {
                                 cx: xP(pinIdx), cy: yP(lineV(pinIdx)), r: 3.5,
-                                fill: lineCol, stroke: C.bg, strokeWidth: 2,
-                            })
+                                fill: firstCol, stroke: C.bg, strokeWidth: 2,
+                            }),
+                            extraLines.map(l => l.vals[pinIdx] != null && React.createElement('circle', {
+                                key: 'pd_' + l.tk, cx: xP(pinIdx), cy: yP(l.vals[pinIdx]), r: 3.5,
+                                fill: l.col, stroke: C.bg, strokeWidth: 2,
+                            }))
                         ),
                         // Scrub crosshair + bubble
                         scrubX != null && scrubY != null && React.createElement('g', null,
@@ -8446,8 +8499,12 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
                             // Dot on line
                             React.createElement('circle', {
                                 cx: scrubX, cy: scrubY, r: 4,
-                                fill: lineCol, stroke: C.bg, strokeWidth: 2,
+                                fill: firstCol, stroke: C.bg, strokeWidth: 2,
                             }),
+                            extraLines.map(l => l.vals[scrubIdx] != null && React.createElement('circle', {
+                                key: 'sd_' + l.tk, cx: scrubX, cy: yP(l.vals[scrubIdx]), r: 4,
+                                fill: l.col, stroke: C.bg, strokeWidth: 2,
+                            })),
                             // Value tooltip bubble — shows portfolio + SPX in TWR mode
                             (() => {
                                 // SPX aligned point for this scrub index (TWR only)
@@ -8479,7 +8536,15 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
                                         : fmtTooltipDate(scrubPt.date))
                                     : '';
                                 const _portIdx = (_segOn && segDelta != null) ? 100 * (1 + segDelta) : scrubV;
-                                const _lineLbl = showHold ? shortTk(selTk) : 'Port';
+                                // One row per drawn line: the portfolio, or each holding in its own colour.
+                                const _rows = [{ lbl: showHold ? shortTk(holdLines[0].tk) : 'Port', col: firstCol, v: _portIdx }]
+                                    .concat(extraLines.map(l => {
+                                        const sd = _segOn ? segOf(l.vals) : null;
+                                        return { lbl: shortTk(l.tk), col: l.col, v: _segOn ? (sd != null ? 100 * (1 + sd) : null) : l.vals[scrubIdx] };
+                                    }))
+                                    .concat(showHold ? [{ lbl: 'Port', col: C.zinc600,
+                                        v: (_segOn && tableContrib) ? 100 * (1 + tableContrib.total) : scrubPt[yKey] }] : []);
+                                const _lblW = Math.max(...(_rows.map(r => r.lbl.length).concat([4])));
                                 const _spxIdxShown = (_segOn && spxRange != null) ? 100 * (1 + spxRange) : _spxBench;
                                 const _staleStr = _isStale
                                     ? 'as of ' + new Date(_scrubSpx.spxSourceDate + 'T00:00:00Z')
@@ -8488,7 +8553,8 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
 
                                 const bPad = 7;
                                 const bW   = _showSpx ? 160 : (mode === 'twr' ? 112 : 94);
-                                const bH   = _showSpx ? (_staleStr ? 64 : 52) : 34;
+                                const _xRows = (_rows.length - 1) * 14;
+                                const bH   = _showSpx ? (_staleStr ? 64 : 52) + _xRows : 34;
                                 let bx = scrubX + 8;
                                 if (bx + bW > W) bx = scrubX - bW - 8;
                                 bx = Math.max(0, bx);
@@ -8507,13 +8573,13 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
                                             fill: C.zinc500, fontSize: 9, fontFamily: sys,
                                             fontWeight: '500', dominantBaseline: 'middle',
                                         }, _dateStr),
+                                        _rows.map((r, k) => React.createElement('text', {
+                                            key: 'r' + k, x: bx + bPad, y: by + 25 + k * 14,
+                                            fill: r.col, fontSize: 10, fontFamily: mono,
+                                            fontWeight: '700', dominantBaseline: 'middle', style: { whiteSpace: 'pre' },
+                                        }, r.lbl.padEnd(_lblW) + '  ' + _fmtPct(r.v))),
                                         React.createElement('text', {
-                                            x: bx + bPad, y: by + 25,
-                                            fill: lineCol, fontSize: 10, fontFamily: mono,
-                                            fontWeight: '700', dominantBaseline: 'middle',
-                                        }, _lineLbl + '  ' + _fmtPct(_portIdx)),
-                                        React.createElement('text', {
-                                            x: bx + bPad, y: by + 39,
+                                            x: bx + bPad, y: by + 39 + _xRows,
                                             fill: C.blue, fontSize: 10, fontFamily: mono,
                                             fontWeight: '600', dominantBaseline: 'middle', opacity: 0.9,
                                         }, 'S&P \u00a3 ' + _fmtPct(_spxIdxShown) + '  ·  ' + _fmtIdx(_spxNative)),
@@ -8549,8 +8615,9 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
                     )
                 ),
 
-            // Period return chip (top-right overlay)
-            hasData && React.createElement('div', {
+            // Period return chip (top-right overlay). Left out while several holdings are drawn: one figure could not say
+            // which line it belongs to (the table's Held return and the pop-out give each one's).
+            hasData && extraLines.length === 0 && React.createElement('div', {
                 style: {
                     position: 'absolute', top: 2, right: 0,
                     fontFamily: sys, fontSize: 13, fontWeight: 700,
