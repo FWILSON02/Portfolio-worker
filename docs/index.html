@@ -7879,9 +7879,11 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
     const yKey = mode === 'twr' ? 'investedAll' : 'investedAllRawValue';
     // Tapping holdings in the table (up to three) swaps the portfolio line for each holding's own price line over the same
     // window (% mode, table open), so they can be read against the S&P. The table, its Portfolio figure and the line colour
-    // stay the portfolio's. Each holding keeps the colour slot it was given while it stays selected: slot 0 is the line
-    // colour (yellow, or red when the portfolio is down), then teal and off-white. Those two were picked to stay apart from
-    // yellow, red and the S&P blue for colour-blind readers too (violet and pink do not, against that blue and red).
+    // stay the portfolio's, and the portfolio stays on the chart as a dashed grey line (the same grey as its label above the
+    // table). Each holding keeps the colour slot it was given while it stays selected: slot 0 is the line colour (yellow, or
+    // red when the portfolio is down), then teal and fuchsia. Those two stay well apart from yellow, red, the S&P blue and
+    // the grey portfolio line; violet sits too close to the blue, pink and orange too close to the red, and an off-white
+    // third line read as a second neutral next to the grey portfolio.
     const HOLD_MAX = 3;
     const holdLines = (sel.length && tableOpen && mode === 'twr' && hasData && contribFn && typeof contribFn.holdingSeries === 'function')
         ? sel.slice().sort((a, b) => a.slot - b.slot)
@@ -7893,7 +7895,7 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
     const lineV = i => (showHold ? holdVals[i] : (data[i] ? data[i][yKey] : null));
     const portValues = hasData ? data.map(d => d[yKey]).filter(v => v != null && isFinite(v)) : [];
     const values = showHold ? holdVals.filter(v => v != null && isFinite(v)) : portValues;
-    const scaleValues = showHold ? [].concat(...holdLines.map(l => l.vals.filter(v => v != null && isFinite(v)))) : portValues;
+    const scaleValues = showHold ? [].concat(portValues, ...holdLines.map(l => l.vals.filter(v => v != null && isFinite(v)))) : portValues;
     const toggleSel = tk => setSel(cur => {
         if (cur.some(s => s.tk === tk)) return cur.filter(s => s.tk !== tk);
         if (cur.length >= HOLD_MAX) return cur.slice(1).concat([{ tk, slot: cur[0].slot }]);   // a fourth replaces the oldest
@@ -8032,7 +8034,13 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
     const periodDelta = portValues[0] > 0 ? (portValues[portValues.length - 1] - portValues[0]) / portValues[0] : null;
     const isUp = periodDelta == null || periodDelta >= 0;
     const lineCol = isUp ? C.amber : C.rose;
-    const HOLD_COLS = [lineCol, '#2dd4bf', '#f5f5f4'];
+    const HOLD_COLS = [lineCol, '#2dd4bf', '#e879f9'];
+    // The portfolio, kept as a dashed grey line under the holdings while any are drawn.
+    const portPath = showHold ? data.reduce((acc, d, i) => {
+        const v = d[yKey];
+        if (v != null && isFinite(v)) acc.push((acc.length ? 'L ' : 'M ') + xP(i).toFixed(1) + ' ' + yP(v).toFixed(1));
+        return acc;
+    }, []).join(' ') : '';
     const holdCol = slot => HOLD_COLS[slot] || lineCol;
     // The other drawn holdings (after the first), with their paths and colours.
     const extraLines = holdLines.slice(1).map(l => {
@@ -8420,6 +8428,11 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
                         areaPath && React.createElement('path', {
                             d: areaPath, fill: `url(#${gradId})`, stroke: 'none',
                         }),
+                        // The portfolio, dashed grey, under the holdings
+                        portPath && React.createElement('path', {
+                            d: portPath, fill: 'none', stroke: C.zinc600, strokeWidth: 1.4,
+                            strokeDasharray: '5 3', strokeOpacity: 0.85, strokeLinejoin: 'round',
+                        }),
                         // The other drawn holdings, under the first one
                         extraLines.map(l => l.path && React.createElement('path', {
                             key: 'hl_' + l.tk, d: l.path, fill: 'none',
@@ -8528,7 +8541,9 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
                                     .concat(extraLines.map(l => {
                                         const sd = _segOn ? segOf(l.vals) : null;
                                         return { lbl: shortTk(l.tk), col: l.col, v: _segOn ? (sd != null ? 100 * (1 + sd) : null) : l.vals[scrubIdx] };
-                                    }));
+                                    }))
+                                    .concat(showHold ? [{ lbl: 'Port', col: C.zinc600,
+                                        v: (_segOn && tableContrib) ? 100 * (1 + tableContrib.total) : scrubPt[yKey] }] : []);
                                 const _lblW = Math.max(...(_rows.map(r => r.lbl.length).concat([4])));
                                 const _spxIdxShown = (_segOn && spxRange != null) ? 100 * (1 + spxRange) : _spxBench;
                                 const _staleStr = _isStale
