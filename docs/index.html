@@ -7880,10 +7880,10 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
     // Tapping holdings in the table (up to three) swaps the portfolio line for each holding's own price line over the same
     // window (% mode, table open), so they can be read against the S&P. The table, its Portfolio figure and the line colour
     // stay the portfolio's, and the portfolio stays on the chart as a dashed grey line (the same grey as its label above the
-    // table). Each holding keeps the colour slot it was given while it stays selected: slot 0 is the line colour (yellow, or
-    // red when the portfolio is down), then teal and fuchsia. Those two stay well apart from yellow, red, the S&P blue and
-    // the grey portfolio line; violet sits too close to the blue, pink and orange too close to the red, and an off-white
-    // third line read as a second neutral next to the grey portfolio.
+    // table). Each holding keeps the colour slot it was given while it stays selected: teal, fuchsia, then orange. None of
+    // them is the portfolio's yellow (or its red when down), so yellow only ever means the portfolio, and all three stay well
+    // apart from each other, the S&P blue and the grey portfolio line. Violet sits too close to the blue, pink to the red,
+    // and an off-white line read as a second neutral next to the grey portfolio.
     const HOLD_MAX = 3;
     const holdLines = (sel.length && tableOpen && mode === 'twr' && hasData && contribFn && typeof contribFn.holdingSeries === 'function')
         ? sel.slice().sort((a, b) => a.slot - b.slot)
@@ -8034,7 +8034,7 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
     const periodDelta = portValues[0] > 0 ? (portValues[portValues.length - 1] - portValues[0]) / portValues[0] : null;
     const isUp = periodDelta == null || periodDelta >= 0;
     const lineCol = isUp ? C.amber : C.rose;
-    const HOLD_COLS = [lineCol, '#2dd4bf', '#e879f9'];
+    const HOLD_COLS = ['#2dd4bf', '#e879f9', '#f97316'];
     // The portfolio, kept as a dashed grey line under the holdings while any are drawn.
     const portPath = showHold ? data.reduce((acc, d, i) => {
         const v = d[yKey];
