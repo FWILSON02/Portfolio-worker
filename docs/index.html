@@ -8641,6 +8641,14 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
                 }
             }, 'Analyse'),
             React.createElement('span', { style: { flex: 1 } }),
+            // While holdings are drawn the portfolio is the dashed grey line, so it gets a key of its own beside the S&P's.
+            portPath && React.createElement('svg', { width: 20, height: 6, style: { display: 'block', flexShrink: 0 } },
+                React.createElement('line', { x1: '0', y1: '3', x2: '20', y2: '3',
+                    stroke: C.zinc600, strokeWidth: '1.4', strokeDasharray: '5 3', strokeOpacity: '0.85' })
+            ),
+            portPath && React.createElement('span', {
+                style: { fontFamily: sys, fontSize: 9, color: C.zinc600, letterSpacing: '0.04em', marginRight: 8, whiteSpace: 'nowrap' }
+            }, 'Portfolio'),
             mode === 'twr' && benchLinePath && React.createElement('svg', { width: 20, height: 6, style: { display: 'block' } },
                 React.createElement('line', { x1: '0', y1: '3', x2: '20', y2: '3',
                     stroke: C.blue, strokeWidth: '1.5', strokeDasharray: '3 2', opacity: '0.75' })
