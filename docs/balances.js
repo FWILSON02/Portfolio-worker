@@ -120,9 +120,40 @@ function pctFromSheet(r) { return r < 1 ? Math.round(r * 1e6) / 1e4 : r; }
 function validLoan(l) {
     if (!l || typeof l !== 'object') return null;
     var num = function (v) { return typeof v === 'number' && isFinite(v) ? v : null; };
+    var pts = (Array.isArray(l.points) ? l.points : []).filter(function (p) {
+        return p && ISO_DATE.test(p.date || '') && num(p.value) != null;
+    }).map(function (p) { return { date: p.date, value: Math.abs(p.value) }; })
+      .sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
     var out = { rate: num(l.rate), payment: num(l.payment),
-                start: ISO_DATE.test(l.start || '') ? l.start : null, end: ISO_DATE.test(l.end || '') ? l.end : null };
-    return out.rate == null && out.payment == null && !out.start && !out.end ? null : out;
+                start: ISO_DATE.test(l.start || '') ? l.start : null, end: ISO_DATE.test(l.end || '') ? l.end : null,
+                balance: num(l.balance) == null ? null : Math.abs(l.balance),
+                drawn: ISO_DATE.test(l.drawn || '') ? l.drawn : null, amount: num(l.amount) == null ? null : Math.abs(l.amount),
+                points: pts };
+    return out.rate == null && out.payment == null && !out.start && !out.end && out.balance == null && !out.drawn && out.amount == null && !pts.length ? null : out;
+}
+// Current deal's terms and its starting balance set: the amount owed is worked out entirely from the loan's points.
+function loanFormula(l) { return loanReady(l) && l.balance != null; }
+// Points the amount owed passes through, oldest first: the amount borrowed, each remortgage, the current deal's start.
+function loanPoints(l) {
+    var first = l.drawn && l.amount != null && l.drawn < l.start ? [{ date: l.drawn, value: l.amount }] : [];
+    var mid = l.points.filter(function (p) { return p.date < l.start && (!first.length || p.date > l.drawn); });
+    return first.concat(mid, [{ date: l.start, value: l.balance }]);
+}
+// Amount owed (positive) on date `d` (Fergus): a straight line between the points either side of it (earlier deals),
+// then from the current deal's start worked down month by month at its rate and payment. null before the first point.
+function loanOwed(l, d) {
+    if (!loanFormula(l)) return null;
+    var pts = loanPoints(l);
+    if (d < pts[0].date) return null;
+    if (d >= l.start) return payDown(l.balance, l, l.start, d);
+    for (var i = 0; i < pts.length - 1; i++) {
+        var p0 = pts[i], p1 = pts[i + 1];
+        if (d >= p0.date && d < p1.date) {
+            var t = (Date.parse(d) - Date.parse(p0.date)) / (Date.parse(p1.date) - Date.parse(p0.date));
+            return Math.round((p0.value + (p1.value - p0.value) * t) * 100) / 100;
+        }
+    }
+    return l.balance;
 }
 
 // legacyRate: the account's old single growth rate, used as the purchase rate for data saved before rates per point.
@@ -358,6 +389,14 @@ function withGrowth(r, accounts) {
             if (r.date < a.asset.bought) return;
             out = out || Object.assign({}, r.values);
             out[a.id] = assetValue(a.asset, r.date);
+            return;
+        }
+        // Mortgage with its current deal's starting balance: worked out from its points from the first one on.
+        if (loanFormula(a.loan)) {
+            var owed = loanOwed(a.loan, r.date);
+            if (owed == null) return;
+            out = out || Object.assign({}, r.values);
+            out[a.id] = a.debt ? -owed : owed;
             return;
         }
         var loan = loanReady(a.loan) ? a.loan : null;
@@ -1375,33 +1414,69 @@ function AssetFields(props) {
             grid(rateCells(f.rate, function (r) { setTop('rate', r); }, f.vals.length ? 'After the latest, each year it' : 'Each year it'))));
 }
 
-// Rate, monthly payment, start and end of a mortgage, in a compact two-by-two block. Saved with the account.
+// Mortgage (Fergus): the amount borrowed, the balance at each remortgage, then the current deal (its starting balance,
+// rate, payment, start and end). Straight lines between the earlier points; the current deal works itself down.
 function LoanFields(props) {
     var ui = useUI();
     var a = props.a, l = a.loan || {};
+    var str = function (v) { return v != null ? String(v) : ''; };
     var st = React.useState(function () {
-        return { rate: l.rate != null ? String(l.rate) : (a.rate != null ? String(pctFromSheet(a.rate)) : ''), payment: l.payment != null ? String(l.payment) : '',
-                 start: l.start || '', end: l.end || '' };
+        return { rate: l.rate != null ? String(l.rate) : (a.rate != null ? String(pctFromSheet(a.rate)) : ''), payment: str(l.payment),
+                 start: l.start || '', end: l.end || '', balance: str(l.balance), drawn: l.drawn || '', amount: str(l.amount),
+                 pts: (l.points || []).map(function (p) { return { date: p.date, value: String(p.value) }; }) };
     });
     var f = st[0];
-    function set(k, v) {
-        var next = Object.assign({}, f); next[k] = v; st[1](next);
-        var num = function (t) { var n = Number(String(t).replace(/[£,%\s]/g, '')); return t === '' || isNaN(n) ? null : n; };
-        props.onChange(validLoan({ rate: num(next.rate), payment: num(next.payment), start: next.start, end: next.end }));
-    }
-    var ready = loanReady(a.loan);
+    var num = function (t) { var n = Number(String(t).replace(/[£,%\s]/g, '')); return t === '' || isNaN(n) ? null : n; };
+    var toLoan = function (d) {
+        return validLoan({ rate: num(d.rate), payment: num(d.payment), start: d.start, end: d.end, balance: num(d.balance),
+            drawn: d.drawn, amount: num(d.amount), points: d.pts.map(function (p) { return { date: p.date, value: num(p.value) }; }) });
+    };
+    function update(next) { st[1](next); props.onChange(toLoan(next)); }
+    function set(k, v) { var n = Object.assign({}, f); n[k] = v; update(n); }
+    function setPt(i, k, v) { var n = Object.assign({}, f, { pts: f.pts.slice() }); n.pts[i] = Object.assign({}, n.pts[i]); n.pts[i][k] = v; update(n); }
+    function addPt() { update(Object.assign({}, f, { pts: f.pts.concat([{ date: '', value: '' }]) })); }
+    function removePt(i) { update(Object.assign({}, f, { pts: f.pts.filter(function (_, k) { return k !== i; }) })); }
+    var loan = toLoan(f), ready = loanReady(loan), formula = loanFormula(loan);
     var lab = function (t) { return E('span', { style: { fontFamily: ui.sys, fontSize: 10, color: ui.C.zinc600, letterSpacing: '0.04em' } }, t); };
-    var box = function (k, extra) { return E('input', Object.assign({ value: f[k], onChange: function (e) { set(k, e.target.value); },
-        style: inputStyle(ui, { width: '100%', boxSizing: 'border-box', fontSize: 13, padding: '6px 8px', textAlign: extra.type === 'date' ? 'left' : 'right' }) }, extra)); };
+    var input = function (value, onChange, extra) {
+        return E('input', Object.assign({ value: value, onChange: function (e) { onChange(e.target.value); },
+            style: inputStyle(ui, { width: '100%', boxSizing: 'border-box', fontSize: 13, padding: '6px 8px', textAlign: extra.type === 'date' ? 'left' : 'right' }) }, extra));
+    };
+    var cell = function (t, el) { return E('label', { style: { display: 'block', minWidth: 0 } }, lab(t), el); };
+    var grid = function (kids) { return E('div', { style: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 6 } }, kids); };
+    var head = function (t, extra) {
+        return E('div', { style: { display: 'flex', alignItems: 'center', marginBottom: 4 } },
+            E('span', { style: { flex: 1, fontFamily: ui.sys, fontSize: 11, color: ui.C.zinc400, fontWeight: 600 } }, t), extra || null);
+    };
+    var section = function (key, kids) { return E('div', { key: key, style: { marginTop: 8, paddingTop: 8, borderTop: '1px dashed ' + ui.C.border } }, kids); };
+    var blur = props.privacy ? 'blur(6px)' : 'none';
+    var nowOwed = formula ? loanOwed(loan, todayISO()) : null;
     return E('div', { style: { marginTop: 6 } },
         E('div', { style: { fontFamily: ui.sys, fontSize: 11, color: ready ? ui.C.blue : ui.C.zinc700, marginBottom: 4 } },
-            ready ? 'Works down by £' + a.loan.payment.toLocaleString('en-GB') + ' a month at ' + a.loan.rate + '% until ' + monthLabel(a.loan.end.slice(0, 7))
-                  : 'Mortgage terms (fill all four to keep it up to date):'),
-        E('div', { style: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 6 } },
-            E('label', { style: { display: 'block', minWidth: 0 } }, lab('Interest rate %'), box('rate', { inputMode: 'decimal', placeholder: '4.5' })),
-            E('label', { style: { display: 'block', minWidth: 0 } }, lab('Monthly payment £'), box('payment', { inputMode: 'decimal', placeholder: '1,200' })),
-            E('label', { style: { display: 'block', minWidth: 0 } }, lab('Start date'), box('start', { type: 'date' })),
-            E('label', { style: { display: 'block', minWidth: 0 } }, lab('End date'), box('end', { type: 'date' }))));
+            formula ? E('span', null, 'Owed today ', E('span', { style: { filter: blur } }, fmtGBP(nowOwed)),
+                        ', down £' + loan.payment.toLocaleString('en-GB') + ' a month at ' + loan.rate + '% until ' + monthLabel(loan.end.slice(0, 7)),
+                        loanPoints(loan).length > 1 ? '; straight line before this deal' : '')
+            : ready ? 'Add the balance when this deal started to work it out from these terms alone:'
+            : 'Add the mortgage below to keep it up to date:'),
+        head('When you bought'),
+        grid([cell('Borrowed on', input(f.drawn, function (v) { set('drawn', v); }, { type: 'date' })),
+              cell('Amount borrowed £', input(f.amount, function (v) { set('amount', v); }, { inputMode: 'decimal', placeholder: '0' }))]),
+        f.pts.map(function (p, i) {
+            return section(i, [
+                head('Remortgage ' + (i + 1), E('button', { type: 'button', onClick: function () { removePt(i); }, style: { background: 'none', border: 'none', color: ui.C.rose, fontFamily: ui.sys, fontSize: 12, padding: 0, cursor: 'pointer' } }, 'Remove')),
+                grid([cell('Started on', input(p.date, function (v) { setPt(i, 'date', v); }, { type: 'date' })),
+                      cell('Balance then £', input(p.value, function (v) { setPt(i, 'value', v); }, { inputMode: 'decimal', placeholder: '0' }))])]);
+        }),
+        E('button', { type: 'button', onClick: addPt,
+            style: { marginTop: 8, background: 'none', border: '1px dashed ' + ui.C.border, borderRadius: 8, width: '100%', padding: '7px 0', color: ui.C.blue, fontFamily: ui.sys, fontSize: 12, cursor: 'pointer' } },
+            '+ Add an earlier remortgage'),
+        section('deal', [
+            head('Current deal'),
+            grid([cell('Started on', input(f.start, function (v) { set('start', v); }, { type: 'date' })),
+                  cell('Balance then £', input(f.balance, function (v) { set('balance', v); }, { inputMode: 'decimal', placeholder: '0' })),
+                  cell('Interest rate %', input(f.rate, function (v) { set('rate', v); }, { inputMode: 'decimal', placeholder: '4.5' })),
+                  cell('Monthly payment £', input(f.payment, function (v) { set('payment', v); }, { inputMode: 'decimal', placeholder: '1,200' })),
+                  cell('Ends on', input(f.end, function (v) { set('end', v); }, { type: 'date' }))])]));
 }
 
 function UpdateView(props) {
@@ -1462,7 +1537,7 @@ function UpdateView(props) {
                 if (current.values[a.id] !== lv) values[a.id] = lv;
                 return;
             }
-            if (assetReady(a.asset)) return;                    // worked out from its purchase and valuations
+            if (assetReady(a.asset) || loanFormula(a.loan)) return;   // worked out from its purchase / loan points
             var t = amounts[a.id];
             if (t === initial[a.id]) return;                    // left as it was
             if (t == null || String(t).trim() === '') { values[a.id] = 0; return; }
@@ -1505,6 +1580,7 @@ function UpdateView(props) {
                                     : E('div', { style: { flex: 1, minWidth: 0, fontFamily: ui.sys, fontSize: 14, color: ui.C.zinc400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
                                         a.name, a.debt && g.id === 'property' ? E('span', { style: { color: ui.C.zinc700, fontSize: 11 } }, ' · owed') : null,
                                         assetReady(a.asset) ? E('div', { style: { fontSize: 11, color: ui.C.zinc700, marginTop: 1 } }, 'From its purchase and valuations')
+                                        : loanFormula(a.loan) ? E('div', { style: { fontSize: 11, color: ui.C.zinc700, marginTop: 1 } }, 'Worked out below')
                                         : current.asOf[a.id] && E('div', { style: { fontSize: 11, color: amounts[a.id] !== initial[a.id] ? ui.C.amber : ui.C.zinc700, marginTop: 1 } },
                                             amounts[a.id] !== initial[a.id] ? 'Will update' : 'Updated ' + dayLabel(current.asOf[a.id]))),
                                 manage[0]
@@ -1520,6 +1596,9 @@ function UpdateView(props) {
                                         assetReady(a.asset)
                                             // House or car with a purchase: worked out from its valuations below, so not typed in.
                                             ? E('div', { style: { width: 116, textAlign: 'right', fontFamily: ui.rounded, fontSize: 15, color: ui.C.blue, padding: '9px 0', fontVariantNumeric: 'tabular-nums', filter: props.privacy ? 'blur(6px)' : 'none' } }, Math.round(assetValue(a.asset, date) || 0).toLocaleString('en-GB'))
+                                            : loanFormula(a.loan)
+                                            // Mortgage with its current deal's balance: worked out from the loan details, so not typed in.
+                                            ? E('div', { style: { width: 116, textAlign: 'right', fontFamily: ui.rounded, fontSize: 15, color: ui.C.blue, padding: '9px 0', fontVariantNumeric: 'tabular-nums', filter: props.privacy ? 'blur(6px)' : 'none' } }, Math.round(loanOwed(a.loan, date) || 0).toLocaleString('en-GB'))
                                             : linked
                                             // Linked: the value comes from the Investments tab and keeps updating, so it isn't typed in.
                                             ? E('div', { style: { width: 116, textAlign: 'right', fontFamily: ui.rounded, fontSize: 15, color: ui.C.blue, padding: '9px 0', fontVariantNumeric: 'tabular-nums', filter: props.privacy ? 'blur(6px)' : 'none' } }, Math.abs(linked.value).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 }))
@@ -1533,7 +1612,7 @@ function UpdateView(props) {
                             !manage[0] && g.id === 'property' && !a.debt && E(AssetFields, { a: a, privacy: props.privacy,
                                 onChange: function (patch) { patchAccount(a.id, patch); } }),
                             // Mortgage: its terms, so the amount owed works itself down between the balances you enter.
-                            !manage[0] && g.id === 'property' && a.debt && E(LoanFields, { a: a, onChange: function (loan) { patchAccount(a.id, { loan: loan }); } }),
+                            !manage[0] && g.id === 'property' && a.debt && E(LoanFields, { a: a, privacy: props.privacy, onChange: function (loan) { patchAccount(a.id, { loan: loan }); } }),
                             !manage[0] && linkable(a) && E('button', {
                                 onClick: function () { chooser[1](choosing ? null : a.id); },
                                 style: { display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, width: '100%', background: 'none', border: 'none', padding: 0, cursor: 'pointer', textAlign: 'left' }
