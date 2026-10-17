@@ -115,6 +115,8 @@ function linkedToInvestments(a) {
     return !a.closed && a.appLinks.length && a.group !== 'investments' ? Object.assign({}, a, { group: 'investments', debt: false }) : a;
 }
 
+// The spreadsheet's rate column holds fractions (0.038 = 3.8%); loan rates are in %.
+function pctFromSheet(r) { return r < 1 ? Math.round(r * 1e6) / 1e4 : r; }
 function validLoan(l) {
     if (!l || typeof l !== 'object') return null;
     var num = function (v) { return typeof v === 'number' && isFinite(v) ? v : null; };
@@ -158,6 +160,11 @@ function assetValue(x, d) {
 }
 // The yearly rate after the latest point, kept on the account as `growth`.
 function assetRate(x) { return x.rate; }
+// Loans saved before the fix took the sheet's fraction as a %: 0.038 meant 3.8%, not 0.038%.
+function fixLoanRate(l, sheetRate) {
+    return l && l.rate != null && typeof sheetRate === 'number' && sheetRate > 0 && sheetRate < 1 && l.rate === sheetRate
+        ? Object.assign({}, l, { rate: pctFromSheet(sheetRate) }) : l;
+}
 
 function validateState(s) {
     if (!s || typeof s !== 'object' || !Array.isArray(s.accounts) || !Array.isArray(s.snapshots)) return null;
@@ -174,7 +181,7 @@ function validateState(s) {
             closed: !!a.closed,
             liquid: typeof a.liquid === 'boolean' ? a.liquid : null,
             growth: (typeof a.growth === 'number' && isFinite(a.growth)) ? a.growth : null,
-            loan: validLoan(a.loan),
+            loan: fixLoanRate(validLoan(a.loan), a.rate),
             asset: validAsset(a.asset, a.growth),
             appLinks: linksOf(a),
         };
@@ -294,14 +301,22 @@ function indexAccounts(accounts) {
 }
 
 // Every account's balance after each snapshot, oldest first: a full snapshot sets all of them (missing = £0), a partial
-// one changes only the accounts it holds. asOf = the date each account's balance was last set.
+// one changes only the accounts it holds. asOf = the date each account's balance was last set. since = the date it
+// was first set to its current figure: a month that only repeats last month's figure (a spreadsheet carrying a
+// mortgage forward) is not a new reading, so a formula keeps running from the real one.
 function resolveTimeline(snapshots) {
-    var values = {}, asOf = {};
+    var values = {}, asOf = {}, since = {};
     return snapshots.map(function (s) {
+        var before = values;
         if (!s.partial) { values = {}; asOf = {}; }
         else { values = Object.assign({}, values); asOf = Object.assign({}, asOf); }
-        Object.keys(s.values).forEach(function (id) { values[id] = s.values[id]; asOf[id] = s.date; });
-        return { date: s.date, values: values, asOf: asOf };
+        since = Object.assign({}, since);
+        Object.keys(s.values).forEach(function (id) {
+            if (before[id] !== s.values[id] || !since[id]) since[id] = s.date;
+            values[id] = s.values[id]; asOf[id] = s.date;
+        });
+        Object.keys(since).forEach(function (id) { if (values[id] == null) delete since[id]; });
+        return { date: s.date, values: values, asOf: asOf, since: since };
     });
 }
 // The balances as they stand now (after the last snapshot).
@@ -346,9 +361,10 @@ function withGrowth(r, accounts) {
             return;
         }
         var loan = loanReady(a.loan) ? a.loan : null;
-        if ((a.growth == null && !loan) || r.values[a.id] == null || !r.asOf[a.id] || r.asOf[a.id] >= r.date) return;
+        var from = r.since && r.since[a.id] || r.asOf[a.id];
+        if ((a.growth == null && !loan) || r.values[a.id] == null || !from || from >= r.date) return;
         out = out || Object.assign({}, r.values);
-        out[a.id] = loan ? payDown(r.values[a.id], loan, r.asOf[a.id], r.date) : grow(r.values[a.id], a.growth, r.asOf[a.id], r.date);
+        out[a.id] = loan ? payDown(r.values[a.id], loan, from, r.date) : grow(r.values[a.id], a.growth, from, r.date);
     });
     return out ? Object.assign({}, r, { values: out }) : r;
 }
@@ -1364,7 +1380,7 @@ function LoanFields(props) {
     var ui = useUI();
     var a = props.a, l = a.loan || {};
     var st = React.useState(function () {
-        return { rate: l.rate != null ? String(l.rate) : (a.rate != null ? String(a.rate) : ''), payment: l.payment != null ? String(l.payment) : '',
+        return { rate: l.rate != null ? String(l.rate) : (a.rate != null ? String(pctFromSheet(a.rate)) : ''), payment: l.payment != null ? String(l.payment) : '',
                  start: l.start || '', end: l.end || '' };
     });
     var f = st[0];
