@@ -968,6 +968,23 @@ function kLabel(v) {
     return (v < 0 ? '−£' : '£') + s;
 }
 
+// A round gridline step about `raw` apart: 1, 2, 2.5 or 5 times a power of ten.
+function niceStep(raw) {
+    var p = Math.pow(10, Math.floor(Math.log10(Math.abs(raw))));
+    var m = [1, 2, 2.5, 5, 10].filter(function (k) { return k * p >= Math.abs(raw); })[0];
+    return m * p;
+}
+// A gridline label with just enough decimals for the step (£2.5k, £1.25m).
+// `top` (the largest gridline, by size) picks one unit for the whole axis.
+function axisLabel(v, step, top) {
+    if (Math.abs(v) < step / 2) return '£0';
+    var a = Math.abs(v), unit = top >= 1e6 ? 1e6 : top >= 1e3 ? 1e3 : 1;
+    var dp = 0;
+    while (dp < 3 && Math.abs(Math.round(step / unit * Math.pow(10, dp)) - step / unit * Math.pow(10, dp)) > 1e-9) dp++;
+    var n = (a / unit).toFixed(dp);
+    return (v < 0 ? '−£' : '£') + n + (unit === 1e6 ? 'm' : unit === 1e3 ? 'k' : '');
+}
+
 function Segmented(props) {
     var ui = useUI();
     return E('div', { style: { display: 'flex', background: 'rgba(0,0,0,0.3)', borderRadius: 9, padding: 2, gap: 2 } },
@@ -1067,14 +1084,14 @@ function Chart(props) {
     var W = Math.max(width, 10), plotW = W - padR;
     var vals = [];
     lines.forEach(function (l) { pts.forEach(function (p) { vals.push(l.val(p)); }); });
-    // The scale always takes in £0 (Fergus: a current account shouldn't start at its lowest balance, and a mix of
-    // positive and negative balances should show where zero is). Headroom goes only on the side away from zero.
+    // The scale fits the data in range on round gridlines (Fergus, PR #51: a £0 floor flattened the line). It takes
+    // in £0 only when the data crosses it.
     var dLo = Math.min.apply(null, vals), dHi = Math.max.apply(null, vals);
-    var lo = Math.min(dLo, 0), hi = Math.max(dHi, 0);
-    if (hi - lo < 1) hi += 1;
-    var pad = (hi - lo) * 0.08;
-    if (lo < 0) lo -= pad;
-    if (hi > 0) hi += pad;
+    var step = niceStep((dHi - dLo) / 3 || Math.abs(dHi) * 0.02 || 1);
+    var lo = Math.floor(dLo / step) * step, hi = Math.ceil(dHi / step) * step;
+    if (hi === lo) { lo -= step; hi += step; }
+    if (dLo >= 0 && lo < 0) lo = 0;
+    var crosses = lo < 0 && hi > 0;
     var t0 = monthIndex(pts[0].month), t1 = monthIndex(pts[pts.length - 1].month);
     var x = function (p) { return t1 === t0 ? plotW / 2 : ((monthIndex(p.month) - t0) / (t1 - t0)) * plotW; };
     var y = function (v) { return padT + (1 - (v - lo) / (hi - lo)) * (H - padT - padB); };
@@ -1083,13 +1100,12 @@ function Chart(props) {
     var color = up ? ui.C.emerald : ui.C.rose;
     lines.forEach(function (l) { if (!l.color) l.color = color; });
     var mainLine = pathFor(lines[0]);
-    var y0 = y(0).toFixed(1);
+    // The area fills down to £0 when it is on the chart, else to the bottom edge.
+    var y0 = y(crosses ? 0 : lo).toFixed(1);
     var area = !sel.length && (mainLine + ' L' + x(pts[pts.length - 1]).toFixed(1) + ' ' + y0 + ' L' + x(pts[0]).toFixed(1) + ' ' + y0 + ' Z');
-    // Grid: £0 always, plus the top and bottom of the data; a side too close to zero to label cleanly is left out.
-    var ticks = [0], span = hi - lo;
-    if (dHi > 0 && dHi > span * 0.12) ticks.push(dHi);
-    if (dLo < 0 && -dLo > span * 0.12) ticks.push(dLo);
-    if (ticks.length === 2) ticks.push(ticks[1] / 2);
+    // Grid: every step from the bottom to the top, £0 among them when the data crosses it.
+    var ticks = [];
+    for (var tv = lo; tv <= hi + step / 2; tv += step) ticks.push(Math.round(tv / step) * step);
     var firstYear = pts[0].month.slice(0, 4), lastYear = pts[pts.length - 1].month.slice(0, 4);
 
     function pick(clientX) {
@@ -1155,7 +1171,7 @@ function Chart(props) {
                     return E('g', { key: i },
                         E('line', { x1: 0, x2: plotW, y1: y(v), y2: y(v), stroke: v === 0 ? 'rgba(255,255,255,0.28)' : 'rgba(255,255,255,0.06)', strokeWidth: 1 }),
                         E('text', { x: W - 2, y: y(v), textAnchor: 'end', dominantBaseline: 'middle', fill: ui.C.zinc700, fontSize: 10, fontFamily: ui.rounded },
-                            props.privacy ? '' : kLabel(v)));
+                            props.privacy ? '' : axisLabel(v, step, Math.max(Math.abs(lo), Math.abs(hi)))));
                 }),
                 // The compared period, shaded.
                 analysing && from && E('rect', { x: x(from), y: padT, width: Math.max(1, x(to) - x(from)), height: H - padT - padB, fill: 'rgba(255,255,255,0.05)' }),
@@ -1874,6 +1890,6 @@ window.BalancesStore = BalancesStore;
 window.BalancesIcon = WalletIcon;
 // For tests only: the pure parts, no UI.
 window.__balancesInternals = { applyLinked: applyLinked, parseJsonBackup: parseJsonBackup, buildJson: buildJson, parseImport: parseImport, importToState: importToState, runChecks: runChecks, buildSeries: buildSeries, parseAmount: parseAmount, buildCsv: buildCsv,
-    resolveTimeline: resolveTimeline, totalsFor: totalsFor, indexAccounts: indexAccounts, withPartial: withPartial, liveLinked: liveLinked,
+    resolveTimeline: resolveTimeline, niceStep: niceStep, axisLabel: axisLabel, totalsFor: totalsFor, indexAccounts: indexAccounts, withPartial: withPartial, liveLinked: liveLinked,
     grow: grow, payDown: payDown, loanOwed: loanOwed, assetValue: assetValue, validateState: validateState };
 })();
