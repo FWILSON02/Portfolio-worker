@@ -1167,7 +1167,7 @@ function Chart(props) {
         ),
         E('div', {
             ref: ref,
-            className: 'chart-noselect', style: { position: 'relative', height: H, touchAction: 'none', marginTop: 4, cursor: 'crosshair' },
+            className: 'chart-noselect', 'data-no-swipe': '', style: { position: 'relative', height: H, touchAction: 'none', marginTop: 4, cursor: 'crosshair' },
             onPointerDown: function (e) { dragging.current = true; pick(e.clientX); },
             onPointerMove: function (e) { if (dragging.current || e.pointerType === 'mouse') pick(e.clientX); },
             onPointerUp: lift,
@@ -1866,7 +1866,9 @@ function BalancesScreenInner(props) {
         body = E(MainView, { state: state, series: series, privacy: props.privacyMode,
                              onUpdate: function () { setView('update'); }, onImport: function () { setView('import'); } });
     }
+    // The main view can be swiped to change tab (see swipeAllowed in index.html); the update and import forms can't.
     return E('div', {
+        'data-swipe-tabs': view === 'main' ? '' : null,
         style: { position: 'fixed', top: 'var(--topbar-h, 0px)', left: 0, right: 0, bottom: 0, zIndex: 9995, background: ui.C.bg, display: 'flex', flexDirection: 'column', WebkitTapHighlightColor: 'transparent' }
     },
         back && E(Header, { title: title, onBack: back }),
