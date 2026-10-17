@@ -88,6 +88,12 @@ function linksOf(a) {
     return typeof a.appLink === 'string' && a.appLink ? [a.appLink] : [];
 }
 
+// An open account that follows the Investments tab is shown under Investments, so that card adds up to the same
+// total as the Investments tab (Fergus asked). Applied to its whole history, so the chart stays consistent.
+function linkedToInvestments(a) {
+    return !a.closed && a.appLinks.length && a.group !== 'investments' ? Object.assign({}, a, { group: 'investments', debt: false }) : a;
+}
+
 function validateState(s) {
     if (!s || typeof s !== 'object' || !Array.isArray(s.accounts) || !Array.isArray(s.snapshots)) return null;
     var ids = {};
@@ -103,7 +109,7 @@ function validateState(s) {
             closed: !!a.closed,
             appLinks: linksOf(a),
         };
-    });
+    }).map(linkedToInvestments);
     var snapshots = s.snapshots.filter(function (sn) {
         return sn && typeof sn.date === 'string' && ISO_DATE.test(sn.date) && sn.values && typeof sn.values === 'object';
     }).map(function (sn) {
@@ -1018,7 +1024,7 @@ function UpdateView(props) {
         var mk = monthKey(date);
         var snaps = state.snapshots.filter(function (s) { return monthKey(s.date) !== mk; }).concat([{ date: date, values: values }])
             .sort(function (a, b) { return a.date < b.date ? -1 : 1; });
-        saveState(Object.assign({}, state, { accounts: accounts, snapshots: snaps })).then(props.onDone, function (e) { err[1]('Could not save: ' + (e && e.message)); });
+        saveState(Object.assign({}, state, { accounts: accounts.map(linkedToInvestments), snapshots: snaps })).then(props.onDone, function (e) { err[1]('Could not save: ' + (e && e.message)); });
     }
 
     // Accounts the Investments tab can hold: savings (e.g. a money market fund), investments, pensions and other.
@@ -1076,7 +1082,8 @@ function UpdateView(props) {
                                         E('input', { type: 'checkbox', checked: on, onChange: function () { toggleLink(a, viaLegacy ? o.legacyKey : o.key); }, style: { width: 18, height: 18, accentColor: ui.C.blue, margin: 0 } }),
                                         E('span', { style: { flex: 1, minWidth: 0 } }, o.label),
                                         !props.privacy && E('span', { style: { fontFamily: ui.rounded, fontSize: 12, color: ui.C.zinc600, fontVariantNumeric: 'tabular-nums' } }, fmtGBP(o.value)));
-                                }))
+                                }),
+                                a.group !== 'investments' && E('div', { style: { fontFamily: ui.sys, fontSize: 11, color: ui.C.zinc700, padding: '4px 0 2px' } }, 'Once linked and saved, this account moves under Investments.'))
                         );
                     })
                 )
