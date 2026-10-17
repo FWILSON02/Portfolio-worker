@@ -201,6 +201,8 @@ window.CheckCircle=_li([{t:'c',cx:12,cy:12,r:10},'M8 12l3 3 5-6']);
 window.XCircle=_li([{t:'c',cx:12,cy:12,r:10},'M15 9l-6 6','M9 9l6 6']);
 window.MinusCircle=_li([{t:'c',cx:12,cy:12,r:10},'M8 12h8']);
 window.HelpCircle=_li([{t:'c',cx:12,cy:12,r:10},'M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3',{t:'l',x1:12,y1:17,x2:12.01,y2:17}]);</script>
+<!-- Balances screen lives in its own file. Bump ?v= whenever balances.js changes so the Home Screen app never mixes versions. -->
+<script src="balances.js?v=1"></script>
 <script>
 try{"use strict";
 // ─── Lightweight SVG chart components (replaces Recharts) ──────────────────
@@ -16211,6 +16213,8 @@ function PortfolioApp() {
                     },
                     // Stored gilt closes (read straight from storage, synchronously, so the iOS share gesture survives).
                     giltPriceHistory: { v: 1, snaps: loadGyCache().snaps },
+                    // Balances screen data (balances.js); null when it holds nothing or the file did not load.
+                    balances: window.BalancesStore ? window.BalancesStore.backupSnapshot() : null,
                     marketOverview: sanitizedMktRows.length > 0 ? {
                         schemaVersion: 2,
                         exportedAt:    exportTimestamp,
@@ -16241,6 +16245,7 @@ function PortfolioApp() {
                         marketRowCount:    sanitizedMktRows.length,
                         hasMarketOverview: sanitizedMktRows.length > 0,
                         giltTickerCount:   Object.keys(payload.giltPriceHistory.snaps).length,
+                        balanceSnapshots:  payload.balances ? payload.balances.snapshots.length : 0,
                     },
                     payload: payload,
                 };
@@ -16425,6 +16430,11 @@ function PortfolioApp() {
             // ── Atomic state swap ─────────────────────────────────────────────────
             var idbWrites = [];
             var newMeta = null;
+            // Balances (balances.js): only a full restore of a backup that carries them, so restoring an older
+            // backup never wipes balances entered since.
+            if (jsonImportMode === 'both' && parsed.payload && parsed.payload.balances && window.BalancesStore) {
+                window.BalancesStore.restore(parsed.payload.balances);
+            }
             if (shouldRestorePrices) {
                 var restoredPrices = data.prices   || {};
                 var restoredSource = data.loadSource || {};
@@ -16715,6 +16725,9 @@ function PortfolioApp() {
         const [showSettings, setShowSettings] = React.useState(false);
         // Market Overview screen — read-only, does not feed portfolio valuation
         const [showMarketOverview, setShowMarketOverview] = React.useState(false);
+        // Balances screen (balances.js) — month-by-month account balances, separate from the portfolio valuation
+        const [showBalances, setShowBalances] = React.useState(false);
+        const hasBalances = typeof window.BalancesScreen === 'function';
 
         // ── Pricing badge (main header) ──────────────────────────────────────
         // Same classification the Settings "Daily close check" grid uses (see
@@ -17208,6 +17221,17 @@ function PortfolioApp() {
             return { value, todayAbs, todayPct, totalAbs, totalPct };
         }, [masterPortfolio, currentCompState, restrictedPositions, heroTodayPnl]);
 
+        // Live values the Balances update form can prefill from: each account card, then each restricted scheme.
+        const balancesAppValues = React.useMemo(() => {
+            const out = [];
+            accountGroups.forEach(a => { if (Number.isFinite(a.totalValue)) out.push({ key: 'acct:' + a.name, label: a.name, value: a.totalValue }); });
+            (restrictedDisplayRows || []).forEach(r => {
+                const v = r.marketValue != null ? r.marketValue : r.value;
+                if (r.name && Number.isFinite(v)) out.push({ key: 'restricted:' + r.name, label: r.name, value: v });
+            });
+            return out;
+        }, [accountGroups, restrictedDisplayRows]);
+
         // ─── RENDER ───────────────────────────────────────────────────────────
         // Spec §II.2: native iOS typography engine for all financial data and labels.
         // All display constants (C, sys, mono, serif, fmtV, fmtA, fmtP, signColor) are now global.
@@ -17496,6 +17520,14 @@ function PortfolioApp() {
             onRefresh: function() { refreshMarketOverview({ silent: false, forceHistory: true }); },
         }),
 
+        // ── Balances screen (balances.js). appValues lets investment and pension accounts prefill from the app.
+        showBalances && hasBalances && React.createElement(window.BalancesScreen, {
+            onClose:     () => setShowBalances(false),
+            privacyMode,
+            appValues:   balancesAppValues,
+            ui:          { C, sys, rounded },
+        }),
+
         // ── Settings sheet (MoreTab)
         showSettings && React.createElement('div', {
             style: { position: 'fixed', inset: 0, zIndex: 9990, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'flex-end' },
@@ -17593,6 +17625,20 @@ function PortfolioApp() {
                                      transition: 'color 0.5s ease, filter 0.5s ease' },
                             strokeWidth: 2 }),
                         'Markets'
+                    ),
+                    // Balances — only when balances.js loaded, so a failed load leaves the header as it was
+                    hasBalances && React.createElement('button', {
+                        onClick: () => setShowBalances(true), 'aria-label': 'Balances',
+                        style: {
+                            display: 'flex', alignItems: 'center', gap: 5,
+                            background: 'rgba(167,139,250,0.08)', border: '1px solid rgba(167,139,250,0.22)',
+                            borderRadius: 8, height: 30, padding: '0 10px', flexShrink: 0,
+                            color: C.violet, fontFamily: sys, fontSize: 12, fontWeight: 600,
+                            letterSpacing: '0.02em',
+                        }
+                    },
+                        window.BalancesIcon && React.createElement(window.BalancesIcon, { style: { width: 13, height: 13 }, strokeWidth: 2 }),
+                        'Balances'
                     ),
                     // ── Pricing badge — tap to jump straight to the Daily close check grid ──
                     pricingBadge && React.createElement('button', {
