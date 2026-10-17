@@ -1165,7 +1165,7 @@ function GroupCard(props) {
                 'vs ' + monthLabel(prev.month)),
             rows.map(function (a) {
                 var v = latest.values[a.id] || 0, pv = prev ? (prev.values[a.id] || 0) : null;
-                var shareNote = (a.share < 1 ? ' · your ' + Math.round(a.share * 100) + '%' : '') + (isLiquid(a) !== !!g.liquid ? (isLiquid(a) ? ' · liquid' : ' · not liquid') : '');
+                var shareNote = (isLiquid(a) !== !!g.liquid ? (isLiquid(a) ? ' · liquid' : ' · not liquid') : '');
                 // Tag like LIVE: the value follows the Investments tab (LIVE) or is worked out from a rate or loan terms (FORMULA).
                 var tag = a.closed ? null : a.appLinks.length ? 'LIVE' : (a.growth != null || loanReady(a.loan) || assetReady(a.asset)) ? 'FORMULA' : null;
                 return E('div', { key: a.id, style: { display: 'flex', alignItems: 'baseline', gap: 8, padding: '6px 0' } },
