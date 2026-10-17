@@ -887,9 +887,14 @@ function Chart(props) {
     var W = Math.max(width, 10), plotW = W - padR;
     var vals = [];
     lines.forEach(function (l) { pts.forEach(function (p) { vals.push(l.val(p)); }); });
-    var lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals);
-    if (hi - lo < 1) { hi += 1; lo -= 1; }
-    var pad = (hi - lo) * 0.08; lo -= pad; hi += pad;
+    // The scale always takes in £0 (Fergus: a current account shouldn't start at its lowest balance, and a mix of
+    // positive and negative balances should show where zero is). Headroom goes only on the side away from zero.
+    var dLo = Math.min.apply(null, vals), dHi = Math.max.apply(null, vals);
+    var lo = Math.min(dLo, 0), hi = Math.max(dHi, 0);
+    if (hi - lo < 1) hi += 1;
+    var pad = (hi - lo) * 0.08;
+    if (lo < 0) lo -= pad;
+    if (hi > 0) hi += pad;
     var t0 = monthIndex(pts[0].month), t1 = monthIndex(pts[pts.length - 1].month);
     var x = function (p) { return t1 === t0 ? plotW / 2 : ((monthIndex(p.month) - t0) / (t1 - t0)) * plotW; };
     var y = function (v) { return padT + (1 - (v - lo) / (hi - lo)) * (H - padT - padB); };
@@ -898,8 +903,13 @@ function Chart(props) {
     var color = up ? ui.C.emerald : ui.C.rose;
     lines.forEach(function (l) { if (!l.color) l.color = color; });
     var mainLine = pathFor(lines[0]);
-    var area = !sel.length && (mainLine + ' L' + x(pts[pts.length - 1]).toFixed(1) + ' ' + (H - padB) + ' L' + x(pts[0]).toFixed(1) + ' ' + (H - padB) + ' Z');
-    var ticks = [hi - pad, (hi + lo) / 2, lo + pad];
+    var y0 = y(0).toFixed(1);
+    var area = !sel.length && (mainLine + ' L' + x(pts[pts.length - 1]).toFixed(1) + ' ' + y0 + ' L' + x(pts[0]).toFixed(1) + ' ' + y0 + ' Z');
+    // Grid: £0 always, plus the top and bottom of the data; a side too close to zero to label cleanly is left out.
+    var ticks = [0], span = hi - lo;
+    if (dHi > 0 && dHi > span * 0.12) ticks.push(dHi);
+    if (dLo < 0 && -dLo > span * 0.12) ticks.push(dLo);
+    if (ticks.length === 2) ticks.push(ticks[1] / 2);
     var firstYear = pts[0].month.slice(0, 4), lastYear = pts[pts.length - 1].month.slice(0, 4);
 
     function pick(clientX) {
@@ -959,7 +969,7 @@ function Chart(props) {
                         E('stop', { offset: '100%', stopColor: color, stopOpacity: 0 }))),
                 ticks.map(function (v, i) {
                     return E('g', { key: i },
-                        E('line', { x1: 0, x2: plotW, y1: y(v), y2: y(v), stroke: 'rgba(255,255,255,0.06)', strokeWidth: 1 }),
+                        E('line', { x1: 0, x2: plotW, y1: y(v), y2: y(v), stroke: v === 0 ? 'rgba(255,255,255,0.28)' : 'rgba(255,255,255,0.06)', strokeWidth: 1 }),
                         E('text', { x: W - 2, y: y(v), textAnchor: 'end', dominantBaseline: 'middle', fill: ui.C.zinc700, fontSize: 10, fontFamily: ui.rounded },
                             props.privacy ? '' : kLabel(v)));
                 }),
