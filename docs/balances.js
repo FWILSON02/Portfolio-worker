@@ -1117,13 +1117,13 @@ function GroupCard(props) {
                 'vs ' + monthLabel(prev.month)),
             rows.map(function (a) {
                 var v = latest.values[a.id] || 0, pv = prev ? (prev.values[a.id] || 0) : null;
-                var shareNote = (a.share < 1 ? ' · your ' + Math.round(a.share * 100) + '%' : '') + (isLiquid(a) !== !!g.liquid ? (isLiquid(a) ? ' · liquid' : ' · not liquid') : '')
-                    + (a.growth != null ? ' · ' + (a.growth > 0 ? '+' : '') + a.growth + '%/yr' : '')
-                    + (loanReady(a.loan) ? ' · ' + a.loan.rate + '% to ' + monthLabel(a.loan.end.slice(0, 7)) : '');
+                var shareNote = (a.share < 1 ? ' · your ' + Math.round(a.share * 100) + '%' : '') + (isLiquid(a) !== !!g.liquid ? (isLiquid(a) ? ' · liquid' : ' · not liquid') : '');
+                // Tag like LIVE: the value follows the Investments tab (LIVE) or is worked out from a rate or loan terms (FORMULA).
+                var tag = a.closed ? null : a.appLinks.length ? 'LIVE' : (a.growth != null || loanReady(a.loan)) ? 'FORMULA' : null;
                 return E('div', { key: a.id, style: { display: 'flex', alignItems: 'baseline', gap: 8, padding: '6px 0' } },
                     E('div', { style: { flex: 1, minWidth: 0, fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
                         a.name, E('span', { style: { color: ui.C.zinc700, fontSize: 11 } }, shareNote),
-                        a.appLinks.length && !a.closed ? E('span', { style: { color: ui.C.blue, fontSize: 10, marginLeft: 6 } }, 'LIVE') : null),
+                        tag ? E('span', { style: { color: ui.C.blue, fontSize: 10, marginLeft: 6 } }, tag) : null),
                     pv != null && E('span', { style: { fontFamily: ui.rounded, fontSize: 11, color: signColor(ui, v - pv), filter: blur, fontVariantNumeric: 'tabular-nums' } }, fmtSigned(v - pv)),
                     E('span', { style: { fontFamily: ui.rounded, fontSize: 13, color: v < 0 ? ui.C.rose : ui.C.white, filter: blur, fontVariantNumeric: 'tabular-nums', minWidth: 76, textAlign: 'right' } }, fmtGBP(v))
                 );
