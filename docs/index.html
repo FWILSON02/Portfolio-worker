@@ -204,7 +204,7 @@ window.XCircle=_li([{t:'c',cx:12,cy:12,r:10},'M15 9l-6 6','M9 9l6 6']);
 window.MinusCircle=_li([{t:'c',cx:12,cy:12,r:10},'M8 12h8']);
 window.HelpCircle=_li([{t:'c',cx:12,cy:12,r:10},'M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3',{t:'l',x1:12,y1:17,x2:12.01,y2:17}]);</script>
 <!-- Balances screen lives in its own file. Bump ?v= whenever balances.js changes so the Home Screen app never mixes versions. -->
-<script src="balances.js?v=30"></script>
+<script src="balances.js?v=31"></script>
 <script>
 try{"use strict";
 // ─── Lightweight SVG chart components (replaces Recharts) ──────────────────
@@ -7404,7 +7404,7 @@ function Row({ icon: Icon, iconColor, iconBg, label, sub, right, onClick, isLabe
 
 // The pull request that last changed the app. Bump it in every PR so Settings → App shows which change the phone is
 // running (Fergus asked; the Estate ?v= number only moved when balances.js changed, so it looked stuck).
-const APP_BUILD = 49;
+const APP_BUILD = 50;
 
 // Settings → App: pulls the newest index.html and balances.js past the browser's cache, then reloads. A Home Screen web app
 // on iOS keeps serving cached files for a while after a deploy, and closing it from the app switcher doesn't clear that.
@@ -8073,6 +8073,24 @@ function makeContribRange(S, topN) {
     return contribForRange;
 }
 
+// Segmented control, the same look as the Estate tab's (balances.js Segmented): a dark track, the chosen option lifted.
+// fill: takes the room left in its row and shares it between the options, so a long row (the six ranges) still fits a
+// 320px phone.
+function SegmentedControl({ options, value, onChange, fill }) {
+    return React.createElement('div', { style: { display: 'flex', background: 'rgba(0,0,0,0.3)', borderRadius: 9, padding: 2, gap: 2, minWidth: 0,
+                                                 flex: fill ? '0 1 260px' : '0 0 auto' } },
+        options.map(o => {
+            const on = o.id === value;
+            return React.createElement('button', {
+                key: o.id, onClick: () => onChange(o.id),
+                style: { border: 'none', borderRadius: 7, padding: fill ? '5px 0' : '5px 10px', fontFamily: sys, fontSize: 12, fontWeight: 600,
+                         flex: fill ? '1 1 0' : 'none', minWidth: 0, textAlign: 'center',
+                         background: on ? 'rgba(255,255,255,0.10)' : 'transparent', color: on ? C.white : C.zinc600, cursor: 'pointer', whiteSpace: 'nowrap' }
+            }, o.label);
+        })
+    );
+}
+
 const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, setTimeframe, mode, setMode, privacyMode, spxLatestPrice, spxSessionDate, contribFn }) {
     const [scrubIdx, setScrubIdx] = React.useState(null);
     // The pop-out stays on the last pressed day after the finger lifts, so it can be read. It goes when the page scrolls,
@@ -8607,36 +8625,12 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
     })();
 
     return React.createElement('div', null,
-        // ── Single row: timeframe chips left, mode toggles right ──
-        React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 3, marginBottom: 8 } },
-            // Timeframe chips
-            TF.map(tf =>
-                React.createElement('button', {
-                    key: tf, onClick: () => (tf === timeframe ? openTable() : setTimeframe(tf)),
-                    style: {
-                        fontFamily: mono, fontSize: 10, fontWeight: 600, lineHeight: '12px',
-                        padding: '4px 0', borderRadius: 5, flex: 1, textAlign: 'center',
-                        border: `1px solid ${tf === timeframe ? lineCol + '55' : C.border}`,
-                        background: tf === timeframe ? lineCol + '14' : 'transparent',
-                        color: tf === timeframe ? lineCol : C.zinc600,
-                        cursor: 'pointer', transition: 'all 100ms ease', minWidth: 0,
-                    }
-                }, tf)
-            ),
-            // Divider
-            React.createElement('div', { style: { width: 1, height: 16, background: C.border, flexShrink: 0, margin: '0 2px' } }),
-            // Mode toggle
-            React.createElement('button', {
-                onClick: () => setMode(m => m === 'value' ? 'twr' : 'value'),
-                style: {
-                    // £ and % are narrow glyphs: at the chips' 10px they read smaller than the letters, so they get 12px.
-                    // lineHeight matches the chips (12px) so the button is the same height as they are.
-                    fontFamily: mono, fontSize: 12, fontWeight: 600, lineHeight: '12px', flexShrink: 0,
-                    padding: '4px 8px', borderRadius: 5, textAlign: 'center',
-                    border: `1px solid ${C.border}`, background: 'transparent',
-                    color: C.zinc600, cursor: 'pointer',
-                }
-            }, mode === 'value' ? '£' : '%')
+        // ── One row: £ / % on the left, the range on the right, in the same segmented controls as the Estate chart
+        // (Fergus asked). Tapping the range already shown opens the table, as the chips did.
+        React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8 } },
+            React.createElement(SegmentedControl, { options: [{ id: 'value', label: '£' }, { id: 'twr', label: '%' }], value: mode, onChange: setMode }),
+            React.createElement(SegmentedControl, { options: TF.map(tf => ({ id: tf, label: tf === 'ALL' ? 'All' : tf })), value: timeframe, fill: true,
+                onChange: tf => (tf === timeframe ? openTable() : setTimeframe(tf)) })
         ),
 
         // ── Chart area ──
@@ -17514,30 +17508,11 @@ function PortfolioApp() {
         }, [masterPortfolio, currentCompState, restrictedPositions, heroTodayPnl]);
 
         // Live values the Balances update form can prefill from: each account card, then each restricted scheme.
-        // Each account's money in and out (amount > 0 = paid in) and its first ledger date, so Estate can tell growth from deposits.
-        const ledgerFlowsByAccount = React.useMemo(() => {
-            const rows = {};
-            for (const t of enriched) {
-                if (!t.parsedDate) continue;
-                const acct = (t.account || 'UNASSIGNED ACCOUNT').trim().toUpperCase();
-                (rows[acct] = rows[acct] || []).push(t);
-            }
-            const out = {};
-            for (const [acct, list] of Object.entries(rows)) {
-                const from = list.reduce((m, t) => (t.parsedDate < m ? t.parsedDate : m), list[0].parsedDate);
-                out[acct] = { flows: externalFlowsFromLedger(list), ledgerFrom: from.toISOString().slice(0, 10) };
-            }
-            return out;
-        }, [enriched]);
         const balancesAppValues = React.useMemo(() => {
             const out = [];
             // ready: every holding has a price, so the total is safe for Estate to save as a live balance.
-            accountGroups.forEach(a => {
-                if (!Number.isFinite(a.totalValue)) return;
-                const ledger = ledgerFlowsByAccount[String(a.name).trim().toUpperCase()];
-                out.push({ key: 'acct:' + a.name, label: a.name, value: a.totalValue, ready: (a.holdings || []).every(h => h.marketValue != null),
-                           flows: ledger ? ledger.flows : null, ledgerFrom: ledger ? ledger.ledgerFrom : null });
-            });
+            accountGroups.forEach(a => { if (Number.isFinite(a.totalValue)) out.push({ key: 'acct:' + a.name, label: a.name, value: a.totalValue,
+                                                                                      ready: (a.holdings || []).every(h => h.marketValue != null) }); });
             (restrictedDisplayRows || []).forEach(r => {
                 const v = r.marketValue != null ? r.marketValue : r.value;
                 // Keyed by employer and scheme: two employers can each have an "Unvested" row. legacyKey keeps older links.
@@ -17545,7 +17520,7 @@ function PortfolioApp() {
                                                              label: (r.ticker ? r.ticker + ' ' : '') + r.name, value: v });
             });
             return out;
-        }, [accountGroups, restrictedDisplayRows, ledgerFlowsByAccount]);
+        }, [accountGroups, restrictedDisplayRows]);
         // Estate accounts linked to an account here follow its value: each change is written into this month's entry.
         React.useEffect(() => {
             if (window.BalancesStore && window.BalancesStore.syncLinked) window.BalancesStore.syncLinked(balancesAppValues);

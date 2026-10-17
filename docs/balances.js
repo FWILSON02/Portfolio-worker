@@ -496,37 +496,6 @@ function pointMonthsBack(series, latest, months) {
     return found;
 }
 
-// Where the change in Total wealth between two points came from:
-//   markets  growth of the accounts that follow an Investments account: their change, less money paid in or taken out
-//            (from the app's ledger). Dividends, interest and fees count as growth.
-//   assets   the house and car, worked out from their purchase and valuations.
-//   other    the rest: money saved, debt paid off, pensions and employer shares (the app can't tell paid-in from growth
-//            there), and any balance entered by hand.
-// markets (and so other) is null when a linked account had money in it before its ledger starts, as its deposits
-// before then are unknown. Money moved between two linked accounts nets out across them.
-function changeSources(base, latest, accounts, appValues) {
-    var byKey = appIndex(appValues);
-    var markets = 0, assets = 0, known = true, linked = 0;
-    accounts.forEach(function (a) {
-        var v0 = (base.values[a.id] || 0) * (a.share || 1), v1 = (latest.values[a.id] || 0) * (a.share || 1);
-        if (assetReady(a.asset)) { assets += v1 - v0; return; }
-        if (a.closed || !a.appLinks.length) return;
-        var links = a.appLinks.map(function (k) { return byKey[k]; });
-        if (!links.every(function (o) { return o && Array.isArray(o.flows); })) return;   // e.g. employer shares: no ledger
-        var from = links.reduce(function (m, o) { return o.ledgerFrom && (!m || o.ledgerFrom < m) ? o.ledgerFrom : m; }, null);
-        linked++;
-        if (v0 !== 0 && (!from || from > base.date)) { known = false; return; }
-        var paidIn = 0;
-        links.forEach(function (o) {
-            o.flows.forEach(function (f) { if (f.date > base.date && f.date <= latest.date) paidIn += f.amount; });
-        });
-        markets += v1 - v0 - paidIn * (a.share || 1);
-    });
-    var total = latest.total - base.total;
-    var r = function (n) { return Math.round(n * 100) / 100; };
-    return { total: r(total), assets: r(assets), markets: known ? r(markets) : null, other: known ? r(total - markets - assets) : null, linked: linked };
-}
-
 // ── Formatting ───────────────────────────────────────────────────────────────
 function fmtGBP(n, dp) {
     if (n == null || !isFinite(n)) return '—';
@@ -980,44 +949,6 @@ function Hero(props) {
     );
 }
 
-// Change in Total wealth against 1, 6 and 12 months earlier, split by where it came from (see changeSources).
-function SourcesCard(props) {
-    var ui = useUI();
-    var s = props.series, latest = s[s.length - 1];
-    var cols = PERIODS.map(function (p) {
-        var base = pointMonthsBack(s, latest, p.months);
-        return { p: p, src: base ? changeSources(base, latest, props.accounts, props.appValues) : null };
-    });
-    if (!cols.some(function (c) { return c.src; })) return null;
-    var hasAssets = props.accounts.some(function (a) { return assetReady(a.asset); });
-    // No account follows the Investments tab yet: there is no growth to split out, so that line is left off.
-    var hasLinked = cols.some(function (c) { return c.src && c.src.linked; });
-    var rows = (hasLinked ? [{ key: 'markets', label: 'Investment growth' }] : []).concat(
-        hasAssets ? [{ key: 'assets', label: 'House and car' }] : [],
-        [{ key: 'other', label: 'Saved and other' }]);
-    var cell = { fontFamily: ui.rounded, fontVariantNumeric: 'tabular-nums', fontSize: 12, textAlign: 'right', whiteSpace: 'nowrap', filter: props.privacy ? 'blur(6px)' : 'none' };
-    return E('div', { style: cardStyle(ui, { borderRadius: 20, padding: '14px 16px', marginBottom: 12 }) },
-        E('div', { style: Object.assign({}, capsLabel(ui), { display: 'block', marginBottom: 8 }) }, 'Where the change came from'),
-        E('div', { style: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) repeat(3, auto)', columnGap: 12, rowGap: 6, alignItems: 'baseline' } },
-            E('div', { key: 'h' }),
-            cols.map(function (c) {
-                return E('div', { key: 'h' + c.p.months, style: { fontFamily: ui.sys, fontSize: 10, color: ui.C.zinc600, textAlign: 'right' } },
-                    'vs ' + (c.p.months === 12 ? '1y' : c.p.months + 'm'));
-            }),
-            rows.map(function (r) {
-                return [E('div', { key: r.key, style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.zinc400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, r.label)]
-                    .concat(cols.map(function (c) {
-                        var v = c.src ? c.src[r.key] : null;
-                        return E('div', { key: r.key + c.p.months, style: Object.assign({}, cell, { color: v == null ? ui.C.zinc700 : signColor(ui, v) }) },
-                            v == null ? '—' : fmtSigned(v));
-                    }));
-            })
-        ),
-        E('div', { style: { fontFamily: ui.sys, fontSize: 10, color: ui.C.zinc700, marginTop: 10, lineHeight: 1.4 } },
-            'Investment growth is how much accounts linked to Investments changed, less money paid in. Pensions and employer shares count under Saved and other.')
-    );
-}
-
 function useWidth(ref) {
     var st = React.useState(0);
     React.useEffect(function () {
@@ -1400,7 +1331,6 @@ function MainView(props) {
     return E('div', { style: { padding: '12px 16px 0' } },
         latest ? E(Hero, { series: series, privacy: props.privacy })
                : E('div', { style: cardStyle(ui, { marginBottom: 12, fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc600 }) }, 'No balances entered yet. Tap Update balances to add this month’s.'),
-        latest && series.length > 1 && E(SourcesCard, { series: series, accounts: state.accounts, appValues: props.appValues, privacy: props.privacy }),
         series.length > 1 && E(Chart, { series: series, accounts: state.accounts, privacy: props.privacy }),
         latest && E('div', { style: { display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 14 } },
             CARDS.filter(function (g) {
@@ -1902,7 +1832,7 @@ function BalancesScreenInner(props) {
     } else if (view === 'import') {
         body = E(ImportView, { state: state, privacy: props.privacyMode, onDone: back });
     } else {
-        body = E(MainView, { state: state, series: series, appValues: props.appValues, privacy: props.privacyMode,
+        body = E(MainView, { state: state, series: series, privacy: props.privacyMode,
                              onUpdate: function () { setView('update'); }, onImport: function () { setView('import'); } });
     }
     return E('div', {
@@ -1945,5 +1875,5 @@ window.BalancesIcon = WalletIcon;
 // For tests only: the pure parts, no UI.
 window.__balancesInternals = { applyLinked: applyLinked, parseJsonBackup: parseJsonBackup, buildJson: buildJson, parseImport: parseImport, importToState: importToState, runChecks: runChecks, buildSeries: buildSeries, parseAmount: parseAmount, buildCsv: buildCsv,
     resolveTimeline: resolveTimeline, totalsFor: totalsFor, indexAccounts: indexAccounts, withPartial: withPartial, liveLinked: liveLinked,
-    grow: grow, payDown: payDown, loanOwed: loanOwed, assetValue: assetValue, validateState: validateState, changeSources: changeSources };
+    grow: grow, payDown: payDown, loanOwed: loanOwed, assetValue: assetValue, validateState: validateState };
 })();

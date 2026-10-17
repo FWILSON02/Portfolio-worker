@@ -115,35 +115,3 @@ test('buildSeries: one point per month, from the month\'s last entry', () => {
     const s = plain(E.buildSeries(state));
     assert.deepEqual(s.map(p => [p.month, p.total]), [['2024-01', 150], ['2024-02', 175]]);
 });
-
-test('changeSources: investment growth is the change less money paid in; the house is its own line', () => {
-    const accounts = [
-        { id: 'isa', group: 'investments', appLinks: ['acct:ISA'] },
-        { id: 'house', group: 'property', share: 0.5, asset: { bought: '2020-01-01', price: 1, valuations: [] } },
-        { id: 'bank', group: 'current', appLinks: [] },
-        { id: 'rsu', group: 'investments', appLinks: ['restricted:C:Unvested'] },
-    ];
-    const base = { date: '2024-01-15', total: 0, values: { isa: 10000, house: 300000, bank: 2000, rsu: 1000 } };
-    const latest = { date: '2024-02-15', values: { isa: 11500, house: 302000, bank: 1500, rsu: 1200 } };
-    base.total = 10000 + 150000 + 2000 + 1000;
-    latest.total = 11500 + 151000 + 1500 + 1200;
-    const appValues = [
-        { key: 'acct:ISA', value: 11500, ledgerFrom: '2019-04-06', flows: [
-            { date: '2024-01-15', amount: 999 },    // on the base date: already in the base value
-            { date: '2024-02-01', amount: 1000 },   // paid in during the period
-        ] },
-        { key: 'restricted:C:Unvested', value: 1200 },   // no ledger
-    ];
-    const s = plain(E.changeSources(base, latest, accounts, appValues));
-    assert.deepEqual(s, { total: 2200, markets: 500, assets: 1000, other: 700, linked: 1 });   // other = bank −500 + shares +200 + the £1,000 paid in
-});
-
-test('changeSources: unknown when a linked account held money before its ledger starts', () => {
-    const accounts = [{ id: 'isa', group: 'investments', appLinks: ['acct:ISA'] }];
-    const base = { date: '2018-01-15', total: 5000, values: { isa: 5000 } };
-    const latest = { date: '2024-01-15', total: 9000, values: { isa: 9000 } };
-    const s = plain(E.changeSources(base, latest, accounts, [{ key: 'acct:ISA', value: 9000, ledgerFrom: '2019-04-06', flows: [] }]));
-    assert.equal(s.markets, null);
-    assert.equal(s.other, null);
-    assert.equal(s.total, 4000);
-});
