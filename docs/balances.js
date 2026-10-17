@@ -23,7 +23,7 @@ var GROUPS = [
     { id: 'savings',     label: 'Savings',                   liquid: true  },
     { id: 'investments', label: 'Investments',               liquid: true  },
     { id: 'cards',       label: 'Credit cards',              liquid: true, debt: true },
-    { id: 'pensions',    label: 'Pensions & employer stock', liquid: false },
+    { id: 'pensions',    label: 'Pension', liquid: false },
     { id: 'property',    label: 'Property & car',            liquid: false },
     { id: 'other',       label: 'Other',                     liquid: true  },
 ];
@@ -33,7 +33,7 @@ function groupOf(id) { return GROUP_BY_ID[id] || GROUP_BY_ID.other; }
 // Whether an account counts toward Liquid: its own flag when set (e.g. unvested shares under Investments), else its group's.
 // Cards on the Estate screen. Current and Credit cards share one: the cards are paid off monthly from the current
 // account, so only together do they show the everyday cash position (Fergus asked). Entry and storage keep the groups.
-var CARDS = [{ id: 'cash', label: 'Current & credit cards', short: 'Cash', liquid: true, groups: ['current', 'cards'] }].concat(
+var CARDS = [{ id: 'cash', label: 'Current and Credit', short: 'Cash', liquid: true, groups: ['current', 'cards'] }].concat(
     GROUPS.filter(function (g) { return g.id !== 'current' && g.id !== 'cards'; })
           .map(function (g) { return { id: g.id, label: g.label, liquid: g.liquid, groups: [g.id] }; }));
 var CARD_OF = {}, CARD_BY_ID = {};
@@ -886,6 +886,24 @@ function inputStyle(ui, extra) {
     }, extra || {});
 }
 
+// The small boxes in the house, car and mortgage forms, two to a row. iOS gives a date box a native minimum width
+// wider than half a phone screen, so without this it spills over the box beside it (Fergus saw them overlap).
+var FIELD_CSS = '.estate-field{-webkit-appearance:none;appearance:none;display:block;width:100%;min-width:0;max-width:100%;margin:0}' +
+    '.estate-field::-webkit-date-and-time-value{text-align:left;margin:0}' +
+    '.estate-field::-webkit-datetime-edit{padding:0}' +
+    '.estate-field::-webkit-calendar-picker-indicator{margin:0 0 0 4px;padding:0;opacity:0.5}';
+function fieldInput(ui, value, onChange, extra) {
+    if (!document.getElementById('estate-field-css')) {
+        var tag = document.createElement('style');
+        tag.id = 'estate-field-css';
+        tag.textContent = FIELD_CSS;
+        document.head.appendChild(tag);
+    }
+    var date = extra.type === 'date';
+    return E('input', Object.assign({ value: value, className: 'estate-field', onChange: function (e) { onChange(e.target.value); },
+        style: inputStyle(ui, { fontSize: 14, padding: '0 10px', height: 36, minHeight: 36, lineHeight: '36px', textAlign: date ? 'left' : 'right' }) }, extra));
+}
+
 // One "vs <month>  +£x  +y%" line.
 // Change against 1, 6 and 12 months earlier, £ and %, one row each. A period with no entry far enough back is left out;
 // when the nearest earlier entry is older than asked (a gap in the history), its month says which one was used.
@@ -898,15 +916,15 @@ function ChangeTable(props) {
         return base ? { p: p, base: base, d: latest[props.field] - base[props.field] } : null;
     }).filter(Boolean);
     if (!rows.length) return null;
-    return E('div', { style: { display: 'grid', gridTemplateColumns: '1fr auto auto', columnGap: 14, rowGap: 4, alignItems: 'baseline', marginTop: 8,
+    return E('div', { style: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto auto', columnGap: 14, rowGap: 4, alignItems: 'baseline', marginTop: 8,
                                fontFamily: ui.rounded, fontVariantNumeric: 'tabular-nums' } },
         rows.map(function (r) {
             var c = signColor(ui, r.d);
             return [
-                E('div', { key: r.p.months + 'l', style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.zinc500, whiteSpace: 'nowrap' } },
+                E('div', { key: r.p.months + 'l', style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.zinc500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } },
                     'vs ' + r.p.label, E('span', { style: { color: ui.C.zinc700, fontSize: 11 } }, ' · ' + monthLabel(r.base.month))),
-                E('div', { key: r.p.months + 'd', style: { fontSize: 13, color: c, textAlign: 'right', filter: props.privacy ? 'blur(6px)' : 'none' } }, fmtSigned(r.d)),
-                E('div', { key: r.p.months + 'p', style: { fontSize: 13, color: c, textAlign: 'right', minWidth: 54 } }, fmtPct(pctChange(latest[props.field], r.base[props.field])))
+                E('div', { key: r.p.months + 'd', style: { fontSize: 13, color: c, textAlign: 'right', whiteSpace: 'nowrap', filter: props.privacy ? 'blur(6px)' : 'none' } }, fmtSigned(r.d)),
+                E('div', { key: r.p.months + 'p', style: { fontSize: 13, color: c, textAlign: 'right', whiteSpace: 'nowrap', minWidth: 54 } }, fmtPct(pctChange(latest[props.field], r.base[props.field])))
             ];
         })
     );
@@ -1364,12 +1382,9 @@ function AssetFields(props) {
     function removeVal(i) { update(Object.assign({}, f, { vals: f.vals.filter(function (_, k) { return k !== i; }) })); }
 
     var lab = function (t) { return E('span', { style: { fontFamily: ui.sys, fontSize: 10, color: ui.C.zinc600, letterSpacing: '0.04em' } }, t); };
-    var input = function (value, onChange, extra) {
-        return E('input', Object.assign({ value: value, onChange: function (e) { onChange(e.target.value); },
-            style: inputStyle(ui, { width: '100%', boxSizing: 'border-box', fontSize: 13, padding: '6px 8px', textAlign: extra.type === 'date' ? 'left' : 'right' }) }, extra));
-    };
+    var input = function (value, onChange, extra) { return fieldInput(ui, value, onChange, extra); };
     var cell = function (t, el) { return E('label', { style: { display: 'block', minWidth: 0 } }, lab(t), el); };
-    var grid = function (kids) { return E('div', { style: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 6 } }, kids); };
+    var grid = function (kids) { return E('div', { style: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', columnGap: 10, rowGap: 8 } }, kids); };
     var rateCells = function (r, onChange, label) {
         return [
             cell(label, E('div', { key: 's', style: { display: 'flex', background: 'rgba(0,0,0,0.3)', borderRadius: 9, padding: 2, gap: 2 } },
@@ -1433,12 +1448,9 @@ function LoanFields(props) {
     function removePt(i) { update(Object.assign({}, f, { pts: f.pts.filter(function (_, k) { return k !== i; }) })); }
     var loan = toLoan(f), ready = loanReady(loan), formula = loanFormula(loan);
     var lab = function (t) { return E('span', { style: { fontFamily: ui.sys, fontSize: 10, color: ui.C.zinc600, letterSpacing: '0.04em' } }, t); };
-    var input = function (value, onChange, extra) {
-        return E('input', Object.assign({ value: value, onChange: function (e) { onChange(e.target.value); },
-            style: inputStyle(ui, { width: '100%', boxSizing: 'border-box', fontSize: 13, padding: '6px 8px', textAlign: extra.type === 'date' ? 'left' : 'right' }) }, extra));
-    };
+    var input = function (value, onChange, extra) { return fieldInput(ui, value, onChange, extra); };
     var cell = function (t, el) { return E('label', { style: { display: 'block', minWidth: 0 } }, lab(t), el); };
-    var grid = function (kids) { return E('div', { style: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 6 } }, kids); };
+    var grid = function (kids) { return E('div', { style: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', columnGap: 10, rowGap: 8 } }, kids); };
     var head = function (t, extra) {
         return E('div', { style: { display: 'flex', alignItems: 'center', marginBottom: 4 } },
             E('span', { style: { flex: 1, fontFamily: ui.sys, fontSize: 11, color: ui.C.zinc400, fontWeight: 600 } }, t), extra || null);
