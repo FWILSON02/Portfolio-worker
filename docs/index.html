@@ -7357,7 +7357,7 @@ function Group({ title, children }) {
 // One total: the portfolio plus employer equity (restricted capital and any modelled vested comp), with Today and
 // Total covering all of it. The figures are combined in PortfolioApp (heroCombined); the restricted card further down
 // still shows the schemes on their own.
-const HeroCard = React.memo(function HeroCard({ onTap, transactions, masterPortfolio, sheetContext, liveStatus, privacyMode, heroValue, heroTodayAbs, heroTodayPct, heroTotalAbs, heroTotalPct }) {
+const HeroCard = React.memo(function HeroCard({ onTap, transactions, masterPortfolio, sheetContext, liveStatus, privacyMode, heroValue, heroTodayAbs, heroTodayPct, heroTotalAbs, heroTotalPct, pricingBadge, onPricingTap }) {
     const hasData = transactions.length > 0;
     const isEmpty = !hasData || masterPortfolio.totalValue === 0;
     return React.createElement('div', {
@@ -7371,11 +7371,24 @@ const HeroCard = React.memo(function HeroCard({ onTap, transactions, masterPortf
             React.createElement('div', null,
                 React.createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 } },
                     React.createElement('span', { style: { fontFamily: sys, fontSize: 10, color: C.zinc500, textTransform: 'uppercase', letterSpacing: '0.18em' } }, 'Portfolio Value'),
-                    liveStatus === 'fetching'
-                        ? React.createElement('div', { style: { width: 6, height: 6, borderRadius: '50%', background: C.amber }, className: 'pulse-dot' })
-                        : liveStatus === 'ok'
-                            ? React.createElement('div', { style: { width: 6, height: 6, borderRadius: '50%', background: C.emerald } })
-                            : React.createElement('div', { style: { width: 6, height: 6, borderRadius: '50%', background: C.zinc700 } })
+                    React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+                        // Pricing status: icon + a word, in the card's own header line (no row of its own), so it costs no height
+                        // and scrolls away with the page. Tap opens Settings → Daily close check. Padding gives a finger-sized
+                        // target; the negative margin keeps it from making the line taller.
+                        pricingBadge && React.createElement('button', {
+                            'aria-label': pricingBadge.label,
+                            onClick: e => { e.stopPropagation(); if (onPricingTap) onPricingTap(); },
+                            style: { display: 'flex', alignItems: 'center', gap: 4, background: 'none', border: 'none', padding: '8px 6px', margin: '-8px -6px',
+                                     color: pricingBadge.color, fontFamily: sys, fontSize: 10, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase',
+                                     whiteSpace: 'nowrap', cursor: 'pointer', WebkitTapHighlightColor: 'transparent' }
+                        },
+                            React.createElement(pricingBadge.icon, { className: pricingBadge.iconSpin ? 'spinning' : '', style: { width: 11, height: 11, flexShrink: 0 }, strokeWidth: 2.25 }),
+                            pricingBadge.label.replace(/^Pricing\s+/, '').replace('Fetching Prices', 'Fetching\u2026')),
+                        liveStatus === 'fetching'
+                            ? React.createElement('div', { style: { width: 6, height: 6, borderRadius: '50%', background: C.amber }, className: 'pulse-dot' })
+                            : liveStatus === 'ok'
+                                ? React.createElement('div', { style: { width: 6, height: 6, borderRadius: '50%', background: C.emerald } })
+                                : React.createElement('div', { style: { width: 6, height: 6, borderRadius: '50%', background: C.zinc700 } }))
                 ),
                 isEmpty
                     ? React.createElement('div', { style: { fontFamily: serif, fontSize: 15, fontStyle: 'italic', color: C.zinc600, paddingTop: 4, paddingBottom: 4 } }, 'Upload a CSV to begin')
@@ -16832,6 +16845,14 @@ function PortfolioApp() {
             if (degradedCount > 0)  return { tier: 'degraded', label: 'Pricing Unconfirmed (' + degradedCount + ')', icon: HelpCircle, color: DC_UNCONFIRMED_COLOUR, bg: 'rgba(161,161,170,0.08)', border: 'rgba(161,161,170,0.22)' };
             return { tier: 'verified', label: 'Pricing Verified', icon: CheckCircle, color: '#34d399', bg: 'rgba(52,211,153,0.08)', border: 'rgba(52,211,153,0.22)' };
         }, [dailyCheckRowsSummary]);
+        // Tapping the pricing status opens Settings and scrolls to the Daily close check grid.
+        const openDailyCheck = React.useCallback(() => {
+            setShowSettings(true);
+            // The panel only exists once the sheet has mounted — give its slide-up transition (0.42s) time to settle first.
+            setTimeout(() => {
+                document.getElementById('daily-close-check-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }, 380);
+        }, []);
 
         // Purge & rebuild — the all-in-one pipeline behind Settings → Data → "Purge & Rebuild Prices":
         //   1. clearCache('prices'): wipes the IDB price store, FX series, and live quote/session state
@@ -17745,32 +17766,6 @@ function PortfolioApp() {
                 )
             ),
 
-            // Pricing badge — tap to jump straight to the Daily close check grid (moved out of the tab bar to make room)
-            pricingBadge && React.createElement('div', { style: { display: 'flex', justifyContent: 'flex-end', padding: '8px 16px 0' } },
-                    React.createElement('button', {
-                        'aria-label': pricingBadge.label,
-                        onClick: () => {
-                            setShowSettings(true);
-                            // The panel only exists once the sheet has mounted — give its
-                            // slide-up transition (0.42s) time to settle before scrolling.
-                            setTimeout(() => {
-                                document.getElementById('daily-close-check-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                            }, 380);
-                        },
-                        style: {
-                            display: 'flex', alignItems: 'center', gap: 5,
-                            background: pricingBadge.bg, border: '1px solid ' + pricingBadge.border,
-                            borderRadius: 8, height: 30, padding: '0 10px', minWidth: 0,
-                            color: pricingBadge.color, fontFamily: sys, fontSize: 12, fontWeight: 600,
-                            letterSpacing: '0.02em', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-                        }
-                    },
-                        React.createElement(pricingBadge.icon, { className: pricingBadge.iconSpin ? 'spinning' : '', style: { width: 13, height: 13, flexShrink: 0 }, strokeWidth: 2 }),
-                        // Header shows the short form ("Verified", "Unconfirmed (2)"); the icon and colour carry the rest.
-                        pricingBadge.label.replace(/^Pricing\s+/, '').replace('Fetching Prices', 'Fetching\u2026')
-                    )
-            ),
-
             // Scrollable content
             React.createElement('div', {
                 className: 'ios-scroll',
@@ -17786,6 +17781,7 @@ function PortfolioApp() {
                         heroTodayPct: heroCombined.todayPct,
                         heroTotalAbs: heroCombined.totalAbs,
                         heroTotalPct: heroCombined.totalPct,
+                        pricingBadge, onPricingTap: openDailyCheck,
                     })
                 ),
 
