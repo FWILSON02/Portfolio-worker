@@ -1,5 +1,8 @@
 {
   "private": true,
+  "scripts": {
+    "test": "node --test tests/*.test.*"
+  },
   "devDependencies": {
     "wrangler": "^3.0.0"
   }
