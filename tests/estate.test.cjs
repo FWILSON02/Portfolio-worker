@@ -115,3 +115,14 @@ test('buildSeries: one point per month, from the month\'s last entry', () => {
     const s = plain(E.buildSeries(state));
     assert.deepEqual(s.map(p => [p.month, p.total]), [['2024-01', 150], ['2024-02', 175]]);
 });
+
+test('chart y-axis: round steps and labels', () => {
+    assert.equal(E.niceStep(8700), 10000);
+    assert.equal(E.niceStep(2200), 2500);
+    assert.equal(E.niceStep(140), 200);
+    assert.equal(E.axisLabel(250000, 10000, 260000), '£250k');
+    assert.equal(E.axisLabel(237500, 2500, 260000), '£237.5k');
+    assert.equal(E.axisLabel(1250000, 250000, 1500000), '£1.25m');
+    assert.equal(E.axisLabel(-500, 500, 1000), '−£0.5k');
+    assert.equal(E.axisLabel(0, 500, 1000), '£0');
+});
