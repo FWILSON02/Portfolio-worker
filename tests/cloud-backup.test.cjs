@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const { loadApp } = require('./load.cjs');
 
 const { app } = loadApp();
+const plainList = x => JSON.parse(JSON.stringify(x));
 const BACKUP = JSON.stringify({ format: 'portfolio-system-snapshot', format_version: 4, payload: { transactions: [{ value: 1234.56 }] } });
 
 test('round trip: encrypt, then decrypt with the same passphrase', async () => {
@@ -25,4 +26,12 @@ test('each backup uses a fresh salt and IV', async () => {
     const a = await app.encryptBackup(BACKUP, 'p'), b = await app.encryptBackup(BACKUP, 'p');
     assert.notEqual(a.kdf.salt, b.kdf.salt);
     assert.notEqual(a.cipher.iv, b.cipher.iv);
+});
+
+test('the API key file can carry the backup token and passphrase', () => {
+    const res = app.parseApiKeyCsv('setting,value\ncloud_backup_token,abcdef123456\ncloud_backup_passphrase,copper lantern tidal biscuit\n');
+    assert.deepEqual(plainList(res.updates.map(u => [u.id, u.value])), [['cbt', 'abcdef123456'], ['cbp', 'copper lantern tidal biscuit']]);
+    const short = app.parseApiKeyCsv('setting,value\ncloud_backup_passphrase,short\n');
+    assert.equal(short.updates.length, 0);
+    assert.match(short.invalid[0].reason, /8 to 200/);
 });

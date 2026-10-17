@@ -1779,6 +1779,11 @@ const API_KEY_SETTINGS = [
       get: () => getGyPortfolio(), apply: v => setGyPortfolio(v) },
     { id: 'wk',  name: 'cloudflare_worker_url', label: 'Cloudflare Worker URL',    short: 'Worker URL',    kind: 'url',  aliases: ['workerurl', 'cloudflareworker'],
       get: () => getWorkerUrl(), apply: v => setWorkerUrl(v) },
+    // Cloud backup (see runCloudBackup). The passphrase may have spaces, so it gets its own check.
+    { id: 'cbt', name: 'cloud_backup_token',      label: 'Cloud backup token',      short: 'Backup token',      kind: 'key',  aliases: ['backuptoken'],
+      get: () => getCloudBackupToken(), apply: v => { setCloudBackupToken(v); saveCloudBackupState(loadCloudBackupState()); } },
+    { id: 'cbp', name: 'cloud_backup_passphrase', label: 'Cloud backup passphrase', short: 'Backup passphrase', kind: 'pass', aliases: ['backuppassphrase'],
+      get: () => getCloudBackupPass(), apply: v => { setCloudBackupPass(v); saveCloudBackupState(loadCloudBackupState()); } },
 ];
 function _akNorm(s) { return String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9]/g, ''); }
 // Returns a reason string when a value is not acceptable for its setting, else null.
@@ -1788,6 +1793,8 @@ function _akCheck(entry, v) {
         if (v.length < 6 || v.length > 200) return 'does not look like an API key (wrong length)';
     } else if (entry.kind === 'url') {
         if (!/^https:\/\/[^\s]+$/i.test(v)) return 'must be a full https:// address';
+    } else if (entry.kind === 'pass') {
+        if (v.length < 8 || v.length > 200) return 'should be 8 to 200 characters';
     } else if (!/^[A-Za-z0-9 _.-]{1,60}$/.test(v)) return 'has characters a portfolio name should not';
     return null;
 }
@@ -7397,7 +7404,7 @@ function Row({ icon: Icon, iconColor, iconBg, label, sub, right, onClick, isLabe
 
 // The pull request that last changed the app. Bump it in every PR so Settings → App shows which change the phone is
 // running (Fergus asked; the Estate ?v= number only moved when balances.js changed, so it looked stuck).
-const APP_BUILD = 48;
+const APP_BUILD = 49;
 
 // Settings → App: pulls the newest index.html and balances.js past the browser's cache, then reloads. A Home Screen web app
 // on iOS keeps serving cached files for a while after a deploy, and closing it from the app switcher doesn't clear that.
@@ -7480,7 +7487,8 @@ function CloudBackupGroup({ backupNow, restore }) {
     const [msg, setMsg] = React.useState(null);
     const [confirmRestore, setConfirmRestore] = React.useState(false);
     React.useEffect(() => {
-        const on = () => setSt(loadCloudBackupState());
+        // Also picks up a token or passphrase brought in by the API key import.
+        const on = () => { setSt(loadCloudBackupState()); setToken(getCloudBackupToken()); setPass(getCloudBackupPass()); };
         window.addEventListener('cloud-backup', on);
         const iv = setInterval(on, 30000);   // keeps "5m ago" current
         return () => { window.removeEventListener('cloud-backup', on); clearInterval(iv); };
@@ -9269,7 +9277,11 @@ function MoreTab(props) {
         let res;
         try {
             if (file.size > 100 * 1024) throw new Error('big');
-            const text = await (file.text ? file.text() : new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(String(r.result || '')); r.onerror = no; r.readAsText(file); }));
+            // An Excel file (.xlsx) is read as its first sheet, the same layout as the CSV.
+            const isXlsx = /\.xlsx$/i.test(file.name || '') && typeof XLSX !== 'undefined';
+            const text = isXlsx
+                ? (wb => XLSX.utils.sheet_to_csv(wb.Sheets[wb.SheetNames[0]]))(XLSX.read(await file.arrayBuffer(), { type: 'array' }))
+                : await (file.text ? file.text() : new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(String(r.result || '')); r.onerror = no; r.readAsText(file); }));
             res = parseApiKeyCsv(text);
             if (!res.error) { const w = applyApiKeyUpdates(res.updates); res.updates = w.saved; res.failed = w.failed; }
         } catch (e) {
@@ -9758,9 +9770,9 @@ function MoreTab(props) {
                     React.createElement(Row, {
                         icon: Key, iconColor: '#fbbf24',
                         label: 'Import API Keys',
-                        sub: `${[tdKeyInput, avKeyInput, msKeyInput, gyKeyInput].filter(Boolean).length} of 4 keys set · CSV`,
+                        sub: `${[tdKeyInput, avKeyInput, msKeyInput, gyKeyInput].filter(Boolean).length} of 4 keys set · CSV or Excel`,
                         isLabel: true,
-                        inputProps: { type: 'file', accept: '.csv,text/csv,text/plain', onChange: e => { handleApiKeyCSV(e.target.files[0]); e.target.value = ''; } },
+                        inputProps: { type: 'file', accept: '.csv,text/csv,text/plain,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', onChange: e => { handleApiKeyCSV(e.target.files[0]); e.target.value = ''; } },
                     }),
                     apiKeyMsg && React.createElement('div', {
                         style: { margin: '0 16px 10px', padding: '8px 10px', borderRadius: 8, fontFamily: 'JetBrains Mono', fontSize: 10, lineHeight: 1.5,
