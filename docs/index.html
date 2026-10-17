@@ -204,7 +204,7 @@ window.XCircle=_li([{t:'c',cx:12,cy:12,r:10},'M15 9l-6 6','M9 9l6 6']);
 window.MinusCircle=_li([{t:'c',cx:12,cy:12,r:10},'M8 12h8']);
 window.HelpCircle=_li([{t:'c',cx:12,cy:12,r:10},'M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3',{t:'l',x1:12,y1:17,x2:12.01,y2:17}]);</script>
 <!-- Balances screen lives in its own file. Bump ?v= whenever balances.js changes so the Home Screen app never mixes versions. -->
-<script src="balances.js?v=29"></script>
+<script src="balances.js?v=30"></script>
 <script>
 try{"use strict";
 // ─── Lightweight SVG chart components (replaces Recharts) ──────────────────
@@ -17334,11 +17334,30 @@ function PortfolioApp() {
         }, [masterPortfolio, currentCompState, restrictedPositions, heroTodayPnl]);
 
         // Live values the Balances update form can prefill from: each account card, then each restricted scheme.
+        // Each account's money in and out (amount > 0 = paid in) and its first ledger date, so Estate can tell growth from deposits.
+        const ledgerFlowsByAccount = React.useMemo(() => {
+            const rows = {};
+            for (const t of enriched) {
+                if (!t.parsedDate) continue;
+                const acct = (t.account || 'UNASSIGNED ACCOUNT').trim().toUpperCase();
+                (rows[acct] = rows[acct] || []).push(t);
+            }
+            const out = {};
+            for (const [acct, list] of Object.entries(rows)) {
+                const from = list.reduce((m, t) => (t.parsedDate < m ? t.parsedDate : m), list[0].parsedDate);
+                out[acct] = { flows: externalFlowsFromLedger(list), ledgerFrom: from.toISOString().slice(0, 10) };
+            }
+            return out;
+        }, [enriched]);
         const balancesAppValues = React.useMemo(() => {
             const out = [];
             // ready: every holding has a price, so the total is safe for Estate to save as a live balance.
-            accountGroups.forEach(a => { if (Number.isFinite(a.totalValue)) out.push({ key: 'acct:' + a.name, label: a.name, value: a.totalValue,
-                                                                                      ready: (a.holdings || []).every(h => h.marketValue != null) }); });
+            accountGroups.forEach(a => {
+                if (!Number.isFinite(a.totalValue)) return;
+                const ledger = ledgerFlowsByAccount[String(a.name).trim().toUpperCase()];
+                out.push({ key: 'acct:' + a.name, label: a.name, value: a.totalValue, ready: (a.holdings || []).every(h => h.marketValue != null),
+                           flows: ledger ? ledger.flows : null, ledgerFrom: ledger ? ledger.ledgerFrom : null });
+            });
             (restrictedDisplayRows || []).forEach(r => {
                 const v = r.marketValue != null ? r.marketValue : r.value;
                 // Keyed by employer and scheme: two employers can each have an "Unvested" row. legacyKey keeps older links.
@@ -17346,7 +17365,7 @@ function PortfolioApp() {
                                                              label: (r.ticker ? r.ticker + ' ' : '') + r.name, value: v });
             });
             return out;
-        }, [accountGroups, restrictedDisplayRows]);
+        }, [accountGroups, restrictedDisplayRows, ledgerFlowsByAccount]);
         // Estate accounts linked to an account here follow its value: each change is written into this month's entry.
         React.useEffect(() => {
             if (window.BalancesStore && window.BalancesStore.syncLinked) window.BalancesStore.syncLinked(balancesAppValues);
