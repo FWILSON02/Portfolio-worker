@@ -40,7 +40,9 @@ function isLiquid(a) { return typeof a.liquid === 'boolean' ? a.liquid : !!group
 //              appLinks: keys of the Investments-tab values this account follows (their sum); [] = typed in by hand.
 //              debt:  balance stored negative (cards, mortgage); the form takes the amount owed as a positive number.
 //              share: fraction of the balance that is yours (e.g. 0.5 of a jointly owned house and its mortgage).
-//   Snapshot = { date: 'YYYY-MM-DD', values: { [accountId]: number } }. An account missing from values = £0 then.
+//   Snapshot = { date: 'YYYY-MM-DD', values: { [accountId]: number }, partial? }
+//              Full (imported, or saved before partial updates existed): an account missing from values = £0 then.
+//              partial: true — only the accounts in values were updated; every other account keeps its last value.
 var DB_NAME = 'portfolio-balances';
 var DB_STORE = 'kv';
 var DB_KEY = 'state';
@@ -122,7 +124,7 @@ function validateState(s) {
             var v = sn.values[id];
             if (ids[id] && typeof v === 'number' && isFinite(v)) values[id] = v;
         });
-        return { date: sn.date, values: values };
+        return sn.partial ? { date: sn.date, values: values, partial: true } : { date: sn.date, values: values };
     }).sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
     return {
         v: 1, accounts: accounts, snapshots: snapshots,
@@ -225,19 +227,41 @@ function indexAccounts(accounts) {
     return m;
 }
 
-// One point per month: the latest snapshot in that month wins.
+// Every account's balance after each snapshot, oldest first: a full snapshot sets all of them (missing = £0), a partial
+// one changes only the accounts it holds. asOf = the date each account's balance was last set.
+function resolveTimeline(snapshots) {
+    var values = {}, asOf = {};
+    return snapshots.map(function (s) {
+        if (!s.partial) { values = {}; asOf = {}; }
+        else { values = Object.assign({}, values); asOf = Object.assign({}, asOf); }
+        Object.keys(s.values).forEach(function (id) { values[id] = s.values[id]; asOf[id] = s.date; });
+        return { date: s.date, values: values, asOf: asOf };
+    });
+}
+// The balances as they stand now (after the last snapshot).
+function currentBalances(state) {
+    var t = resolveTimeline(state.snapshots);
+    return t.length ? t[t.length - 1] : { date: null, values: {}, asOf: {} };
+}
+
+// One point per month: the balances as they stood after the month's last snapshot.
 function buildSeries(state) {
     var byId = indexAccounts(state.accounts);
     var byMonth = {};
-    state.snapshots.forEach(function (s) {
-        var mk = monthKey(s.date);
-        if (!byMonth[mk] || byMonth[mk].date <= s.date) byMonth[mk] = s;
-    });
+    resolveTimeline(state.snapshots).forEach(function (r) { byMonth[monthKey(r.date)] = r; });
     return Object.keys(byMonth).sort().map(function (mk) {
-        var s = byMonth[mk];
-        var t = totalsFor(s, byId);
-        return { month: mk, date: s.date, values: s.values, groups: t.groups, liquid: t.liquid, total: t.total };
+        var r = byMonth[mk];
+        var t = totalsFor(r, byId);
+        return { month: mk, date: r.date, values: r.values, asOf: r.asOf, groups: t.groups, liquid: t.liquid, total: t.total };
     });
+}
+
+// Adds a partial update (only the given balances) dated `date`, merged into a partial snapshot already on that date.
+function withPartial(snapshots, date, values) {
+    var same = snapshots.filter(function (s) { return s.date === date && s.partial; })[0];
+    var rest = snapshots.filter(function (s) { return s !== same; });
+    var merged = { date: date, partial: true, values: Object.assign({}, same ? same.values : {}, values) };
+    return rest.concat([merged]).sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
 }
 
 // Live values for open accounts linked to the app: { [accountId]: value }. An app value that is still loading
@@ -273,26 +297,17 @@ function linkedNow(a, byKey) {
     return { items: found, value: found.reduce(function (t, o) { return t + (Number.isFinite(o.value) ? o.value : 0); }, 0) };
 }
 
-// Puts the live values of linked accounts into this month's entry. Returns the new state, or null when nothing changed.
-// This month's entry exists: only the linked values in it change. It doesn't yet: a new entry dated today starts from
-// the last entry's open accounts (a missing account would count as £0) and takes the live values on top.
+// Saves the live values of linked accounts that changed, as a partial update dated today: every other account keeps
+// its last value. Returns the new state, or null when nothing changed (or an entry is dated after today).
 function applyLinked(state, appValues, today) {
     var live = liveLinked(state.accounts, appValues);
-    var ids = Object.keys(live);
-    if (!ids.length) return null;
-    var mk = monthKey(today);
     var last = state.snapshots.length ? state.snapshots[state.snapshots.length - 1] : null;
-    if (last && monthKey(last.date) > mk) return null;   // an entry dated in a later month: leave it alone
-    var sameMonth = !!last && monthKey(last.date) === mk;
-    var values = {}, changed = !sameMonth;
-    if (sameMonth) values = Object.assign({}, last.values);
-    else if (last) state.accounts.forEach(function (a) { if (!a.closed && last.values[a.id] != null) values[a.id] = last.values[a.id]; });
-    ids.forEach(function (id) { if (values[id] !== live[id]) { values[id] = live[id]; changed = true; } });
-    if (!changed) return null;
-    var date = sameMonth && last.date > today ? last.date : today;
-    var snaps = state.snapshots.filter(function (s) { return monthKey(s.date) !== mk; }).concat([{ date: date, values: values }])
-        .sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
-    return Object.assign({}, state, { snapshots: snaps });
+    if (last && last.date > today) return null;
+    var now = currentBalances(state).values;
+    var changed = {};
+    Object.keys(live).forEach(function (id) { if (now[id] !== live[id]) changed[id] = live[id]; });
+    if (!Object.keys(changed).length) return null;
+    return Object.assign({}, state, { snapshots: withPartial(state.snapshots, today, changed) });
 }
 
 // The point to compare `latest` with for a "12 months" change: the latest one at least 12 months earlier.
@@ -583,7 +598,8 @@ function csvCell(v) {
 }
 function buildCsv(state) {
     var lines = ['date,account,group,share,balance'];
-    state.snapshots.forEach(function (s) {
+    // Every account's balance as it stood on each date, so a partial update still reads as a full row set.
+    resolveTimeline(state.snapshots).forEach(function (s) {
         state.accounts.forEach(function (a) {
             if (s.values[a.id] == null) return;
             lines.push([s.date, a.name, a.group, a.share, s.values[a.id]].map(csvCell).join(','));
@@ -971,7 +987,7 @@ function UpdateView(props) {
     var state = props.state;
     var appValues = props.appValues || [];
     var appByKey = appIndex(appValues);
-    var lastSnap = state.snapshots.length ? state.snapshots[state.snapshots.length - 1] : null;
+    var current = currentBalances(state);
 
     // Working copies: accounts (for manage mode) and the typed amounts (positive = amount owed for debts).
     var accState = React.useState(function () { return state.accounts.map(function (a) { return Object.assign({}, a); }); });
@@ -979,17 +995,17 @@ function UpdateView(props) {
     var amtState = React.useState(function () {
         var m = {};
         state.accounts.forEach(function (a) {
-            m[a.id] = amountText(lastSnap ? lastSnap.values[a.id] : null);
+            m[a.id] = amountText(current.values[a.id]);
         });
         return m;
     });
     var amounts = amtState[0], setAmounts = amtState[1];
+    var initial = React.useState(amounts)[0];   // what each box showed on opening: unchanged boxes aren't saved
     var dateState = React.useState(todayISO()), date = dateState[0];
     var manage = React.useState(state.accounts.length === 0);
     var newName = React.useState(''), newGroup = React.useState('current');
     var err = React.useState(null);
 
-    var sameMonth = state.snapshots.filter(function (s) { return monthKey(s.date) === monthKey(date || ''); });
     var open = accounts.filter(function (a) { return !a.closed; });
     var closed = accounts.filter(function (a) { return a.closed; });
 
@@ -1011,23 +1027,32 @@ function UpdateView(props) {
         newName[1]('');
         err[1](null);
     }
+    // Saves only the balances that changed, as a partial update: every other account keeps its last value and date,
+    // so month-on-month changes aren't flattened by re-saving untouched balances.
     function save() {
         if (!ISO_DATE.test(date || '')) { err[1]('Pick a date.'); return; }
         var values = {}, bad = null;
         open.forEach(function (a) {
             var linked = linkedNow(a, appByKey);
-            if (linked) { values[a.id] = Math.round(linked.value * 100) / 100; return; }
+            if (linked) {
+                var lv = Math.round(linked.value * 100) / 100;
+                if (current.values[a.id] !== lv) values[a.id] = lv;
+                return;
+            }
             var t = amounts[a.id];
-            if (t == null || String(t).trim() === '') return;
+            if (t === initial[a.id]) return;                    // left as it was
+            if (t == null || String(t).trim() === '') { values[a.id] = 0; return; }
             var v = parseAmount(t);
             if (v == null) { bad = a.name; return; }
             values[a.id] = a.debt ? -Math.abs(v) : v;
         });
+        // An account closed here stops counting from this date.
+        accounts.forEach(function (a) {
+            var before = state.accounts.filter(function (x) { return x.id === a.id; })[0];
+            if (a.closed && before && !before.closed && current.values[a.id]) values[a.id] = 0;
+        });
         if (bad) { err[1]('Check the amount for ' + bad + '.'); return; }
-        if (!Object.keys(values).length) { err[1]('Enter at least one balance.'); return; }
-        var mk = monthKey(date);
-        var snaps = state.snapshots.filter(function (s) { return monthKey(s.date) !== mk; }).concat([{ date: date, values: values }])
-            .sort(function (a, b) { return a.date < b.date ? -1 : 1; });
+        var snaps = Object.keys(values).length ? withPartial(state.snapshots, date, values) : state.snapshots;
         saveState(Object.assign({}, state, { accounts: accounts.map(linkedToInvestments), snapshots: snaps })).then(props.onDone, function (e) { err[1]('Could not save: ' + (e && e.message)); });
     }
 
@@ -1038,8 +1063,8 @@ function UpdateView(props) {
             E('div', { style: { flex: 1, fontFamily: ui.sys, fontSize: 14, color: ui.C.zinc400 } }, 'Balances as at'),
             E('input', { type: 'date', value: date, onChange: function (e) { dateState[1](e.target.value); }, style: inputStyle(ui, { fontFamily: ui.sys, fontSize: 15 }) })
         ),
-        sameMonth.length > 0 && E('div', { style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.amber, margin: '-4px 4px 12px', lineHeight: 1.4 } },
-            'Saving replaces your ' + sameMonth.map(function (s) { return dayLabel(s.date); }).join(' and ') + ' entry for this month.'),
+        E('div', { style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.zinc600, margin: '-4px 4px 12px', lineHeight: 1.4 } },
+            'Change only the balances you have new figures for. The others keep their last value and date.'),
         GROUPS.map(function (g) {
             var list = open.filter(function (a) { return a.group === g.id; });
             if (!list.length) return null;
@@ -1054,7 +1079,9 @@ function UpdateView(props) {
                                 manage[0]
                                     ? E('input', { value: a.name, onChange: function (e) { patchAccount(a.id, { name: e.target.value }); }, style: inputStyle(ui, { flex: 1, minWidth: 0, fontFamily: ui.sys, fontSize: 14 }) })
                                     : E('div', { style: { flex: 1, minWidth: 0, fontFamily: ui.sys, fontSize: 14, color: ui.C.zinc400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
-                                        a.name, a.debt && g.id === 'property' ? E('span', { style: { color: ui.C.zinc700, fontSize: 11 } }, ' · owed') : null),
+                                        a.name, a.debt && g.id === 'property' ? E('span', { style: { color: ui.C.zinc700, fontSize: 11 } }, ' · owed') : null,
+                                        current.asOf[a.id] && E('div', { style: { fontSize: 11, color: amounts[a.id] !== initial[a.id] ? ui.C.amber : ui.C.zinc700, marginTop: 1 } },
+                                            amounts[a.id] !== initial[a.id] ? 'Will update' : 'Updated ' + dayLabel(current.asOf[a.id]))),
                                 manage[0]
                                     ? E('div', { style: { display: 'flex', gap: 6 } },
                                         // Investments are liquid by default; switch off for money you can't get at (unvested shares).
