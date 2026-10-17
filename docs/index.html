@@ -7292,6 +7292,31 @@ function Row({ icon: Icon, iconColor, iconBg, label, sub, right, onClick, isLabe
     return React.createElement('button', { style, onClick, disabled }, inner);
 }
 
+// Settings → App: pulls the newest index.html and balances.js past the browser's cache, then reloads. A Home Screen web app
+// on iOS keeps serving cached files for a while after a deploy, and closing it from the app switcher doesn't clear that.
+function ReloadLatestRow() {
+    const [msg, setMsg] = React.useState(null);
+    const src = document.querySelector('script[src^="balances.js"]');
+    const loaded = src && (src.getAttribute('src').match(/v=(\d+)/) || [])[1];
+    const go = async () => {
+        setMsg('Fetching the latest version…');
+        try {
+            const base = location.href.split('#')[0].split('?')[0];
+            const res = await fetch(base, { cache: 'reload' });
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            const html = await res.text();
+            const m = html.match(/src="(balances\.js[^"]*)"/);
+            if (m) { const r2 = await fetch(new URL(m[1], base).href, { cache: 'reload' }); if (!r2.ok) throw new Error('HTTP ' + r2.status); }
+            setMsg('Reloading…');
+            location.reload();
+        } catch (e) { setMsg('Couldn\u2019t reach the server (' + (e && e.message || e) + '). Check your connection and try again.'); }
+    };
+    return React.createElement(Group, { title: 'App' },
+        React.createElement(Row, { icon: RefreshCw, iconColor: '#60a5fa', label: 'Reload Latest Version', last: true, onClick: go,
+            sub: msg || (loaded ? 'Running Estate v' + loaded + ' · fetches the newest files and restarts' : 'Fetches the newest files and restarts'), right: null })
+    );
+}
+
 // Settings → Estate: the balances' import, exports and delete (moved here from the bottom of the Estate tab).
 // Re-renders when the Estate data changes, so "last exported" stays current.
 function EstateGroup({ onImport }) {
@@ -9513,6 +9538,9 @@ function MoreTab(props) {
 
         React.createElement('div', { className: 'tab-view tab-fade ios-scroll', style: { paddingTop: 'max(env(safe-area-inset-top), 12px)' } },
             React.createElement('div', { style: { padding: '16px 20px', paddingBottom: 120 } },
+
+                // ── App: reload the newest deployed version ────────
+                React.createElement(ReloadLatestRow, null),
 
                 // ── Group A: Data ──────────────────────────────────
                 React.createElement(Group, { title: 'Data' },
