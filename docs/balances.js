@@ -1,0 +1,1162 @@
+// ─── Balances screen ─────────────────────────────────────────────────────────
+// Month-by-month balances of current, savings, card, investment, pension and property accounts, with total
+// wealth and liquid money on top. Opened from the "Balances" button beside Markets.
+//
+// Loaded by index.html as its own file: <script src="balances.js?v=N">. Bump N there whenever this file changes,
+// so the Home Screen app never pairs a new index.html with a cached old copy of this file.
+//
+// Exposes:
+//   window.BalancesScreen  — the full-screen view (props: onClose, privacyMode, appValues, ui)
+//   window.BalancesStore   — backupSnapshot() / restore(obj) for the app's JSON backup, plus load/subscribe
+//
+// Data lives in its own IndexedDB database ('portfolio-balances'), so Settings → Clear cache never touches it.
+// No balances are ever written into this file or index.html: the repo is public.
+(function () {
+'use strict';
+var E = React.createElement;
+
+// ── Groups ───────────────────────────────────────────────────────────────────
+// liquid: counts toward Liquid (and always toward Total wealth). debt: balances are stored as negative numbers.
+var GROUPS = [
+    { id: 'current',     label: 'Current',                   liquid: true  },
+    { id: 'savings',     label: 'Savings',                   liquid: true  },
+    { id: 'investments', label: 'Investments',               liquid: true  },
+    { id: 'cards',       label: 'Credit cards',              liquid: true, debt: true },
+    { id: 'pensions',    label: 'Pensions & employer stock', liquid: false },
+    { id: 'property',    label: 'Property & car',            liquid: false },
+    { id: 'other',       label: 'Other',                     liquid: true  },
+];
+var GROUP_BY_ID = {};
+GROUPS.forEach(function (g) { GROUP_BY_ID[g.id] = g; });
+function groupOf(id) { return GROUP_BY_ID[id] || GROUP_BY_ID.other; }
+
+// ── Store (IndexedDB, own database) ──────────────────────────────────────────
+// state = { v: 1, accounts: [Account], snapshots: [Snapshot], lastExportAt, updatedAt }
+//   Account  = { id, name, group, debt, share, rate, closed, appLink }
+//              debt:  balance stored negative (cards, mortgage); the form takes the amount owed as a positive number.
+//              share: fraction of the balance that is yours (e.g. 0.5 of a jointly owned house and its mortgage).
+//   Snapshot = { date: 'YYYY-MM-DD', values: { [accountId]: number } }. An account missing from values = £0 then.
+var DB_NAME = 'portfolio-balances';
+var DB_STORE = 'kv';
+var DB_KEY = 'state';
+
+function emptyState() { return { v: 1, accounts: [], snapshots: [], lastExportAt: null, updatedAt: null }; }
+
+function idbOpen() {
+    return new Promise(function (resolve, reject) {
+        if (typeof indexedDB === 'undefined') return reject(new Error('IndexedDB unavailable'));
+        var req = indexedDB.open(DB_NAME, 1);
+        req.onupgradeneeded = function () {
+            if (!req.result.objectStoreNames.contains(DB_STORE)) req.result.createObjectStore(DB_STORE);
+        };
+        req.onsuccess = function () { resolve(req.result); };
+        req.onerror = function () { reject(req.error); };
+    });
+}
+function idbRead() {
+    return idbOpen().then(function (db) {
+        return new Promise(function (resolve, reject) {
+            var req = db.transaction(DB_STORE, 'readonly').objectStore(DB_STORE).get(DB_KEY);
+            req.onsuccess = function () { resolve(req.result); };
+            req.onerror = function () { reject(req.error); };
+        });
+    });
+}
+function idbWrite(value) {
+    return idbOpen().then(function (db) {
+        return new Promise(function (resolve, reject) {
+            var tx = db.transaction(DB_STORE, 'readwrite');
+            tx.objectStore(DB_STORE).put(value, DB_KEY);
+            tx.oncomplete = function () { resolve(); };
+            tx.onerror = function () { reject(tx.error); };
+        });
+    });
+}
+
+var ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+// Returns a cleaned copy of a stored or restored state, or null when it is not a balances state at all.
+function validateState(s) {
+    if (!s || typeof s !== 'object' || !Array.isArray(s.accounts) || !Array.isArray(s.snapshots)) return null;
+    var ids = {};
+    var accounts = s.accounts.filter(function (a) {
+        return a && typeof a.id === 'string' && typeof a.name === 'string';
+    }).map(function (a) {
+        ids[a.id] = true;
+        return {
+            id: a.id, name: a.name, group: GROUP_BY_ID[a.group] ? a.group : 'other',
+            debt: !!a.debt,
+            share: (typeof a.share === 'number' && a.share > 0 && a.share <= 1) ? a.share : 1,
+            rate: (typeof a.rate === 'number' && isFinite(a.rate)) ? a.rate : null,
+            closed: !!a.closed,
+            appLink: typeof a.appLink === 'string' ? a.appLink : null,
+        };
+    });
+    var snapshots = s.snapshots.filter(function (sn) {
+        return sn && typeof sn.date === 'string' && ISO_DATE.test(sn.date) && sn.values && typeof sn.values === 'object';
+    }).map(function (sn) {
+        var values = {};
+        Object.keys(sn.values).forEach(function (id) {
+            var v = sn.values[id];
+            if (ids[id] && typeof v === 'number' && isFinite(v)) values[id] = v;
+        });
+        return { date: sn.date, values: values };
+    }).sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+    return {
+        v: 1, accounts: accounts, snapshots: snapshots,
+        lastExportAt: typeof s.lastExportAt === 'number' ? s.lastExportAt : null,
+        updatedAt: typeof s.updatedAt === 'number' ? s.updatedAt : null,
+    };
+}
+
+var _state = emptyState();
+var _ready = false;
+var _loadError = null;
+var _listeners = [];
+function emit() { _listeners.slice().forEach(function (fn) { try { fn(); } catch (e) {} }); }
+
+var _loaded = idbRead().then(function (s) {
+    var clean = validateState(s);
+    if (clean) _state = clean;
+}).catch(function (e) {
+    _loadError = e && e.message ? e.message : String(e);
+}).then(function () { _ready = true; emit(); });
+
+function saveState(next, opts) {
+    next.updatedAt = Date.now();
+    _state = next;
+    emit();
+    // Ask Safari to keep this site's storage; a no-op where it is already persistent (Home Screen apps).
+    try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {}
+    return idbWrite(next).catch(function (e) {
+        _loadError = 'Could not save: ' + (e && e.message ? e.message : e);
+        emit();
+        throw e;
+    });
+}
+
+var BalancesStore = {
+    ready: function () { return _loaded; },
+    get: function () { return _state; },
+    subscribe: function (fn) {
+        _listeners.push(fn);
+        return function () { _listeners = _listeners.filter(function (f) { return f !== fn; }); };
+    },
+    // Synchronous on purpose: the JSON backup is built inside the tap that opens the iOS share sheet.
+    // Returns null when there is nothing to back up. Marks the time so the screen can show "last exported".
+    backupSnapshot: function () {
+        if (!_state.accounts.length) return null;
+        var copy = JSON.parse(JSON.stringify(_state));
+        var next = Object.assign({}, _state, { lastExportAt: Date.now() });
+        saveState(next).catch(function () {});
+        return copy;
+    },
+    // Replaces the balances with the ones from a backup. Returns false (and changes nothing) when invalid.
+    restore: function (obj) {
+        var clean = validateState(obj);
+        if (!clean || !clean.accounts.length) return false;
+        saveState(clean).catch(function () {});
+        return true;
+    },
+};
+
+function useBalancesState() {
+    var st = React.useState(0);
+    React.useEffect(function () { return BalancesStore.subscribe(function () { st[1](function (n) { return n + 1; }); }); }, []);
+    return _state;
+}
+
+// ── Calculations ─────────────────────────────────────────────────────────────
+function monthKey(date) { return date.slice(0, 7); }
+function monthIndex(mk) { return Number(mk.slice(0, 4)) * 12 + Number(mk.slice(5, 7)) - 1; }
+var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function monthLabel(mk) { return MONTHS[Number(mk.slice(5, 7)) - 1] + ' ' + mk.slice(0, 4); }
+function dayLabel(date) { return Number(date.slice(8, 10)) + ' ' + MONTHS[Number(date.slice(5, 7)) - 1] + ' ' + date.slice(0, 4); }
+
+// Totals for one snapshot. Every figure is built from the accounts: summary rows are never copied.
+function totalsFor(snapshot, accountsById) {
+    var groups = {};
+    GROUPS.forEach(function (g) { groups[g.id] = 0; });
+    var liquid = 0, total = 0;
+    Object.keys(snapshot.values).forEach(function (id) {
+        var a = accountsById[id];
+        if (!a) return;
+        var v = snapshot.values[id] * (a.share || 1);
+        groups[a.group] = (groups[a.group] || 0) + v;
+        total += v;
+        if (groupOf(a.group).liquid) liquid += v;
+    });
+    return { groups: groups, liquid: liquid, total: total };
+}
+
+function indexAccounts(accounts) {
+    var m = {};
+    accounts.forEach(function (a) { m[a.id] = a; });
+    return m;
+}
+
+// One point per month: the latest snapshot in that month wins.
+function buildSeries(state) {
+    var byId = indexAccounts(state.accounts);
+    var byMonth = {};
+    state.snapshots.forEach(function (s) {
+        var mk = monthKey(s.date);
+        if (!byMonth[mk] || byMonth[mk].date <= s.date) byMonth[mk] = s;
+    });
+    return Object.keys(byMonth).sort().map(function (mk) {
+        var s = byMonth[mk];
+        var t = totalsFor(s, byId);
+        return { month: mk, date: s.date, values: s.values, groups: t.groups, liquid: t.liquid, total: t.total };
+    });
+}
+
+// The point to compare `latest` with for a "12 months" change: the latest one at least 12 months earlier.
+function pointMonthsBack(series, latest, months) {
+    var target = monthIndex(latest.month) - months;
+    var found = null;
+    series.forEach(function (p) { if (monthIndex(p.month) <= target) found = p; });
+    return found;
+}
+
+// ── Formatting ───────────────────────────────────────────────────────────────
+function fmtGBP(n, dp) {
+    if (n == null || !isFinite(n)) return '—';
+    var d = dp == null ? 0 : dp;
+    var s = Math.abs(n).toLocaleString('en-GB', { minimumFractionDigits: d, maximumFractionDigits: d });
+    return (n < 0 ? '−£' : '£') + s;
+}
+function fmtSigned(n) {
+    if (n == null || !isFinite(n)) return '—';
+    if (Math.round(n) === 0) return '£0';
+    return (n > 0 ? '+£' : '−£') + Math.abs(n).toLocaleString('en-GB', { maximumFractionDigits: 0 });
+}
+function fmtPct(n) {
+    if (n == null || !isFinite(n)) return '';
+    return (n >= 0 ? '+' : '−') + Math.abs(n * 100).toFixed(1) + '%';
+}
+function pctChange(now, before) {
+    if (before == null || !isFinite(before) || Math.abs(before) < 1) return null;
+    return (now - before) / Math.abs(before);
+}
+function relTime(ts) {
+    if (!ts) return 'never';
+    var days = Math.floor((Date.now() - ts) / 86400000);
+    if (days <= 0) return 'today';
+    if (days === 1) return 'yesterday';
+    if (days < 60) return days + ' days ago';
+    return Math.round(days / 30) + ' months ago';
+}
+function todayISO() {
+    var d = new Date();
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+// "12,345.67", "£12,345", "(1,234.00)", "−50" → number; blank → null.
+function parseAmount(x) {
+    if (x == null) return null;
+    if (typeof x === 'number') return isFinite(x) ? x : null;
+    var s = String(x).replace(/Â/g, '').replace(/[£$€\s ,]/g, '').replace(/−/g, '-');
+    if (s === '') return null;
+    if (s === '-') return 0;                      // accounting format writes zero as a dash
+    var neg = false;
+    if (/^\(.*\)$/.test(s)) { neg = true; s = s.slice(1, -1); }
+    if (!/^-?\d*\.?\d+$/.test(s)) return null;
+    var v = parseFloat(s);
+    return neg ? -v : v;
+}
+
+// ── Import: spreadsheet → state ──────────────────────────────────────────────
+// Wide layout (the original spreadsheet): row 1 = snapshot dates from the first date column on; one row per
+// account (name, rate, type, then a value per date) down to a row named "Summary". Below it, the summary rows
+// are read only to check the import, plus House value and the car (Property & car).
+// Long layout (this screen's CSV export): date, account, group, share, balance.
+function cellToISO(c) {
+    if (c == null || c === '') return null;
+    if (typeof c === 'number') {
+        if (c < 20000 || c > 80000) return null;  // an Excel serial between 1954 and 2119
+        var p = XLSX.SSF.parse_date_code(c);
+        return p ? p.y + '-' + String(p.m).padStart(2, '0') + '-' + String(p.d).padStart(2, '0') : null;
+    }
+    if (c instanceof Date && !isNaN(c)) {
+        return c.getFullYear() + '-' + String(c.getMonth() + 1).padStart(2, '0') + '-' + String(c.getDate()).padStart(2, '0');
+    }
+    var s = String(c).trim(), m;
+    if ((m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/))) return m[1] + '-' + m[2].padStart(2, '0') + '-' + m[3].padStart(2, '0');
+    if ((m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/))) {
+        var y = m[3].length === 2 ? '20' + m[3] : m[3];
+        return y + '-' + m[2].padStart(2, '0') + '-' + m[1].padStart(2, '0');
+    }
+    return null;
+}
+
+// Best guess at the group from the sheet's "Account Type", falling back to the account name.
+function guessGroup(type, name) {
+    var t = String(type || '').toLowerCase();
+    var n = String(name || '').toLowerCase();
+    if (/current/.test(t)) return 'current';
+    if (/credit/.test(t)) return 'cards';
+    if (/mortgage/.test(t)) return 'property';
+    if (/pension|tower|watson|sip|share ?save|stocks and shares account|rsu|employer/.test(t)) return 'pensions';
+    if (/cash isa|saving|money market|cash/.test(t)) return 'savings';
+    if (/stocks|shares|isa|invest|gia|fund/.test(t)) return 'investments';
+    if (/loan/.test(n)) return 'other';
+    if (/mortgage/.test(n)) return 'property';
+    if (/credit|card|amex/.test(n)) return 'cards';
+    if (/pension/.test(n)) return 'pensions';
+    if (/sav(e|ing)|cash|money market|isa/.test(n)) return 'savings';
+    if (/stock|share|coinbase|crypto|gold|fund|invest/.test(n)) return 'investments';
+    return 'other';
+}
+function isDebtRow(group, type, name) {
+    return group === 'cards' || /mortgage/i.test(String(type || '')) || /mortgage/i.test(String(name || ''));
+}
+
+function slug(s) { return String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 24); }
+
+function readSheetRows(arrayBuffer) {
+    if (typeof XLSX === 'undefined') throw new Error('The spreadsheet reader did not load. Check your connection and try again.');
+    var wb = XLSX.read(arrayBuffer, { type: 'array', cellDates: false });
+    var ws = wb.Sheets[wb.SheetNames[0]];
+    if (!ws) throw new Error('The file has no sheets.');
+    return XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null, blankrows: true });
+}
+
+// Returns { dates, rows: [ImportRow], checks: [SummaryRow], format } for the preview.
+//   ImportRow  = { key, name, type, group, debt, share, rate, include, closed, values: [number|null per date] }
+//   SummaryRow = { label, kind, values: [number|null per date] }
+function parseImport(arrayBuffer) {
+    var rows = readSheetRows(arrayBuffer);
+    if (!rows.length) throw new Error('The file is empty.');
+    var head = (rows[0] || []).map(function (c) { return String(c == null ? '' : c).trim().toLowerCase(); });
+    if (head.indexOf('date') >= 0 && head.indexOf('account') >= 0 && head.indexOf('balance') >= 0) return parseLong(rows, head);
+    return parseWide(rows);
+}
+
+function finishRows(list, nDates) {
+    // Duplicate names get a 1 / 2 suffix, in sheet order, so each stays its own account.
+    var count = {}, seen = {};
+    list.forEach(function (r) { count[r.name.toLowerCase()] = (count[r.name.toLowerCase()] || 0) + 1; });
+    list.forEach(function (r, i) {
+        var k = r.name.toLowerCase();
+        if (count[k] > 1) { seen[k] = (seen[k] || 0) + 1; r.name = r.name + ' ' + seen[k]; }
+        r.key = 'r' + i;
+        var last = -1;
+        r.values.forEach(function (v, j) { if (v != null) last = j; });
+        r.closed = last !== nDates - 1;
+        r.count = r.values.filter(function (v) { return v != null; }).length;
+        r.lastIndex = last;
+    });
+    return list;
+}
+
+function parseWide(rows) {
+    var header = rows[0] || [];
+    var dateCols = [], dates = [];
+    header.forEach(function (c, j) {
+        if (j === 0) return;
+        var iso = cellToISO(c);
+        if (iso) { dateCols.push(j); dates.push(iso); }
+    });
+    if (dates.length === 0) throw new Error('No snapshot dates found in the first row.');
+    var firstDate = dateCols[0];
+    var headLower = header.map(function (c) { return String(c == null ? '' : c).trim().toLowerCase(); });
+    var rateCol = headLower.slice(0, firstDate).findIndex(function (h) { return h === 'r' || h === 'rate'; });
+    var typeCol = headLower.slice(0, firstDate).findIndex(function (h) { return /type/.test(h); });
+
+    var accounts = [], checks = [];
+    var inSummary = false;
+    var CHECK_ROWS = [
+        { re: /^current$/i,      kind: 'current',     label: 'Current' },
+        { re: /^savings$/i,      kind: 'savings',     label: 'Savings' },
+        { re: /^investments$/i,  kind: 'investments', label: 'Investments' },
+        { re: /^debt$/i,         kind: 'debt',        label: 'Debt (cards)' },
+        { re: /^total liquid$/i, kind: 'liquid',      label: 'Total Liquid' },
+        { re: /^total wealth$/i, kind: 'total',       label: 'Total Wealth' },
+    ];
+    var checkSeen = {};
+    for (var i = 1; i < rows.length; i++) {
+        var r = rows[i] || [];
+        var name = String(r[0] == null ? '' : r[0]).trim();
+        if (!name) continue;
+        if (/^summary$/i.test(name)) { inSummary = true; continue; }
+        var values = dateCols.map(function (j) { return parseAmount(r[j]); });
+        var hasAny = values.some(function (v) { return v != null; });
+        if (!hasAny) continue;
+        if (!inSummary) {
+            var type = typeCol >= 0 ? r[typeCol] : null;
+            var group = guessGroup(type, name);
+            var rate = rateCol >= 0 ? parseAmount(r[rateCol]) : null;
+            accounts.push({
+                name: name, type: type ? String(type) : '', group: group,
+                debt: isDebtRow(group, type, name), share: group === 'property' ? 0.5 : 1,
+                rate: rate, include: true, values: values,
+            });
+            continue;
+        }
+        var chk = CHECK_ROWS.find(function (c) { return c.re.test(name); });
+        if (chk && !checkSeen[chk.kind]) {
+            checkSeen[chk.kind] = true;
+            checks.push({ label: chk.label, kind: chk.kind, values: values });
+            continue;
+        }
+        // The only summary-block rows that are balances: the house and the car.
+        if (/house/i.test(name) && /value/i.test(name)) {
+            accounts.push({ name: name, type: 'Property', group: 'property', debt: false, share: 0.5, rate: null, include: true, values: values });
+        } else if (/\bcar\b|volvo|vehicle/i.test(name) && !/age|real estate|total|wealth|%|\+/i.test(name)) {
+            accounts.push({ name: name, type: 'Car', group: 'property', debt: false, share: 1, rate: null, include: true, values: values });
+        }
+    }
+    if (!accounts.length) throw new Error('No account rows found under the date row.');
+    return { format: 'wide', dates: dates, rows: finishRows(accounts, dates.length), checks: checks };
+}
+
+function parseLong(rows, head) {
+    var ci = { date: head.indexOf('date'), account: head.indexOf('account'), group: head.indexOf('group'),
+               share: head.indexOf('share'), balance: head.indexOf('balance') };
+    var dateSet = {}, byName = {}, order = [];
+    for (var i = 1; i < rows.length; i++) {
+        var r = rows[i] || [];
+        var iso = cellToISO(r[ci.date]);
+        var name = String(r[ci.account] == null ? '' : r[ci.account]).trim();
+        var v = parseAmount(r[ci.balance]);
+        if (!iso || !name || v == null) continue;
+        dateSet[iso] = true;
+        if (!byName[name]) {
+            var g = ci.group >= 0 ? String(r[ci.group] || '').trim() : '';
+            var group = GROUP_BY_ID[g] ? g : guessGroup('', name);
+            var share = ci.share >= 0 ? parseAmount(r[ci.share]) : null;
+            byName[name] = { name: name, type: '', group: group, debt: groupOf(group).debt || v < 0 && group === 'property',
+                             share: share > 0 && share <= 1 ? share : 1, rate: null, include: true, byDate: {} };
+            order.push(name);
+        }
+        byName[name].byDate[iso] = v;
+    }
+    var dates = Object.keys(dateSet).sort();
+    if (!dates.length) throw new Error('No rows with a date, account and balance found.');
+    var list = order.map(function (n) {
+        var a = byName[n];
+        a.values = dates.map(function (d) { return a.byDate[d] != null ? a.byDate[d] : null; });
+        delete a.byDate;
+        return a;
+    });
+    // Names are already unique in this format, so finishRows adds no suffixes.
+    return { format: 'long', dates: dates, rows: finishRows(list, dates.length), checks: [] };
+}
+
+// Preview rows → a state ready to save.
+function importToState(parsed, prev) {
+    var included = parsed.rows.filter(function (r) { return r.include; });
+    var accounts = included.map(function (r, i) {
+        return {
+            id: 'a' + i + '-' + slug(r.name), name: r.name, group: r.group, debt: !!r.debt,
+            share: r.share, rate: r.rate, closed: r.closed, appLink: null,
+        };
+    });
+    // Keep app links from before a re-import, matched by name.
+    var prevLinks = {};
+    (prev && prev.accounts || []).forEach(function (a) { if (a.appLink) prevLinks[a.name] = a.appLink; });
+    accounts.forEach(function (a) { if (prevLinks[a.name]) a.appLink = prevLinks[a.name]; });
+    var snapshots = parsed.dates.map(function (d, j) {
+        var values = {};
+        included.forEach(function (r, i) {
+            var v = r.values[j];
+            if (v == null) return;
+            values[accounts[i].id] = r.debt ? -Math.abs(v) : v;
+        });
+        return { date: d, values: values };
+    }).filter(function (s) { return Object.keys(s.values).length > 0; });
+    return { v: 1, accounts: accounts, snapshots: snapshots, lastExportAt: prev ? prev.lastExportAt : null, updatedAt: null };
+}
+
+// Compares the app's totals with the sheet's own summary rows, snapshot by snapshot.
+function runChecks(parsed) {
+    if (!parsed.checks.length) return [];
+    var st = importToState(parsed, null);
+    var byId = indexAccounts(st.accounts);
+    var totalsByDate = {};
+    st.snapshots.forEach(function (s) { totalsByDate[s.date] = totalsFor(s, byId); });
+    return parsed.checks.map(function (c) {
+        var mism = [], compared = 0;
+        parsed.dates.forEach(function (d, j) {
+            var sheet = c.values[j];
+            if (sheet == null) return;
+            var t = totalsByDate[d] || { groups: {}, liquid: 0, total: 0 };
+            var app = c.kind === 'liquid' ? t.liquid
+                    : c.kind === 'total' ? t.total
+                    : c.kind === 'debt' ? -(t.groups.cards || 0)
+                    : (t.groups[c.kind] || 0);
+            compared++;
+            if (Math.abs(app - sheet) > 1) mism.push({ date: d, diff: app - sheet });
+        });
+        return { label: c.label, compared: compared, mismatches: mism };
+    });
+}
+
+// ── Export ───────────────────────────────────────────────────────────────────
+function csvCell(v) {
+    var s = String(v == null ? '' : v);
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+function buildCsv(state) {
+    var lines = ['date,account,group,share,balance'];
+    state.snapshots.forEach(function (s) {
+        state.accounts.forEach(function (a) {
+            if (s.values[a.id] == null) return;
+            lines.push([s.date, a.name, a.group, a.share, s.values[a.id]].map(csvCell).join(','));
+        });
+    });
+    return lines.join('\n') + '\n';
+}
+// iOS: the share sheet (Save to Files); elsewhere a download.
+function deliverText(text, filename, mime) {
+    var file = null;
+    try { file = new File([text], filename, { type: mime }); } catch (e) {}
+    if (file && navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+        return navigator.share({ files: [file] });
+    }
+    var url = URL.createObjectURL(new Blob([text], { type: mime }));
+    var a = document.createElement('a');
+    a.href = url; a.download = filename; a.rel = 'noopener';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 15000);
+    return Promise.resolve();
+}
+
+// ── UI ───────────────────────────────────────────────────────────────────────
+var DEFAULT_UI = {
+    C: { bg: '#080c10', surface: '#0d1218', surfaceHigh: '#11161f', border: 'rgba(255,255,255,0.08)',
+         amber: '#fbbf24', emerald: '#34d399', rose: '#f87171', blue: '#60a5fa', violet: '#a78bfa',
+         zinc400: '#cbd5e1', zinc500: '#a1a1aa', zinc600: '#9da5b4', zinc700: '#888894', white: '#ffffff' },
+    sys: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif',
+    rounded: 'ui-rounded, "SF Pro Rounded", -apple-system, BlinkMacSystemFont, sans-serif',
+};
+var UICtx = React.createContext(DEFAULT_UI);
+function useUI() { return React.useContext(UICtx); }
+function signColor(ui, n) { return n == null || Math.round(n) === 0 ? ui.C.zinc500 : n > 0 ? ui.C.emerald : ui.C.rose; }
+
+var WalletIcon = typeof _li === 'function'
+    ? _li(['M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1', 'M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4'])
+    : function () { return null; };
+var ChevronIcon = typeof _li === 'function' ? _li(['M9 18l6-6-6-6']) : function () { return null; };
+var BackIcon = typeof _li === 'function' ? _li(['M15 18l-6-6 6-6']) : function () { return null; };
+
+function cardStyle(ui, extra) {
+    return Object.assign({
+        background: 'linear-gradient(180deg, ' + ui.C.surfaceHigh + ' 0%, ' + ui.C.surface + ' 100%)',
+        border: '1px solid ' + ui.C.border, borderRadius: 16, padding: '14px 16px',
+    }, extra || {});
+}
+function moneyStyle(ui, size, privacy, color) {
+    return {
+        fontFamily: ui.rounded, fontVariantNumeric: 'tabular-nums', letterSpacing: '-0.02em',
+        fontSize: size, fontWeight: 700, color: color || ui.C.white, lineHeight: 1.1, whiteSpace: 'nowrap',
+        filter: privacy ? 'blur(8px)' : 'none',
+    };
+}
+function capsLabel(ui) {
+    return { fontFamily: ui.sys, fontSize: 10, color: ui.C.zinc500, textTransform: 'uppercase', letterSpacing: '0.18em' };
+}
+function buttonStyle(ui, kind) {
+    var primary = kind === 'primary', danger = kind === 'danger';
+    return {
+        minHeight: 44, borderRadius: 12, padding: '0 14px', fontFamily: ui.sys, fontSize: 14, fontWeight: 600,
+        background: primary ? 'rgba(96,165,250,0.14)' : danger ? 'rgba(248,113,113,0.10)' : 'rgba(39,39,42,0.6)',
+        border: '1px solid ' + (primary ? 'rgba(96,165,250,0.35)' : danger ? 'rgba(248,113,113,0.3)' : ui.C.border),
+        color: primary ? ui.C.blue : danger ? ui.C.rose : ui.C.zinc400,
+        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, cursor: 'pointer',
+    };
+}
+function inputStyle(ui, extra) {
+    return Object.assign({
+        background: 'rgba(0,0,0,0.35)', border: '1px solid ' + ui.C.border, borderRadius: 10,
+        color: ui.C.white, fontFamily: ui.rounded, fontSize: 16, padding: '8px 10px', minHeight: 40,
+        fontVariantNumeric: 'tabular-nums', outline: 'none', boxSizing: 'border-box',
+    }, extra || {});
+}
+
+// One "vs <month>  +£x  +y%" line.
+function ChangeLine(props) {
+    var ui = useUI();
+    if (!props.base) return null;
+    var d = props.now - props.base.value;
+    return E('div', { style: { display: 'flex', alignItems: 'baseline', gap: 8, fontFamily: ui.rounded, fontSize: 13, fontVariantNumeric: 'tabular-nums' } },
+        E('span', { style: { color: ui.C.zinc500, fontSize: 11, minWidth: 74 } }, props.label),
+        E('span', { style: { color: signColor(ui, d), filter: props.privacy ? 'blur(6px)' : 'none' } }, fmtSigned(d)),
+        E('span', { style: { color: signColor(ui, d) } }, fmtPct(pctChange(props.now, props.base.value)))
+    );
+}
+
+function Hero(props) {
+    var ui = useUI();
+    var s = props.series, latest = s[s.length - 1], prev = s.length > 1 ? s[s.length - 2] : null;
+    var yearAgo = pointMonthsBack(s, latest, 12);
+    return E('div', { style: cardStyle(ui, { borderRadius: 20, padding: '16px 18px', marginBottom: 12 }) },
+        E('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 } },
+            E('span', { style: capsLabel(ui) }, 'Total wealth'),
+            E('span', { style: { fontFamily: ui.sys, fontSize: 11, color: ui.C.zinc600 } }, 'As at ' + dayLabel(latest.date))
+        ),
+        E('div', { style: moneyStyle(ui, 34, props.privacy) }, props.privacy ? '£ •••,•••' : fmtGBP(latest.total)),
+        E('div', { style: { display: 'flex', flexDirection: 'column', gap: 2, marginTop: 8 } },
+            prev && E(ChangeLine, { label: 'vs ' + monthLabel(prev.month), now: latest.total, base: { value: prev.total }, privacy: props.privacy }),
+            yearAgo && E(ChangeLine, { label: 'vs ' + monthLabel(yearAgo.month), now: latest.total, base: { value: yearAgo.total }, privacy: props.privacy })
+        ),
+        E('div', { style: { borderTop: '1px solid ' + ui.C.border, marginTop: 12, paddingTop: 10, display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' } },
+            E('div', { style: { display: 'flex', alignItems: 'baseline', gap: 10 } },
+                E('span', { style: capsLabel(ui) }, 'Liquid'),
+                E('span', { style: moneyStyle(ui, 18, props.privacy) }, props.privacy ? '£ ••,•••' : fmtGBP(latest.liquid))
+            ),
+            prev && E(ChangeLine, { label: 'vs ' + MONTHS[Number(prev.month.slice(5, 7)) - 1], now: latest.liquid, base: { value: prev.liquid }, privacy: props.privacy })
+        )
+    );
+}
+
+function useWidth(ref) {
+    var st = React.useState(0);
+    React.useEffect(function () {
+        if (!ref.current) return;
+        var measure = function () { if (ref.current) st[1](ref.current.offsetWidth); };
+        var ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
+        if (ro) ro.observe(ref.current);
+        measure();
+        return function () { if (ro) ro.disconnect(); };
+    }, []);
+    return st[0];
+}
+
+function kLabel(v) {
+    var a = Math.abs(v);
+    var s = a >= 1e6 ? (a / 1e6).toFixed(a >= 1e7 ? 0 : 1) + 'm' : a >= 1e3 ? Math.round(a / 1e3) + 'k' : String(Math.round(a));
+    return (v < 0 ? '−£' : '£') + s;
+}
+
+function Segmented(props) {
+    var ui = useUI();
+    return E('div', { style: { display: 'flex', background: 'rgba(0,0,0,0.3)', borderRadius: 9, padding: 2, gap: 2 } },
+        props.options.map(function (o) {
+            var on = o.id === props.value;
+            return E('button', {
+                key: o.id, onClick: function () { props.onChange(o.id); },
+                style: { border: 'none', borderRadius: 7, padding: '5px 10px', fontFamily: ui.sys, fontSize: 12, fontWeight: 600,
+                         background: on ? 'rgba(255,255,255,0.10)' : 'transparent', color: on ? ui.C.white : ui.C.zinc600, cursor: 'pointer' }
+            }, o.label);
+        })
+    );
+}
+
+var RANGES = [{ id: '1Y', label: '1Y', months: 12 }, { id: '3Y', label: '3Y', months: 36 }, { id: 'ALL', label: 'All', months: null }];
+
+function Chart(props) {
+    var ui = useUI();
+    var ref = React.useRef(null);
+    var width = useWidth(ref);
+    var mState = React.useState('total'), metric = mState[0];
+    var rState = React.useState('ALL'), range = rState[0];
+    var hState = React.useState(null), hover = hState[0], setHover = hState[1];
+    var all = props.series;
+    var last = all[all.length - 1];
+    var r = RANGES.find(function (x) { return x.id === range; });
+    var pts = r.months == null ? all : all.filter(function (p) { return monthIndex(p.month) >= monthIndex(last.month) - r.months; });
+    var H = 170, padT = 10, padB = 22, padR = 44;
+    var W = Math.max(width, 10), plotW = W - padR;
+    var vals = pts.map(function (p) { return p[metric]; });
+    var lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals);
+    if (hi - lo < 1) { hi += 1; lo -= 1; }
+    var pad = (hi - lo) * 0.08; lo -= pad; hi += pad;
+    var t0 = monthIndex(pts[0].month), t1 = monthIndex(pts[pts.length - 1].month);
+    var x = function (p) { return t1 === t0 ? plotW / 2 : ((monthIndex(p.month) - t0) / (t1 - t0)) * plotW; };
+    var y = function (v) { return padT + (1 - (v - lo) / (hi - lo)) * (H - padT - padB); };
+    var line = pts.map(function (p, i) { return (i ? 'L' : 'M') + x(p).toFixed(1) + ' ' + y(p[metric]).toFixed(1); }).join(' ');
+    var area = line + ' L' + x(pts[pts.length - 1]).toFixed(1) + ' ' + (H - padB) + ' L' + x(pts[0]).toFixed(1) + ' ' + (H - padB) + ' Z';
+    var up = pts[pts.length - 1][metric] >= pts[0][metric];
+    var color = up ? ui.C.emerald : ui.C.rose;
+    var ticks = [hi - pad, (hi + lo) / 2, lo + pad];
+    var firstYear = pts[0].month.slice(0, 4), lastYear = pts[pts.length - 1].month.slice(0, 4);
+
+    function pick(clientX) {
+        if (!ref.current || pts.length === 0) return;
+        var rect = ref.current.getBoundingClientRect();
+        var px = clientX - rect.left, best = null, bd = Infinity;
+        pts.forEach(function (p) { var d = Math.abs(x(p) - px); if (d < bd) { bd = d; best = p; } });
+        setHover(best);
+    }
+    var shown = hover && pts.indexOf(hover) >= 0 ? hover : null;
+    var head = shown || pts[pts.length - 1];
+    var first = pts[0];
+    var change = head[metric] - first[metric];
+
+    return E('div', { style: cardStyle(ui, { borderRadius: 20, padding: '14px 16px 10px', marginBottom: 12 }) },
+        E('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8 } },
+            E(Segmented, { options: [{ id: 'total', label: 'Total' }, { id: 'liquid', label: 'Liquid' }], value: metric, onChange: function (v) { mState[1](v); setHover(null); } }),
+            E(Segmented, { options: RANGES, value: range, onChange: function (v) { rState[1](v); setHover(null); } })
+        ),
+        E('div', { style: { display: 'flex', alignItems: 'baseline', columnGap: 8, flexWrap: 'wrap', minHeight: 20, fontFamily: ui.rounded, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' } },
+            E('span', { style: { fontSize: 12, color: ui.C.zinc500 } }, shown ? monthLabel(shown.month) : 'Since ' + monthLabel(first.month)),
+            E('span', { style: { fontSize: 14, fontWeight: 600, color: ui.C.white, filter: props.privacy ? 'blur(6px)' : 'none' } }, fmtGBP(head[metric])),
+            pts.length > 1 && E('span', { style: { fontSize: 12, color: signColor(ui, change), filter: props.privacy ? 'blur(6px)' : 'none' } }, fmtSigned(change)),
+            pts.length > 1 && E('span', { style: { fontSize: 12, color: signColor(ui, change) } }, fmtPct(pctChange(head[metric], first[metric])))
+        ),
+        E('div', {
+            ref: ref,
+            style: { position: 'relative', height: H, touchAction: 'none', marginTop: 4 },
+            onPointerDown: function (e) { pick(e.clientX); },
+            onPointerMove: function (e) { pick(e.clientX); },
+            onPointerLeave: function () { setHover(null); },
+            onPointerUp: function (e) { if (e.pointerType !== 'mouse') setHover(null); },
+        },
+            width > 0 && E('svg', { width: W, height: H, style: { display: 'block', overflow: 'visible' } },
+                E('defs', null,
+                    E('linearGradient', { id: 'bal-area', x1: 0, y1: 0, x2: 0, y2: 1 },
+                        E('stop', { offset: '0%', stopColor: color, stopOpacity: 0.22 }),
+                        E('stop', { offset: '100%', stopColor: color, stopOpacity: 0 }))),
+                ticks.map(function (v, i) {
+                    return E('g', { key: i },
+                        E('line', { x1: 0, x2: plotW, y1: y(v), y2: y(v), stroke: 'rgba(255,255,255,0.06)', strokeWidth: 1 }),
+                        E('text', { x: W - 2, y: y(v), textAnchor: 'end', dominantBaseline: 'middle', fill: ui.C.zinc700, fontSize: 10, fontFamily: ui.rounded },
+                            props.privacy ? '' : kLabel(v)));
+                }),
+                E('path', { d: area, fill: 'url(#bal-area)' }),
+                E('path', { d: line, fill: 'none', stroke: color, strokeWidth: 2, strokeLinejoin: 'round', strokeLinecap: 'round' }),
+                E('text', { x: 0, y: H - 6, fill: ui.C.zinc700, fontSize: 10, fontFamily: ui.sys }, firstYear),
+                lastYear !== firstYear && E('text', { x: plotW, y: H - 6, textAnchor: 'end', fill: ui.C.zinc700, fontSize: 10, fontFamily: ui.sys }, lastYear),
+                shown && E('g', null,
+                    E('line', { x1: x(shown), x2: x(shown), y1: padT, y2: H - padB, stroke: 'rgba(255,255,255,0.25)', strokeWidth: 1 }),
+                    E('circle', { cx: x(shown), cy: y(shown[metric]), r: 4, fill: color, stroke: ui.C.bg, strokeWidth: 2 }))
+            )
+        )
+    );
+}
+
+function GroupCard(props) {
+    var ui = useUI();
+    var g = props.group, latest = props.latest, prev = props.prev;
+    var open = React.useState(false);
+    var now = latest.groups[g.id] || 0;
+    var before = prev ? (prev.groups[g.id] || 0) : null;
+    var d = before == null ? null : now - before;
+    var rows = props.accounts.filter(function (a) { return a.group === g.id && (!a.closed || latest.values[a.id] != null); });
+    var blur = props.privacy ? 'blur(6px)' : 'none';
+    return E('div', { style: cardStyle(ui, { padding: 0 }) },
+        E('button', {
+            onClick: function () { open[1](!open[0]); },
+            style: { width: '100%', background: 'none', border: 'none', padding: '13px 14px 13px 16px', display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', textAlign: 'left' }
+        },
+            E('div', { style: { flex: 1, minWidth: 0 } },
+                E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc400, fontWeight: 600 } }, g.label),
+                E('div', { style: { fontFamily: ui.sys, fontSize: 11, color: ui.C.zinc700, marginTop: 1 } },
+                    rows.length + (rows.length === 1 ? ' account' : ' accounts'))
+            ),
+            E('div', { style: { textAlign: 'right' } },
+                E('div', { style: moneyStyle(ui, 17, props.privacy, now < 0 ? ui.C.rose : ui.C.white) }, fmtGBP(now)),
+                d != null && E('div', { style: { fontFamily: ui.rounded, fontSize: 11, color: signColor(ui, d), fontVariantNumeric: 'tabular-nums', marginTop: 2 } },
+                    E('span', { style: { filter: blur } }, fmtSigned(d)), ' ', fmtPct(pctChange(now, before)))
+            ),
+            E(ChevronIcon, { style: { width: 14, height: 14, color: ui.C.zinc700, transform: open[0] ? 'rotate(90deg)' : 'none', transition: 'transform 150ms' }, strokeWidth: 2 })
+        ),
+        open[0] && E('div', { style: { borderTop: '1px solid ' + ui.C.border, padding: '6px 16px 10px' } },
+            rows.map(function (a) {
+                var v = latest.values[a.id] || 0, pv = prev ? (prev.values[a.id] || 0) : null;
+                var shareNote = a.share < 1 ? ' · your ' + Math.round(a.share * 100) + '%' : '';
+                return E('div', { key: a.id, style: { display: 'flex', alignItems: 'baseline', gap: 8, padding: '6px 0' } },
+                    E('div', { style: { flex: 1, minWidth: 0, fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+                        a.name, E('span', { style: { color: ui.C.zinc700, fontSize: 11 } }, shareNote)),
+                    pv != null && E('span', { style: { fontFamily: ui.rounded, fontSize: 11, color: signColor(ui, v - pv), filter: blur, fontVariantNumeric: 'tabular-nums' } }, fmtSigned(v - pv)),
+                    E('span', { style: { fontFamily: ui.rounded, fontSize: 13, color: v < 0 ? ui.C.rose : ui.C.white, filter: blur, fontVariantNumeric: 'tabular-nums', minWidth: 76, textAlign: 'right' } }, fmtGBP(v))
+                );
+            })
+        )
+    );
+}
+
+function Header(props) {
+    var ui = useUI();
+    return E('div', {
+        style: { paddingTop: 'max(env(safe-area-inset-top), 10px)', paddingLeft: 12, paddingRight: 16, paddingBottom: 8,
+                 background: 'rgba(13,18,24,0.98)', borderBottom: '1px solid ' + ui.C.border, flexShrink: 0 }
+    },
+        E('div', { style: { display: 'flex', alignItems: 'center', gap: 6, minHeight: 40 } },
+            props.onBack
+                ? E('button', { onClick: props.onBack, 'aria-label': 'Back', style: { background: 'none', border: 'none', color: ui.C.blue, display: 'flex', alignItems: 'center', padding: '6px 4px', cursor: 'pointer', fontFamily: ui.sys, fontSize: 15 } },
+                    E(BackIcon, { style: { width: 18, height: 18 }, strokeWidth: 2 }), 'Back')
+                : E('div', { style: { width: 8 } }),
+            E('div', { style: { fontFamily: ui.sys, fontSize: 20, fontWeight: 700, flex: 1, minWidth: 0, color: ui.C.white, letterSpacing: '-0.02em' } }, props.title),
+            E('button', {
+                onClick: props.onClose, 'aria-label': 'Close',
+                style: { height: 36, width: 36, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                         background: ui.C.surfaceHigh, border: '1px solid ' + ui.C.border, borderRadius: 10, color: ui.C.zinc400 }
+            }, typeof X !== 'undefined' ? E(X, { style: { width: 16, height: 16 }, strokeWidth: 2 }) : '×')
+        )
+    );
+}
+
+// ── Main view ────────────────────────────────────────────────────────────────
+function MainView(props) {
+    var ui = useUI();
+    var state = props.state, series = props.series;
+    var del = React.useState(false);
+    var msg = React.useState(null);
+    if (!state.accounts.length) {
+        return E('div', { style: { padding: '24px 16px' } },
+            E('div', { style: cardStyle(ui, { padding: '22px 18px', textAlign: 'center' }) },
+                E('div', { style: { fontFamily: ui.sys, fontSize: 16, color: ui.C.white, fontWeight: 600, marginBottom: 6 } }, 'No balances yet'),
+                E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc600, lineHeight: 1.45, marginBottom: 16 } },
+                    'Import your balances spreadsheet to bring in your history, or add your accounts and enter this month’s balances.'),
+                E('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
+                    E('button', { style: buttonStyle(ui, 'primary'), onClick: props.onImport }, 'Import spreadsheet'),
+                    E('button', { style: buttonStyle(ui), onClick: props.onUpdate }, 'Add accounts by hand')
+                )
+            )
+        );
+    }
+    var latest = series.length ? series[series.length - 1] : null;
+    var prev = series.length > 1 ? series[series.length - 2] : null;
+    var stale = !state.lastExportAt || (Date.now() - state.lastExportAt) > 35 * 86400000;
+    function exportCsv() {
+        var csv = buildCsv(state);
+        var name = 'balances-' + todayISO() + '.csv';
+        deliverText(csv, name, 'text/csv').then(function () {
+            saveState(Object.assign({}, state, { lastExportAt: Date.now() })).catch(function () {});
+            msg[1]('Exported ' + name);
+        }).catch(function (e) { if (!e || e.name !== 'AbortError') msg[1]('Export failed: ' + (e && e.message)); });
+    }
+    return E('div', { style: { padding: '12px 16px 0' } },
+        latest ? E(Hero, { series: series, privacy: props.privacy })
+               : E('div', { style: cardStyle(ui, { marginBottom: 12, fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc600 }) }, 'No balances entered yet. Tap Update balances to add this month’s.'),
+        series.length > 1 && E(Chart, { series: series, privacy: props.privacy }),
+        latest && E('div', { style: { display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 14 } },
+            GROUPS.filter(function (g) {
+                return state.accounts.some(function (a) { return a.group === g.id && (!a.closed || latest.values[a.id] != null); });
+            }).map(function (g) {
+                return E(GroupCard, { key: g.id, group: g, latest: latest, prev: prev, accounts: state.accounts, privacy: props.privacy });
+            })
+        ),
+        E('button', { style: Object.assign(buttonStyle(ui, 'primary'), { width: '100%', fontSize: 15 }), onClick: props.onUpdate }, 'Update balances'),
+        E('div', { style: { display: 'flex', gap: 8, marginTop: 10 } },
+            E('button', { style: Object.assign(buttonStyle(ui), { flex: 1 }), onClick: props.onImport }, 'Import'),
+            E('button', { style: Object.assign(buttonStyle(ui), { flex: 1 }), onClick: exportCsv }, 'Export CSV')
+        ),
+        E('div', { style: { fontFamily: ui.sys, fontSize: 12, color: stale ? ui.C.amber : ui.C.zinc600, textAlign: 'center', marginTop: 10, lineHeight: 1.4 } },
+            'Last exported ' + relTime(state.lastExportAt) + '. Your balances live only on this phone, so export or back up regularly.'),
+        msg[0] && E('div', { style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.zinc500, textAlign: 'center', marginTop: 6 } }, msg[0]),
+        E('div', { style: { display: 'flex', justifyContent: 'center', marginTop: 18 } },
+            E('button', {
+                style: Object.assign(buttonStyle(ui, del[0] ? 'danger' : null), { minHeight: 34, fontSize: 12, fontWeight: 500, background: 'transparent', border: del[0] ? undefined : 'none', color: del[0] ? ui.C.rose : ui.C.zinc700 }),
+                onClick: function () {
+                    if (!del[0]) { del[1](true); setTimeout(function () { del[1](false); }, 4000); return; }
+                    saveState(emptyState()).catch(function () {});
+                    del[1](false);
+                }
+            }, del[0] ? 'Tap again to delete all balances' : 'Delete all balances')
+        )
+    );
+}
+
+// ── Update form ──────────────────────────────────────────────────────────────
+function amountText(v) { return v == null ? '' : String(Math.round(Math.abs(v) * 100) / 100); }
+
+function UpdateView(props) {
+    var ui = useUI();
+    var state = props.state;
+    var appValues = props.appValues || [];
+    var appByKey = {};
+    appValues.forEach(function (o) { appByKey[o.key] = o; });
+    var lastSnap = state.snapshots.length ? state.snapshots[state.snapshots.length - 1] : null;
+
+    // Working copies: accounts (for manage mode) and the typed amounts (positive = amount owed for debts).
+    var accState = React.useState(function () { return state.accounts.map(function (a) { return Object.assign({}, a); }); });
+    var accounts = accState[0], setAccounts = accState[1];
+    var amtState = React.useState(function () {
+        var m = {};
+        state.accounts.forEach(function (a) {
+            var linked = a.appLink && appByKey[a.appLink];
+            m[a.id] = linked ? amountText(linked.value) : amountText(lastSnap ? lastSnap.values[a.id] : null);
+        });
+        return m;
+    });
+    var amounts = amtState[0], setAmounts = amtState[1];
+    var dateState = React.useState(todayISO()), date = dateState[0];
+    var manage = React.useState(state.accounts.length === 0);
+    var newName = React.useState(''), newGroup = React.useState('current');
+    var err = React.useState(null);
+
+    var sameMonth = state.snapshots.filter(function (s) { return monthKey(s.date) === monthKey(date || ''); });
+    var open = accounts.filter(function (a) { return !a.closed; });
+    var closed = accounts.filter(function (a) { return a.closed; });
+
+    function patchAccount(id, patch) {
+        setAccounts(accounts.map(function (a) { return a.id === id ? Object.assign({}, a, patch) : a; }));
+    }
+    function setLink(a, key) {
+        patchAccount(a.id, { appLink: key || null });
+        if (key && appByKey[key]) setAmounts(Object.assign({}, amounts, (function () { var o = {}; o[a.id] = amountText(appByKey[key].value); return o; })()));
+    }
+    function addAccount() {
+        var name = newName[0].trim();
+        if (!name) return;
+        if (accounts.some(function (a) { return a.name.toLowerCase() === name.toLowerCase(); })) { err[1]('There is already an account called ' + name + '.'); return; }
+        var g = newGroup[0];
+        var id = 'm' + Date.now().toString(36) + '-' + slug(name);
+        setAccounts(accounts.concat([{ id: id, name: name, group: g, debt: !!groupOf(g).debt, share: 1, rate: null, closed: false, appLink: null }]));
+        newName[1]('');
+        err[1](null);
+    }
+    function save() {
+        if (!ISO_DATE.test(date || '')) { err[1]('Pick a date.'); return; }
+        var values = {}, bad = null;
+        open.forEach(function (a) {
+            var t = amounts[a.id];
+            if (t == null || String(t).trim() === '') return;
+            var v = parseAmount(t);
+            if (v == null) { bad = a.name; return; }
+            values[a.id] = a.debt ? -Math.abs(v) : v;
+        });
+        if (bad) { err[1]('Check the amount for ' + bad + '.'); return; }
+        if (!Object.keys(values).length) { err[1]('Enter at least one balance.'); return; }
+        var mk = monthKey(date);
+        var snaps = state.snapshots.filter(function (s) { return monthKey(s.date) !== mk; }).concat([{ date: date, values: values }])
+            .sort(function (a, b) { return a.date < b.date ? -1 : 1; });
+        saveState(Object.assign({}, state, { accounts: accounts, snapshots: snaps })).then(props.onDone, function (e) { err[1]('Could not save: ' + (e && e.message)); });
+    }
+
+    var linkable = function (a) { return appValues.length > 0 && (a.group === 'investments' || a.group === 'pensions'); };
+    return E('div', { style: { padding: '12px 16px 0' } },
+        E('div', { style: cardStyle(ui, { display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }) },
+            E('div', { style: { flex: 1, fontFamily: ui.sys, fontSize: 14, color: ui.C.zinc400 } }, 'Balances as at'),
+            E('input', { type: 'date', value: date, onChange: function (e) { dateState[1](e.target.value); }, style: inputStyle(ui, { fontFamily: ui.sys, fontSize: 15 }) })
+        ),
+        sameMonth.length > 0 && E('div', { style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.amber, margin: '-4px 4px 12px', lineHeight: 1.4 } },
+            'Saving replaces your ' + sameMonth.map(function (s) { return dayLabel(s.date); }).join(' and ') + ' entry for this month.'),
+        GROUPS.map(function (g) {
+            var list = open.filter(function (a) { return a.group === g.id; });
+            if (!list.length) return null;
+            return E('div', { key: g.id, style: { marginBottom: 14 } },
+                E('div', { style: Object.assign(capsLabel(ui), { margin: '0 4px 6px' }) }, g.label + (g.debt ? ' · amount owed' : '')),
+                E('div', { style: cardStyle(ui, { padding: '4px 14px' }) },
+                    list.map(function (a, i) {
+                        var linked = a.appLink && appByKey[a.appLink];
+                        return E('div', { key: a.id, style: { padding: '8px 0', borderTop: i ? '1px solid ' + ui.C.border : 'none' } },
+                            E('div', { style: { display: 'flex', alignItems: 'center', gap: 10 } },
+                                manage[0]
+                                    ? E('input', { value: a.name, onChange: function (e) { patchAccount(a.id, { name: e.target.value }); }, style: inputStyle(ui, { flex: 1, minWidth: 0, fontFamily: ui.sys, fontSize: 14 }) })
+                                    : E('div', { style: { flex: 1, minWidth: 0, fontFamily: ui.sys, fontSize: 14, color: ui.C.zinc400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+                                        a.name, a.debt && g.id === 'property' ? E('span', { style: { color: ui.C.zinc700, fontSize: 11 } }, ' · owed') : null),
+                                manage[0]
+                                    ? E('button', { onClick: function () { patchAccount(a.id, { closed: true }); }, style: Object.assign(buttonStyle(ui), { minHeight: 36, fontSize: 12 }) }, 'Close')
+                                    : E('div', { style: { display: 'flex', alignItems: 'center', gap: 4 } },
+                                        E('span', { style: { fontFamily: ui.rounded, color: ui.C.zinc600, fontSize: 15 } }, '£'),
+                                        E('input', {
+                                            inputMode: 'decimal', value: amounts[a.id] || '', placeholder: '0',
+                                            onChange: function (e) { var o = Object.assign({}, amounts); o[a.id] = e.target.value; setAmounts(o); },
+                                            style: inputStyle(ui, { width: 116, textAlign: 'right', filter: props.privacy ? 'blur(6px)' : 'none' })
+                                        }))
+                            ),
+                            !manage[0] && linkable(a) && E('div', { style: { display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 } },
+                                E('span', { style: { fontFamily: ui.sys, fontSize: 11, color: linked ? ui.C.blue : ui.C.zinc700 } }, linked ? 'From app:' : 'Fill from app:'),
+                                E('select', {
+                                    value: a.appLink || '', onChange: function (e) { setLink(a, e.target.value); },
+                                    style: { flex: 1, minWidth: 0, background: 'transparent', border: 'none', color: linked ? ui.C.blue : ui.C.zinc600, fontFamily: ui.sys, fontSize: 12 }
+                                },
+                                    E('option', { value: '' }, 'Not linked'),
+                                    appValues.map(function (o) { return E('option', { key: o.key, value: o.key }, o.label + (props.privacy ? '' : ' (' + fmtGBP(o.value) + ')')); })
+                                ))
+                        );
+                    })
+                )
+            );
+        }),
+        manage[0] && E('div', { style: cardStyle(ui, { marginBottom: 14 }) },
+            E('div', { style: Object.assign(capsLabel(ui), { marginBottom: 8 }) }, 'Add an account'),
+            E('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
+                E('input', { value: newName[0], placeholder: 'Account name', onChange: function (e) { newName[1](e.target.value); }, style: inputStyle(ui, { fontFamily: ui.sys }) }),
+                E('div', { style: { display: 'flex', gap: 8 } },
+                    E('select', { value: newGroup[0], onChange: function (e) { newGroup[1](e.target.value); }, style: inputStyle(ui, { flex: 1, fontFamily: ui.sys, fontSize: 14 }) },
+                        GROUPS.map(function (g) { return E('option', { key: g.id, value: g.id }, g.label); })),
+                    E('button', { onClick: addAccount, style: buttonStyle(ui, 'primary') }, 'Add'))
+            ),
+            closed.length > 0 && E('div', { style: { marginTop: 14 } },
+                E('div', { style: Object.assign(capsLabel(ui), { marginBottom: 6 }) }, 'Closed accounts'),
+                closed.map(function (a) {
+                    return E('div', { key: a.id, style: { display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0' } },
+                        E('div', { style: { flex: 1, minWidth: 0, fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, a.name),
+                        E('button', { onClick: function () { patchAccount(a.id, { closed: false }); }, style: Object.assign(buttonStyle(ui), { minHeight: 32, fontSize: 12 }) }, 'Reopen'));
+                })
+            )
+        ),
+        E('button', {
+            onClick: function () { manage[1](!manage[0]); err[1](null); },
+            style: Object.assign(buttonStyle(ui), { width: '100%', marginBottom: 10, background: 'transparent' })
+        }, manage[0] ? 'Done managing accounts' : 'Add, rename or close accounts'),
+        err[0] && E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.rose, margin: '0 4px 10px' } }, err[0]),
+        E('div', { style: { display: 'flex', gap: 8 } },
+            E('button', { onClick: props.onDone, style: Object.assign(buttonStyle(ui), { flex: 1 }) }, 'Cancel'),
+            E('button', { onClick: save, disabled: manage[0] || open.length === 0, style: Object.assign(buttonStyle(ui, 'primary'), { flex: 2, opacity: manage[0] || open.length === 0 ? 0.45 : 1 }) }, 'Save balances')
+        )
+    );
+}
+
+// ── Import view ──────────────────────────────────────────────────────────────
+function ImportView(props) {
+    var ui = useUI();
+    var state = props.state;
+    var pState = React.useState(null), parsed = pState[0], setParsed = pState[1];
+    var err = React.useState(null);
+    var busy = React.useState(false);
+    var fileRef = React.useRef(null);
+
+    function onFile(e) {
+        var f = e.target.files && e.target.files[0];
+        e.target.value = '';
+        if (!f) return;
+        err[1](null); busy[1](true);
+        f.arrayBuffer().then(function (buf) {
+            setParsed(parseImport(buf));
+        }).catch(function (x) { err[1](x && x.message ? x.message : String(x)); }).then(function () { busy[1](false); });
+    }
+    function patchRow(key, patch) {
+        setParsed(Object.assign({}, parsed, { rows: parsed.rows.map(function (r) {
+            if (r.key !== key) return r;
+            var n = Object.assign({}, r, patch);
+            if (patch.group) n.debt = isDebtRow(patch.group, r.type, r.name);
+            return n;
+        }) }));
+    }
+    function confirm() {
+        var next = importToState(parsed, state);
+        if (!next.accounts.length) { err[1]('Tick at least one account.'); return; }
+        saveState(next).then(props.onDone, function (x) { err[1]('Could not save: ' + (x && x.message)); });
+    }
+
+    var checks = parsed ? runChecks(parsed) : [];
+    var picker = E('input', { ref: fileRef, type: 'file', accept: '.xlsx,.xls,.csv,text/csv', onChange: onFile, style: { display: 'none' } });
+
+    if (!parsed) {
+        return E('div', { style: { padding: '16px' } }, picker,
+            E('div', { style: cardStyle(ui, { padding: '18px' }) },
+                E('div', { style: { fontFamily: ui.sys, fontSize: 14, color: ui.C.zinc400, lineHeight: 1.5, marginBottom: 14 } },
+                    'Choose your balances spreadsheet (.xlsx or .csv). It should have one column per date and one row per account, or be a CSV exported from this screen. You’ll see a preview before anything is saved.'),
+                E('button', { onClick: function () { fileRef.current && fileRef.current.click(); }, disabled: busy[0], style: Object.assign(buttonStyle(ui, 'primary'), { width: '100%' }) },
+                    busy[0] ? 'Reading…' : 'Choose file'),
+                err[0] && E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.rose, marginTop: 12 } }, err[0])
+            )
+        );
+    }
+
+    var inc = parsed.rows.filter(function (r) { return r.include; });
+    return E('div', { style: { padding: '12px 16px 0' } }, picker,
+        E('div', { style: cardStyle(ui, { marginBottom: 12 }) },
+            E('div', { style: { fontFamily: ui.sys, fontSize: 15, color: ui.C.white, fontWeight: 600 } },
+                parsed.dates.length + ' snapshots, ' + dayLabel(parsed.dates[0]) + ' to ' + dayLabel(parsed.dates[parsed.dates.length - 1])),
+            E('div', { style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.zinc600, marginTop: 4, lineHeight: 1.45 } },
+                inc.length + ' of ' + parsed.rows.length + ' accounts ticked. Check each account’s group, and untick anything that shouldn’t count.'),
+            state.snapshots.length > 0 && E('div', { style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.amber, marginTop: 8, lineHeight: 1.45 } },
+                'Importing replaces the ' + state.snapshots.length + ' snapshots already here, including any you entered by hand.')
+        ),
+        checks.length > 0 && E('div', { style: cardStyle(ui, { marginBottom: 12 }) },
+            E('div', { style: Object.assign(capsLabel(ui), { marginBottom: 8 }) }, 'Check against your summary rows'),
+            checks.map(function (c) {
+                var ok = c.mismatches.length === 0;
+                return E('div', { key: c.label, style: { padding: '5px 0' } },
+                    E('div', { style: { display: 'flex', gap: 8, fontFamily: ui.sys, fontSize: 13 } },
+                        E('span', { style: { flex: 1, color: ui.C.zinc400 } }, c.label),
+                        E('span', { style: { color: ok ? ui.C.emerald : ui.C.amber } },
+                            ok ? 'Matches all ' + c.compared : (c.compared - c.mismatches.length) + ' of ' + c.compared + ' match')),
+                    !ok && E('div', { style: { fontFamily: ui.rounded, fontSize: 11, color: ui.C.zinc600, marginTop: 2, lineHeight: 1.5 } },
+                        c.mismatches.slice(0, 6).map(function (m) { return dayLabel(m.date) + ' '; }).join('· ').trim(),
+                        c.mismatches.length > 6 ? ' and ' + (c.mismatches.length - 6) + ' more' : '',
+                        E('span', { style: { filter: props.privacy ? 'blur(5px)' : 'none' } },
+                            ' (app ' + fmtSigned(c.mismatches[0].diff) + ' on the first)'))
+                );
+            }),
+            E('div', { style: { fontFamily: ui.sys, fontSize: 11, color: ui.C.zinc700, marginTop: 6, lineHeight: 1.45 } },
+                'The app always adds up the accounts, so a mismatch usually means a summary row in the sheet left an account out.')
+        ),
+        GROUPS.map(function (g) {
+            var list = parsed.rows.filter(function (r) { return r.group === g.id; });
+            if (!list.length) return null;
+            return E('div', { key: g.id, style: { marginBottom: 12 } },
+                E('div', { style: Object.assign(capsLabel(ui), { margin: '0 4px 6px' }) }, g.label),
+                E('div', { style: cardStyle(ui, { padding: '2px 12px' }) },
+                    list.map(function (r, i) {
+                        return E('div', { key: r.key, style: { display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0', borderTop: i ? '1px solid ' + ui.C.border : 'none', opacity: r.include ? 1 : 0.5 } },
+                            E('input', { type: 'checkbox', checked: r.include, onChange: function (e) { patchRow(r.key, { include: e.target.checked }); }, style: { width: 18, height: 18, flexShrink: 0 } }),
+                            E('div', { style: { flex: 1, minWidth: 0 } },
+                                E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, r.name),
+                                E('div', { style: { fontFamily: ui.sys, fontSize: 11, color: ui.C.zinc700 } },
+                                    r.count + (r.count === 1 ? ' value' : ' values') + (r.closed ? ' · closed ' + monthLabel(monthKey(parsed.dates[r.lastIndex])) : ' · open') + (r.debt ? ' · owed' : ''))),
+                            g.id === 'property' && E('div', { style: { display: 'flex', alignItems: 'center', gap: 2 } },
+                                E('input', { inputMode: 'numeric', value: String(Math.round(r.share * 100)),
+                                    onChange: function (e) { var p = parseAmount(e.target.value); if (p != null && p > 0 && p <= 100) patchRow(r.key, { share: p / 100 }); },
+                                    style: inputStyle(ui, { width: 46, minHeight: 32, padding: '4px 6px', fontSize: 13, textAlign: 'right' }) }),
+                                E('span', { style: { fontFamily: ui.sys, fontSize: 11, color: ui.C.zinc700 } }, '%')),
+                            E('select', { value: r.group, onChange: function (e) { patchRow(r.key, { group: e.target.value }); },
+                                style: { maxWidth: 104, background: 'transparent', border: 'none', color: ui.C.blue, fontFamily: ui.sys, fontSize: 12 } },
+                                GROUPS.map(function (gg) { return E('option', { key: gg.id, value: gg.id }, gg.label); }))
+                        );
+                    })
+                )
+            );
+        }),
+        err[0] && E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.rose, margin: '0 4px 10px' } }, err[0]),
+        E('div', { style: { display: 'flex', gap: 8 } },
+            E('button', { onClick: function () { setParsed(null); }, style: Object.assign(buttonStyle(ui), { flex: 1 }) }, 'Choose another'),
+            E('button', { onClick: confirm, style: Object.assign(buttonStyle(ui, 'primary'), { flex: 2 }) }, 'Import ' + inc.length + ' accounts')
+        )
+    );
+}
+
+// ── Screen ───────────────────────────────────────────────────────────────────
+function BalancesScreenInner(props) {
+    var ui = useUI();
+    var state = useBalancesState();
+    var vState = React.useState('main'), view = vState[0], setView = vState[1];
+    var series = React.useMemo(function () { return buildSeries(state); }, [state]);
+    var title = view === 'update' ? 'Update balances' : view === 'import' ? 'Import' : 'Balances';
+    var back = view === 'main' ? null : function () { setView('main'); };
+    var body;
+    if (!_ready) {
+        body = E('div', { style: { padding: 32, textAlign: 'center', fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc600 } }, 'Loading…');
+    } else if (view === 'update') {
+        body = E(UpdateView, { state: state, appValues: props.appValues, privacy: props.privacyMode, onDone: back });
+    } else if (view === 'import') {
+        body = E(ImportView, { state: state, privacy: props.privacyMode, onDone: back });
+    } else {
+        body = E(MainView, { state: state, series: series, privacy: props.privacyMode,
+                             onUpdate: function () { setView('update'); }, onImport: function () { setView('import'); } });
+    }
+    return E('div', {
+        style: { position: 'fixed', inset: 0, zIndex: 9995, background: ui.C.bg, display: 'flex', flexDirection: 'column', WebkitTapHighlightColor: 'transparent' }
+    },
+        E(Header, { title: title, onBack: back, onClose: props.onClose }),
+        _loadError && E('div', { style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.rose, padding: '8px 16px' } }, 'Storage problem: ' + _loadError),
+        // Keyed by view so each view opens scrolled to the top.
+        E('div', { key: view, className: 'ios-scroll', style: { flex: 1, minWidth: 0, overflowY: 'auto', overflowX: 'hidden', paddingBottom: 'max(env(safe-area-inset-bottom), 28px)' } },
+            body)
+    );
+}
+
+// Keeps a bug in this screen from taking down the rest of the app.
+class BalancesBoundary extends React.Component {
+    constructor(p) { super(p); this.state = { error: null }; }
+    static getDerivedStateFromError(error) { return { error: error }; }
+    componentDidCatch(error, info) { console.error('Balances screen error:', error, info); }
+    render() {
+        if (!this.state.error) return this.props.children;
+        var ui = this.props.ui;
+        return E('div', { style: { position: 'fixed', inset: 0, zIndex: 9995, background: ui.C.bg, padding: '60px 20px', fontFamily: ui.sys } },
+            E('div', { style: { color: ui.C.rose, fontSize: 16, fontWeight: 600, marginBottom: 8 } }, 'Balances hit a problem'),
+            E('div', { style: { color: ui.C.zinc600, fontSize: 13, marginBottom: 20, lineHeight: 1.5 } },
+                String(this.state.error && this.state.error.message || this.state.error) + '. Your saved balances are untouched.'),
+            E('button', { onClick: this.props.onClose, style: buttonStyle(ui) }, 'Close'));
+    }
+}
+
+function BalancesScreen(props) {
+    var ui = Object.assign({}, DEFAULT_UI, props.ui || {});
+    ui.C = Object.assign({}, DEFAULT_UI.C, (props.ui && props.ui.C) || {});
+    return E(UICtx.Provider, { value: ui },
+        E(BalancesBoundary, { ui: ui, onClose: props.onClose }, E(BalancesScreenInner, props)));
+}
+
+window.BalancesScreen = BalancesScreen;
+window.BalancesStore = BalancesStore;
+window.BalancesIcon = WalletIcon;
+// For tests only: the pure parts, no UI.
+window.__balancesInternals = { parseImport: parseImport, importToState: importToState, runChecks: runChecks, buildSeries: buildSeries, parseAmount: parseAmount, buildCsv: buildCsv };
+})();
