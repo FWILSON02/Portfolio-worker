@@ -975,10 +975,11 @@ function breakdown(base, focus, accounts, metric) {
     return { rows: rows, total: rows.reduce(function (t, g) { return t + g.d; }, 0) };
 }
 // A group's figure at a point (share applied; for Liquid only liquid accounts): what a drawn group line plots.
+// 'a:<id>' is a single account (e.g. just the mortgage), drawn on its own.
 function groupValue(p, gid, accounts, metric) {
-    var t = 0;
+    var t = 0, one = gid.slice(0, 2) === 'a:' ? gid.slice(2) : null;
     accounts.forEach(function (a) {
-        if (cardId(a) !== gid || (metric === 'liquid' && !isLiquid(a))) return;
+        if ((one ? a.id !== one : cardId(a) !== gid) || (metric === 'liquid' && !isLiquid(a))) return;
         t += (p.values[a.id] || 0) * (a.share || 1);
     });
     return t;
@@ -1075,6 +1076,10 @@ function Chart(props) {
     }
     function reset() { setScrub(null); setPin(null); setPrevPin(null); setOpenGroup(null); }
     function closePanel() { reset(); setSel([]); setCmp('prev'); setAnalysing(false); }
+    function lineLabel(gid) {
+        if (gid.slice(0, 2) === 'a:') { var a = accounts.filter(function (x) { return x.id === gid.slice(2); })[0]; return a ? a.name : ''; }
+        return CARD_BY_ID[gid] && CARD_BY_ID[gid].short || cardLabel(gid).split(' ')[0];
+    }
     function toggleSel(gid) {
         setSel(sel.indexOf(gid) >= 0 ? sel.filter(function (g) { return g !== gid; }) : sel.concat([gid]).slice(-3));
     }
@@ -1094,7 +1099,7 @@ function Chart(props) {
             E('span', { style: { fontSize: 12, color: ui.C.zinc500 } }, !analysing && !scrub ? 'Since ' + monthLabel(pts[0].month) : monthLabel(focus.month)),
             sel.length
                 ? lines.map(function (l) {
-                    return E('span', { key: l.gid, style: { fontSize: 12, color: l.color, filter: blur } }, (CARD_BY_ID[l.gid] && CARD_BY_ID[l.gid].short || cardLabel(l.gid).split(' ')[0]) + ' ' + fmtGBP(l.val(focus)));
+                    return E('span', { key: l.gid, style: { fontSize: 12, color: l.color, filter: blur } }, lineLabel(l.gid) + ' ' + fmtGBP(l.val(focus)));
                 })
                 : [E('span', { key: 'v', style: { fontSize: 14, fontWeight: 600, color: ui.C.white, filter: blur } }, fmtGBP(focus[metric])),
                    from && E('span', { key: 'd', style: { fontSize: 12, color: signColor(ui, change), filter: blur } }, fmtSigned(change)),
@@ -1173,9 +1178,13 @@ function Chart(props) {
                                     E('span', { style: { position: 'absolute', left: 0, top: 0, bottom: 0, borderRadius: 3, width: Math.round(Math.abs(g.d) / maxAbs * 100) + '%', background: signColor(ui, g.d), opacity: 0.7 } })),
                                 E('span', { style: { fontFamily: ui.rounded, fontSize: 13, color: signColor(ui, g.d), fontVariantNumeric: 'tabular-nums', minWidth: 74, textAlign: 'right', filter: blur } }, fmtSigned(g.d)),
                                 E(ChevronIcon, { style: { width: 12, height: 12, color: ui.C.zinc700, flexShrink: 0, transform: isOpen ? 'rotate(90deg)' : 'none' }, strokeWidth: 2 }))),
-                        isOpen && E('div', { style: { padding: '0 0 6px 30px' } },
+                        isOpen && E('div', { style: { padding: '0 0 6px 4px' } },
                             g.accounts.map(function (r) {
-                                return E('div', { key: r.a.id, style: { display: 'flex', alignItems: 'baseline', gap: 8, padding: '3px 0', fontFamily: ui.rounded, fontVariantNumeric: 'tabular-nums' } },
+                                // Each account has its own small dot too, to draw just that account (Fergus: just the mortgage, just the car).
+                                var aid = 'a:' + r.a.id, aOn = sel.indexOf(aid) >= 0, aCol = aOn ? LINE_COLS[sel.indexOf(aid) % LINE_COLS.length] : null;
+                                return E('div', { key: r.a.id, style: { display: 'flex', alignItems: 'center', gap: 8, padding: '3px 0', fontFamily: ui.rounded, fontVariantNumeric: 'tabular-nums' } },
+                                    E('button', { onClick: function () { toggleSel(aid); }, 'aria-label': 'Draw ' + r.a.name,
+                                        style: { width: 14, height: 14, flexShrink: 0, borderRadius: 7, border: '1px solid ' + (aCol || ui.C.border), background: aCol || 'transparent', cursor: 'pointer', padding: 0, marginRight: 4 } }),
                                     E('span', { style: { flex: 1, minWidth: 0, fontFamily: ui.sys, fontSize: 12, color: ui.C.zinc500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, r.a.name),
                                     E('span', { style: { fontSize: 12, color: signColor(ui, r.d), filter: blur } }, fmtSigned(r.d)),
                                     E('span', { style: { fontSize: 12, color: ui.C.zinc400, minWidth: 70, textAlign: 'right', filter: blur } }, fmtGBP(r.v)));
@@ -1183,7 +1192,7 @@ function Chart(props) {
                 })
             ) : E('div', { style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.zinc600 } }, 'Nothing earlier to compare with.'),
             E('div', { style: { fontFamily: ui.sys, fontSize: 11, color: ui.C.zinc700, marginTop: 8, lineHeight: 1.4 } },
-                'Press and drag on the chart to read any month; lift to keep it. Tap a dot to draw that group’s own line.')
+                'Press and drag on the chart to read any month; lift to keep it. Tap a dot to draw that group’s or account’s own line.')
         )
     );
 }
