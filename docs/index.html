@@ -204,7 +204,7 @@ window.XCircle=_li([{t:'c',cx:12,cy:12,r:10},'M15 9l-6 6','M9 9l6 6']);
 window.MinusCircle=_li([{t:'c',cx:12,cy:12,r:10},'M8 12h8']);
 window.HelpCircle=_li([{t:'c',cx:12,cy:12,r:10},'M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3',{t:'l',x1:12,y1:17,x2:12.01,y2:17}]);</script>
 <!-- Balances screen lives in its own file. Bump ?v= whenever balances.js changes so the Home Screen app never mixes versions. -->
-<script src="balances.js?v=26"></script>
+<script src="balances.js?v=27"></script>
 <script>
 try{"use strict";
 // ─── Lightweight SVG chart components (replaces Recharts) ──────────────────
@@ -7292,12 +7292,14 @@ function Row({ icon: Icon, iconColor, iconBg, label, sub, right, onClick, isLabe
     return React.createElement('button', { style, onClick, disabled }, inner);
 }
 
+// The pull request that last changed the app. Bump it in every PR so Settings → App shows which change the phone is
+// running (Fergus asked; the Estate ?v= number only moved when balances.js changed, so it looked stuck).
+const APP_BUILD = 44;
+
 // Settings → App: pulls the newest index.html and balances.js past the browser's cache, then reloads. A Home Screen web app
 // on iOS keeps serving cached files for a while after a deploy, and closing it from the app switcher doesn't clear that.
 function ReloadLatestRow() {
     const [msg, setMsg] = React.useState(null);
-    const src = document.querySelector('script[src^="balances.js"]');
-    const loaded = src && (src.getAttribute('src').match(/v=(\d+)/) || [])[1];
     const go = async () => {
         setMsg('Fetching the latest version…');
         try {
@@ -7305,15 +7307,16 @@ function ReloadLatestRow() {
             const res = await fetch(base, { cache: 'reload' });
             if (!res.ok) throw new Error('HTTP ' + res.status);
             const html = await res.text();
+            const next = (html.match(/const APP_BUILD = (\d+);/) || [])[1];
             const m = html.match(/src="(balances\.js[^"]*)"/);
             if (m) { const r2 = await fetch(new URL(m[1], base).href, { cache: 'reload' }); if (!r2.ok) throw new Error('HTTP ' + r2.status); }
-            setMsg('Reloading…');
+            setMsg(next && +next !== APP_BUILD ? 'Updating to PR #' + next + '…' : 'Reloading…');
             location.reload();
         } catch (e) { setMsg('Couldn\u2019t reach the server (' + (e && e.message || e) + '). Check your connection and try again.'); }
     };
     return React.createElement(Group, { title: 'App' },
         React.createElement(Row, { icon: RefreshCw, iconColor: '#60a5fa', label: 'Reload Latest Version', last: true, onClick: go,
-            sub: msg || (loaded ? 'Running Estate v' + loaded + ' · fetches the newest files and restarts' : 'Fetches the newest files and restarts'), right: null })
+            sub: msg || 'Running PR #' + APP_BUILD + ' · fetches the newest files and restarts', right: null })
     );
 }
 
@@ -11892,7 +11895,7 @@ function MarketOverviewScreen({ rows, status, updatedAt, error, onRefresh }) {
     }
 
     // Section column header row (once per section).
-    function renderSectionHeader(sec) {
+    function renderSectionHeader(sec, first) {
         var isBp = sec.rows.length > 0 && sec.rows[0].displayKind === 'bpChange';
         var isPt = sec.rows.length > 0 && sec.rows[0].displayKind === 'ptChange';
         var unit = isBp ? ' bp' : isPt ? ' pt' : ' %';   // move columns: basis points for rates, index points for VIX, else % returns
@@ -11900,11 +11903,10 @@ function MarketOverviewScreen({ rows, status, updatedAt, error, onRefresh }) {
             key: 'hdr-' + sec.name,
             style: { display: 'flex', flexDirection: 'column' }
         },
-            // Section label — a title-case heading on a tinted band, so it reads as a different kind of line from the
-            // uppercase ticker codes below it (same-size uppercase bold looked like just another row).
+            // Section label — a large title-case heading, so it reads as a different kind of line from the uppercase ticker
+            // codes below it. On the page colour, not a tinted band: a lighter band under the dark tab looked off (Fergus).
             React.createElement('div', {
-                style: { padding: '7px 20px 0', background: C.surfaceHigh,
-                         borderTop: '1px solid ' + C.border }
+                style: { padding: first ? '8px 20px 0' : '12px 20px 0', borderTop: first ? 'none' : '1px solid ' + C.border }
             },
                 React.createElement('span', {
                     style: { fontFamily: sys, fontSize: 17, color: C.white,
@@ -11916,7 +11918,7 @@ function MarketOverviewScreen({ rows, status, updatedAt, error, onRefresh }) {
                 style: {
                     display: 'grid', gridTemplateColumns: MKT_GRID,
                     padding: '1px 20px 4px', gap: '0 4px', alignItems: 'baseline',
-                    background: C.surfaceHigh, borderBottom: '1px solid ' + C.border,
+                    borderBottom: '1px solid ' + C.border,
                 }
             },
                 React.createElement('span', { style: { fontFamily: sys, fontSize: 9, color: C.zinc700 } }, ''),
@@ -12159,56 +12161,16 @@ function MarketOverviewScreen({ rows, status, updatedAt, error, onRefresh }) {
         }
     },
 
-        // ── Header ───────────────────────────────────────────────────────────
-        // One compact row: Refresh with the "As of" time under it, on the right (the tab bar names the screen).
-        // A warning line (offline, cached, partial) only takes space when there is something to say.
-        React.createElement('div', {
-            style: {
-                paddingTop: 6,
-                paddingLeft: 20, paddingRight: 16, paddingBottom: 6,
-                background: 'rgba(13,18,24,0.98)',
-                borderBottom: '1px solid ' + C.border, flexShrink: 0,
-            }
-        },
-            React.createElement('div', {
-                style: { display: 'flex', alignItems: 'center', gap: 10, minHeight: 32 }
-            },
-                React.createElement('div', { style: { flex: 1, minWidth: 0 } }),
-                React.createElement('div', {
-                    style: { display: 'flex', flexDirection: 'column', alignItems: 'flex-end', flexShrink: 0 }
-                },
-                    React.createElement('button', {
-                        onClick: onRefresh, disabled: isFetching,
-                        style: {
-                            background: 'none', border: 'none', padding: '3px 0 1px 8px',
-                            color: isFetching ? C.blue : C.zinc400, fontFamily: sys, fontSize: 12, fontWeight: 500,
-                            display: 'flex', alignItems: 'center', gap: 5,
-                            opacity: isFetching ? 0.6 : 1,
-                        }
-                    },
-                        React.createElement(RefreshCw, {
-                            className: isFetching ? 'spinning' : '',
-                            style: { width: 11, height: 11 }, strokeWidth: 2
-                        }),
-                        'Refresh'
-                    ),
-                    // Time of the last successful refresh, with seconds (device local time)
-                    updatedAt && React.createElement('span', {
-                        style: { fontFamily: rounded, fontSize: 10, color: C.zinc600, fontVariantNumeric: 'tabular-nums',
-                                 whiteSpace: 'nowrap', lineHeight: '14px' }
-                    }, 'As of ' + new Date(updatedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' }))
-                ),
-            ),
-            freshnessText && React.createElement('div', {
-                style: { fontFamily: sys, fontSize: 11, color: freshnessColor, marginTop: 2 }
-            }, freshnessText)
-        ),
-
         // ── Scrollable body ────────────────────────────────────────────────────
         React.createElement('div', {
             className: 'ios-scroll',
             style: { flex: 1, minWidth: 0, overflowY: 'auto', overflowX: 'hidden', paddingBottom: 'max(env(safe-area-inset-bottom), 24px)' }
         },
+            // A warning line (offline, cached, partial) only takes space when there is something to say.
+            freshnessText && React.createElement('div', {
+                style: { fontFamily: sys, fontSize: 11, color: freshnessColor, padding: '0 20px 10px' }
+            }, freshnessText),
+
             // Loading / error (no rows yet)
             !rows && React.createElement('div', { style: { padding: '32px 20px', textAlign: 'center' } },
                 (status === 'fail' || status === 'offline')
@@ -12216,24 +12178,48 @@ function MarketOverviewScreen({ rows, status, updatedAt, error, onRefresh }) {
                         React.createElement('div', { style: { fontFamily: sys, fontSize: 13, color: C.rose, marginBottom: 6 } },
                             status === 'offline' ? 'No network connection' : 'Could not load market data'),
                         React.createElement('div', { style: { fontFamily: sys, fontSize: 11, color: C.zinc600 } },
-                            'Tap Refresh to try again.')
+                            'Tap Refresh below to try again.')
                       )
                     : React.createElement('div', { style: { fontFamily: sys, fontSize: 13, color: C.zinc600 } },
                         isFetching ? 'Loading market data\u2026' : 'Opening Markets\u2026')
             ),
 
             // Section groups with headers
-            rows && sectionGroups.map(function(sec) {
+            rows && sectionGroups.map(function(sec, i) {
                 return React.createElement('div', { key: sec.name },
-                    renderSectionHeader(sec),
+                    renderSectionHeader(sec, i === 0),
                     sec.rows.map(renderRow)
                 );
             }),
 
-            // Footer
+            // Footer: Refresh and the "As of" time sit at the bottom; refreshing is automatic enough that it rarely needs
+            // a tap (Fergus moved it down from the top).
             React.createElement('div', {
-                style: { padding: '20px 20px 8px', borderTop: '1px solid ' + C.border, marginTop: 8 }
+                style: { padding: '16px 20px 8px', borderTop: '1px solid ' + C.border, marginTop: 8,
+                         display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }
             },
+                React.createElement('div', { style: { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 } },
+                    React.createElement('button', {
+                        onClick: onRefresh, disabled: isFetching,
+                        style: {
+                            background: 'none', border: '1px solid ' + C.border, borderRadius: 999, padding: '8px 16px',
+                            color: isFetching ? C.blue : C.zinc400, fontFamily: sys, fontSize: 13, fontWeight: 500,
+                            display: 'flex', alignItems: 'center', gap: 6,
+                            opacity: isFetching ? 0.6 : 1,
+                        }
+                    },
+                        React.createElement(RefreshCw, {
+                            className: isFetching ? 'spinning' : '',
+                            style: { width: 12, height: 12 }, strokeWidth: 2
+                        }),
+                        'Refresh'
+                    ),
+                    // Time of the last successful refresh, with seconds (device local time)
+                    updatedAt && React.createElement('span', {
+                        style: { fontFamily: rounded, fontSize: 11, color: C.zinc600, fontVariantNumeric: 'tabular-nums',
+                                 whiteSpace: 'nowrap', lineHeight: '16px', marginTop: 4 }
+                    }, 'As of ' + new Date(updatedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' }))
+                ),
                 React.createElement('p', {
                     style: { fontFamily: sys, fontSize: 11, color: C.zinc600,
                              margin: 0, lineHeight: 1.6, textAlign: 'center', fontStyle: 'italic' }

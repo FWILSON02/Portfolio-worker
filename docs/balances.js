@@ -24,7 +24,7 @@ var GROUPS = [
     { id: 'investments', label: 'Investments',               liquid: true  },
     { id: 'cards',       label: 'Credit cards',              liquid: true, debt: true },
     { id: 'pensions',    label: 'Pension', liquid: false },
-    { id: 'property',    label: 'Property & car',            liquid: false },
+    { id: 'property',    label: 'Assets',                    liquid: false },
     { id: 'other',       label: 'Other',                     liquid: true  },
 ];
 var GROUP_BY_ID = {};
@@ -545,7 +545,7 @@ function parseAmount(x) {
 // ── Import: spreadsheet → state ──────────────────────────────────────────────
 // Wide layout (the original spreadsheet): row 1 = snapshot dates from the first date column on; one row per
 // account (name, rate, type, then a value per date) down to a row named "Summary". Below it, the summary rows
-// are read only to check the import, plus House value and the car (Property & car).
+// are read only to check the import, plus House value and the car (the Assets group).
 // Long layout (this screen's CSV export): date, account, group, share, balance.
 function cellToISO(c) {
     if (c == null || c === '') return null;
