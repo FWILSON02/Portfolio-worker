@@ -1,6 +1,8 @@
 {
   "name": "morning-tree-9d1b",
   "main": "index.js",
-  "compatibility_date": "2026-01-01"
+  "compatibility_date": "2026-01-01",
+  "kv_namespaces": [
+    { "binding": "BACKUPS", "id": "8fa578e622c24864bcf5866d65cf254c" }
+  ]
 }
-
