@@ -933,12 +933,12 @@ function ChangeTable(props) {
 function Hero(props) {
     var ui = useUI();
     var s = props.series, latest = s[s.length - 1];
-    return E('div', { style: cardStyle(ui, { borderRadius: 20, padding: '16px 18px', marginBottom: 12 }) },
+    return E('div', { style: cardStyle(ui, { borderRadius: 20, padding: '18px 20px', marginBottom: 12 }) },
         E('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 } },
             E('span', { style: capsLabel(ui) }, 'Total wealth'),
             E('span', { style: { fontFamily: ui.sys, fontSize: 11, color: ui.C.zinc600 } }, 'As at ' + dayLabel(latest.date))
         ),
-        E('div', { style: moneyStyle(ui, 34, props.privacy) }, props.privacy ? '£ •••,•••' : fmtGBP(latest.total)),
+        E('div', { style: moneyStyle(ui, 32, props.privacy) }, props.privacy ? '£ •••,•••' : fmtGBP(latest.total)),
         E(ChangeTable, { series: s, field: 'total', privacy: props.privacy }),
         E('div', { style: { borderTop: '1px solid ' + ui.C.border, marginTop: 14, paddingTop: 12 } },
             // Same layout as Total wealth above (label, then the figure on the left), like the Investments hero.
@@ -1121,7 +1121,7 @@ function Chart(props) {
     var blur = props.privacy ? 'blur(6px)' : 'none';
     var maxAbs = bd ? Math.max.apply(null, bd.rows.map(function (g) { return Math.abs(g.d); }).concat([1])) : 1;
 
-    return E('div', { style: cardStyle(ui, { borderRadius: 20, padding: '14px 16px 10px', marginBottom: 12 }) },
+    return E('div', { style: cardStyle(ui, { borderRadius: 20, padding: '16px 18px 12px', marginBottom: 12 }) },
         E('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8 } },
             E(Segmented, { options: [{ id: 'total', label: 'Total' }, { id: 'liquid', label: 'Liquid' }], value: metric, onChange: function (v) { mState[1](v); } }),
             E(Segmented, { options: RANGES, value: range, onChange: function (v) { rState[1](v); reset(); } })
@@ -1243,7 +1243,7 @@ function GroupCard(props) {
     var rows = props.accounts.filter(function (a) { return cardId(a) === g.id && (!a.closed || latest.values[a.id] != null); })
         .sort(function (x, y) { return g.groups.indexOf(x.group) - g.groups.indexOf(y.group); });   // current accounts, then cards
     var blur = props.privacy ? 'blur(6px)' : 'none';
-    return E('div', { style: cardStyle(ui, { padding: 0 }) },
+    return E('div', { style: cardStyle(ui, { borderRadius: 20, padding: 0 }) },
         E('button', {
             onClick: function () { open[1](!open[0]); },
             style: { width: '100%', background: 'none', border: 'none', padding: '12px 14px 10px 16px', display: 'block', cursor: 'pointer', textAlign: 'left' }
@@ -1332,7 +1332,7 @@ function MainView(props) {
         latest ? E(Hero, { series: series, privacy: props.privacy })
                : E('div', { style: cardStyle(ui, { marginBottom: 12, fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc600 }) }, 'No balances entered yet. Tap Update balances to add this month’s.'),
         series.length > 1 && E(Chart, { series: series, accounts: state.accounts, privacy: props.privacy }),
-        latest && E('div', { style: { display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 14 } },
+        latest && E('div', { style: { display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 14 } },
             CARDS.filter(function (g) {
                 return state.accounts.some(function (a) { return cardId(a) === g.id && (!a.closed || latest.values[a.id] != null); });
             }).map(function (g) {
