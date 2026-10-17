@@ -4241,7 +4241,7 @@ const WORKER_URL = 'https://morning-tree-9d1b.fergushastiewilson.workers.dev';
 // Source of the Cloudflare Worker this app talks to, kept inside the app so the
 // app stays a single file. It runs on Cloudflare, not here: Settings → System →
 // "Worker code" copies it for pasting into the Cloudflare dashboard.
-const CLOUDFLARE_WORKER_SOURCE = "// Cloudflare Worker for the portfolio app \u2014 copied from the app's Settings.\n// Interface the app uses:  GET /proxy?url=<encoded target URL>\n//   \u2022 Forwards ONLY to Yahoo Finance, Twelve Data, Naver Finance, Marketstack and giltsyield.com (not an open proxy: the\n//     Worker URL is visible in the app, and an open proxy invites abuse that\n//     burns the free quota and gets Cloudflare's shared IPs blocked by Yahoo).\n//   \u2022 GET only; no cookies or client headers forwarded; nothing logged.\n//   \u2022 Answers only the app's own site (ALLOWED_ORIGINS), so other websites can't\n//     use it from a visitor's browser. Scripts can still fake an Origin header;\n//     this stops casual reuse, not a determined caller.\n// Deploy: Cloudflare dashboard \u2192 Workers \u2192 your worker \u2192 Edit code \u2192 paste over\n// the existing code \u2192 Deploy. If your current Worker does anything extra\n// (other routes, special Yahoo headers), keep those parts.\n\nconst ALLOWED_HOSTS = new Set([\n  'query1.finance.yahoo.com',\n  'query2.finance.yahoo.com',\n  'api.twelvedata.com',\n  'm.stock.naver.com',        // Naver Finance: KOSPI 200 history\n  'fchart.stock.naver.com',\n  'api.marketstack.com',      // Marketstack: LSE fallback when Alpha Vantage is exhausted\n  'giltsyield.com',           // giltsyield.com: gilt prices for the gilt ladder (CSV)\n]);\n\n// Sites allowed to call the Worker. Add an origin here if the app moves.\nconst ALLOWED_ORIGINS = new Set([\n  'https://fwilson02.github.io',  // GitHub Pages: the app and its Home Screen icon\n]);\n\nfunction corsFor(origin) {\n  return {\n    'Access-Control-Allow-Origin': origin,\n    'Access-Control-Allow-Methods': 'GET, OPTIONS',\n    'Access-Control-Allow-Headers': 'Content-Type',\n    'Access-Control-Max-Age': '86400',\n    'Vary': 'Origin',\n  };\n}\n\nfunction reply(status, body, cors) {\n  return new Response(body, { status, headers: { ...cors, 'Content-Type': 'text/plain; charset=utf-8' } });\n}\n\nexport default {\n  async fetch(request) {\n    const origin = request.headers.get('Origin') || '';\n    if (!ALLOWED_ORIGINS.has(origin)) return new Response('origin not allowed', { status: 403, headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Vary': 'Origin' } });\n    const CORS = corsFor(origin);\n\n    if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });\n    if (request.method !== 'GET') return reply(405, 'method not allowed', CORS);\n\n    const url = new URL(request.url);\n    if (url.pathname !== '/proxy') return reply(404, 'not found', CORS);\n\n    let target;\n    try { target = new URL(url.searchParams.get('url') || ''); }\n    catch { return reply(400, 'bad url', CORS); }\n    if (target.protocol !== 'https:' || !ALLOWED_HOSTS.has(target.hostname)) return reply(403, 'host not allowed', CORS);\n\n    let upstream;\n    try {\n      upstream = await fetch(target.toString(), {\n        method: 'GET',\n        headers: {\n          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15',\n          'Accept': 'application/json,text/plain,*/*',\n        },\n        cf: { cacheTtl: 0 },\n      });\n    } catch (e) {\n      return reply(502, 'upstream fetch failed', CORS);\n    }\n    return new Response(upstream.body, {\n      status: upstream.status,\n      headers: { ...CORS, 'Content-Type': upstream.headers.get('Content-Type') || 'application/json', 'Cache-Control': 'no-store' },\n    });\n  },\n};\n";
+const CLOUDFLARE_WORKER_SOURCE = "// Cloudflare Worker for the portfolio app \u2014 copied from the app's Settings.\n// Interface the app uses:  GET /proxy?url=<encoded target URL>\n//                           PUT /backup, GET /backup[?day=YYYY-MM-DD], GET /backup/list  (encrypted cloud backup)\n//   \u2022 Forwards ONLY to Yahoo Finance, Twelve Data, Naver Finance, Marketstack and giltsyield.com (not an open proxy: the\n//     Worker URL is visible in the app, and an open proxy invites abuse that\n//     burns the free quota and gets Cloudflare's shared IPs blocked by Yahoo).\n//   \u2022 The proxy is GET only; no cookies or client headers forwarded; nothing logged.\n//   \u2022 Answers only the app's own site (ALLOWED_ORIGINS), so other websites can't\n//     use it from a visitor's browser. Scripts can still fake an Origin header;\n//     this stops casual reuse, not a determined caller.\n//   \u2022 Backups: the app encrypts on the phone before sending, so this only ever holds\n//     scrambled data. Needs a KV namespace bound as BACKUPS (wrangler.json) and a\n//     secret BACKUP_TOKEN (Worker \u2192 Settings \u2192 Variables and Secrets); the app sends\n//     that token with every backup call. Without them /backup answers 501.\n// Deploy: merging to main in the GitHub repo redeploys it (Cloudflare is linked to\n// the repo). Or: Cloudflare dashboard \u2192 Workers \u2192 your worker \u2192 Edit code \u2192 paste\n// over the existing code \u2192 Deploy.\n\nconst ALLOWED_HOSTS = new Set([\n  'query1.finance.yahoo.com',\n  'query2.finance.yahoo.com',\n  'api.twelvedata.com',\n  'm.stock.naver.com',        // Naver Finance: KOSPI 200 history\n  'fchart.stock.naver.com',\n  'api.marketstack.com',      // Marketstack: LSE fallback when Alpha Vantage is exhausted\n  'giltsyield.com',           // giltsyield.com: gilt prices for the gilt ladder (CSV)\n]);\n\n// Sites allowed to call the Worker. Add an origin here if the app moves.\nconst ALLOWED_ORIGINS = new Set([\n  'https://fwilson02.github.io',  // GitHub Pages: the app and its Home Screen icon\n]);\n\nfunction corsFor(origin) {\n  return {\n    'Access-Control-Allow-Origin': origin,\n    'Access-Control-Allow-Methods': 'GET, PUT, OPTIONS',\n    'Access-Control-Allow-Headers': 'Content-Type, Authorization',\n    'Access-Control-Max-Age': '86400',\n    'Vary': 'Origin',\n  };\n}\n\nfunction reply(status, body, cors) {\n  return new Response(body, { status, headers: { ...cors, 'Content-Type': 'text/plain; charset=utf-8' } });\n}\n\n// \u2500\u2500 Backups \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nconst BACKUP_MAX_BYTES = 20 * 1024 * 1024;     // KV holds up to 25 MB a value\nconst BACKUP_DAY_TTL = 90 * 24 * 60 * 60;      // one copy per day, kept 90 days; the latest is kept until replaced\n\nfunction json(status, obj, cors) {\n  return new Response(JSON.stringify(obj), { status, headers: { ...cors, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });\n}\n\n// Compares in time that doesn't depend on where the strings differ.\nfunction sameSecret(a, b) {\n  const x = new TextEncoder().encode(a), y = new TextEncoder().encode(b);\n  let diff = x.length ^ y.length;\n  for (let i = 0; i < Math.max(x.length, y.length); i++) diff |= (x[i] || 0) ^ (y[i] || 0);\n  return diff === 0;\n}\n\nasync function backup(request, url, env, cors) {\n  if (!env || !env.BACKUPS || !env.BACKUP_TOKEN) return json(501, { error: 'backups not set up on the Worker' }, cors);\n  const auth = request.headers.get('Authorization') || '';\n  if (!auth.startsWith('Bearer ') || !sameSecret(auth.slice(7), env.BACKUP_TOKEN)) return json(401, { error: 'wrong backup token' }, cors);\n\n  if (url.pathname === '/backup/list' && request.method === 'GET') {\n    const days = [];\n    let cursor;\n    do {\n      const page = await env.BACKUPS.list({ prefix: 'day:', cursor });\n      page.keys.forEach(k => days.push(k.name.slice(4)));\n      cursor = page.list_complete ? null : page.cursor;\n    } while (cursor);\n    return json(200, { days: days.sort().reverse() }, cors);\n  }\n  if (url.pathname !== '/backup') return reply(404, 'not found', cors);\n\n  if (request.method === 'GET') {\n    const day = url.searchParams.get('day');\n    if (day && !/^\\d{4}-\\d{2}-\\d{2}$/.test(day)) return json(400, { error: 'bad day' }, cors);\n    const body = await env.BACKUPS.get(day ? 'day:' + day : 'latest');\n    if (body == null) return json(404, { error: 'no backup' }, cors);\n    return new Response(body, { status: 200, headers: { ...cors, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });\n  }\n  if (request.method === 'PUT') {\n    const body = await request.text();\n    if (body.length > BACKUP_MAX_BYTES) return json(413, { error: 'backup too large' }, cors);\n    let parsed;\n    try { parsed = JSON.parse(body); } catch { return json(400, { error: 'not JSON' }, cors); }\n    if (!parsed || parsed.format !== 'portfolio-cloud-backup' || typeof parsed.data !== 'string') return json(400, { error: 'not an encrypted backup' }, cors);\n    const day = new Date().toISOString().slice(0, 10);\n    await env.BACKUPS.put('latest', body);\n    await env.BACKUPS.put('day:' + day, body, { expirationTtl: BACKUP_DAY_TTL });\n    return json(200, { ok: true, day, bytes: body.length }, cors);\n  }\n  return reply(405, 'method not allowed', cors);\n}\n\nexport default {\n  async fetch(request, env) {\n    const origin = request.headers.get('Origin') || '';\n    if (!ALLOWED_ORIGINS.has(origin)) return new Response('origin not allowed', { status: 403, headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Vary': 'Origin' } });\n    const CORS = corsFor(origin);\n\n    if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });\n\n    const url = new URL(request.url);\n    if (url.pathname === '/backup' || url.pathname === '/backup/list') return backup(request, url, env, CORS);\n    if (request.method !== 'GET') return reply(405, 'method not allowed', CORS);\n    if (url.pathname !== '/proxy') return reply(404, 'not found', CORS);\n\n    let target;\n    try { target = new URL(url.searchParams.get('url') || ''); }\n    catch { return reply(400, 'bad url', CORS); }\n    if (target.protocol !== 'https:' || !ALLOWED_HOSTS.has(target.hostname)) return reply(403, 'host not allowed', CORS);\n\n    let upstream;\n    try {\n      upstream = await fetch(target.toString(), {\n        method: 'GET',\n        headers: {\n          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15',\n          'Accept': 'application/json,text/plain,*/*',\n        },\n        cf: { cacheTtl: 0 },\n      });\n    } catch (e) {\n      return reply(502, 'upstream fetch failed', CORS);\n    }\n    return new Response(upstream.body, {\n      status: upstream.status,\n      headers: { ...CORS, 'Content-Type': upstream.headers.get('Content-Type') || 'application/json', 'Cache-Control': 'no-store' },\n    });\n  },\n};\n";
 function getWorkerUrl() {
     // Check localStorage override first (allows changing without redeploying)
     try { return localStorage.getItem('cf_worker_url') || WORKER_URL; } catch { return WORKER_URL; }
@@ -4253,6 +4253,109 @@ function makeProxyUrl(targetUrl) {
     const w = getWorkerUrl();
     if (!w) return null;
     return `${w.replace(/\/$/, '')}/proxy?url=${encodeURIComponent(targetUrl)}`;
+}
+// ── Cloud backup ─────────────────────────────────────────────────────────────
+// The full JSON backup (Settings → Backup & Recovery → Export), encrypted on this phone and kept by the Worker
+// (PUT /backup), so losing or wiping the phone doesn't lose the history. The Worker and anyone reading the public repo
+// only ever see the encrypted copy: AES-GCM with a key made from the passphrase (PBKDF2), which never leaves the phone.
+// The backup token is the Worker's BACKUP_TOKEN secret and stops anyone else overwriting the backup.
+// Neither is ever written into a backup or export.
+const CLOUD_BACKUP_TOKEN_KEY = 'cloud_backup_token';
+const CLOUD_BACKUP_PASS_KEY  = 'cloud_backup_passphrase';
+const CLOUD_BACKUP_STATE_KEY = 'cloud_backup_state';    // { at, hash, bytes, error, errorAt }
+const CLOUD_BACKUP_ITERATIONS = 600000;
+const CLOUD_BACKUP_MAX_AGE = 24 * 3600 * 1000;           // unchanged data is still backed up once a day
+function getCloudBackupToken()  { try { return (localStorage.getItem(CLOUD_BACKUP_TOKEN_KEY) || '').trim(); } catch { return ''; } }
+function setCloudBackupToken(v) { try { localStorage.setItem(CLOUD_BACKUP_TOKEN_KEY, String(v || '').trim()); } catch {} }
+function getCloudBackupPass()   { try { return localStorage.getItem(CLOUD_BACKUP_PASS_KEY) || ''; } catch { return ''; } }
+function setCloudBackupPass(v)  { try { localStorage.setItem(CLOUD_BACKUP_PASS_KEY, String(v || '')); } catch {} }
+function loadCloudBackupState() { try { return JSON.parse(localStorage.getItem(CLOUD_BACKUP_STATE_KEY) || '{}') || {}; } catch { return {}; } }
+function saveCloudBackupState(s) {
+    try { localStorage.setItem(CLOUD_BACKUP_STATE_KEY, JSON.stringify(s)); } catch {}
+    try { window.dispatchEvent(new Event('cloud-backup')); } catch {}
+}
+function cloudBackupReady() { return !!(getCloudBackupToken() && getCloudBackupPass() && getWorkerUrl()); }
+
+function _cbToB64(bytes) {
+    let s = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return btoa(s);
+}
+function _cbFromB64(s) {
+    const bin = atob(s), out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+}
+async function _cbPipe(bytes, stream) {
+    return new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(stream)).arrayBuffer());
+}
+async function _cbKey(passphrase, salt, iterations) {
+    const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(passphrase), 'PBKDF2', false, ['deriveKey']);
+    return crypto.subtle.deriveKey({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+}
+async function cbSha256Hex(str) {
+    const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+    return Array.from(new Uint8Array(d)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+// JSON text → { format: 'portfolio-cloud-backup', ... } with the text gzipped (where the browser can) and encrypted.
+async function encryptBackup(jsonString, passphrase) {
+    if (!passphrase) throw new Error('no passphrase');
+    let bytes = new TextEncoder().encode(jsonString), gzip = false;
+    if (typeof CompressionStream !== 'undefined') { bytes = await _cbPipe(bytes, new CompressionStream('gzip')); gzip = true; }
+    const salt = crypto.getRandomValues(new Uint8Array(16)), iv = crypto.getRandomValues(new Uint8Array(12));
+    const key = await _cbKey(passphrase, salt, CLOUD_BACKUP_ITERATIONS);
+    const data = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, bytes));
+    return { format: 'portfolio-cloud-backup', v: 1, at: new Date().toISOString(), gzip,
+             kdf: { name: 'PBKDF2', hash: 'SHA-256', iterations: CLOUD_BACKUP_ITERATIONS, salt: _cbToB64(salt) },
+             cipher: { name: 'AES-GCM', iv: _cbToB64(iv) }, data: _cbToB64(data) };
+}
+// The reverse. A wrong passphrase (or a tampered copy) fails AES-GCM's check and says so.
+async function decryptBackup(obj, passphrase) {
+    if (!obj || obj.format !== 'portfolio-cloud-backup' || obj.v !== 1) throw new Error('not a cloud backup');
+    const key = await _cbKey(passphrase, _cbFromB64(obj.kdf.salt), obj.kdf.iterations);
+    let bytes;
+    try { bytes = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: _cbFromB64(obj.cipher.iv) }, key, _cbFromB64(obj.data))); }
+    catch (e) { throw new Error('wrong passphrase, or the backup is damaged'); }
+    if (obj.gzip) {
+        if (typeof DecompressionStream === 'undefined') throw new Error('this browser can’t unzip the backup');
+        bytes = await _cbPipe(bytes, new DecompressionStream('gzip'));
+    }
+    return new TextDecoder().decode(bytes);
+}
+async function cloudBackupFetch(method, path, body) {
+    const base = (getWorkerUrl() || '').replace(/\/$/, '');
+    const res = await fetch(base + path, { method, body, cache: 'no-store',
+        headers: Object.assign({ Authorization: 'Bearer ' + getCloudBackupToken() }, body ? { 'Content-Type': 'application/json' } : {}) });
+    if (!res.ok) {
+        let msg = 'HTTP ' + res.status;
+        try { const j = await res.json(); if (j && j.error) msg = j.error; } catch {}
+        throw new Error(msg);
+    }
+    return res;
+}
+// Backs up `jsonString` (the full JSON backup) when its data differs from the last one sent, or that was over a day
+// ago, or `force`. Only the data is compared: live prices and the export time change all the time.
+async function runCloudBackup(jsonString, force) {
+    if (!cloudBackupReady()) return { skipped: 'not set up' };
+    const st = loadCloudBackupState();
+    try {
+        const p = (JSON.parse(jsonString) || {}).payload || {};
+        const hash = await cbSha256Hex(JSON.stringify([p.transactions, p.compConfigs, p.externalHoldings, p.balances, p.loadSource]));
+        if (!force && st.hash === hash && st.at && Date.now() - st.at < CLOUD_BACKUP_MAX_AGE) return { skipped: 'unchanged' };
+        const body = JSON.stringify(await encryptBackup(jsonString, getCloudBackupPass()));
+        await cloudBackupFetch('PUT', '/backup', body);
+        const next = { at: Date.now(), hash, bytes: body.length, error: null, errorAt: null };
+        saveCloudBackupState(next);
+        return next;
+    } catch (e) {
+        saveCloudBackupState(Object.assign({}, st, { error: String(e && e.message || e), errorAt: Date.now() }));
+        throw e;
+    }
+}
+// The latest cloud backup (or one day's), decrypted back to the JSON backup text.
+async function fetchCloudBackup(day) {
+    const res = await cloudBackupFetch('GET', '/backup' + (day ? '?day=' + encodeURIComponent(day) : ''));
+    return decryptBackup(await res.json(), getCloudBackupPass());
 }
 // ── Provider audit trail (every market-data source) ──────────────────────────
 // Marketstack's attempt log (above) was the model: every request to every source
@@ -7368,6 +7471,57 @@ function EstateGroup({ onImport }) {
     );
 }
 
+// Settings → Cloud Backup: the token and passphrase, when the last backup went, Back up now and Restore (see runCloudBackup).
+function CloudBackupGroup({ backupNow, restore }) {
+    const [token, setToken] = React.useState(getCloudBackupToken());
+    const [pass, setPass] = React.useState(getCloudBackupPass());
+    const [st, setSt] = React.useState(loadCloudBackupState());
+    const [busy, setBusy] = React.useState(null);   // 'backup' | 'restore'
+    const [msg, setMsg] = React.useState(null);
+    const [confirmRestore, setConfirmRestore] = React.useState(false);
+    React.useEffect(() => {
+        const on = () => setSt(loadCloudBackupState());
+        window.addEventListener('cloud-backup', on);
+        const iv = setInterval(on, 30000);   // keeps "5m ago" current
+        return () => { window.removeEventListener('cloud-backup', on); clearInterval(iv); };
+    }, []);
+    const ready = !!(token && pass);
+    const status = !ready ? 'Not set up: add the backup token and a passphrase below.'
+        : st.error && (!st.at || st.errorAt > st.at) ? 'Last try failed ' + relTime(st.errorAt) + ': ' + st.error
+        : st.at ? 'Backed up ' + relTime(st.at) + ' · ' + Math.max(1, Math.round((st.bytes || 0) / 1024)) + ' KB encrypted'
+        : 'Set up. The first backup goes in a moment.';
+    const field = (value, onChange, placeholder) => React.createElement('input', {
+        type: 'password', value, placeholder, autoComplete: 'off', autoCapitalize: 'off', autoCorrect: 'off', spellCheck: false,
+        onChange: e => onChange(e.target.value),
+        style: { width: '100%', boxSizing: 'border-box', background: '#0a0e14', border: '1px solid #27272a', borderRadius: 10,
+                 padding: '10px 14px', fontFamily: 'JetBrains Mono', fontSize: 12, color: '#a1a1aa', marginTop: 8 }
+    });
+    const doBackup = () => {
+        setBusy('backup'); setMsg(null);
+        backupNow(true).then(r => setMsg(r && r.skipped === 'nothing to back up' ? 'Nothing to back up yet.' : r && r.skipped ? null : 'Backed up.'))
+            .catch(e => setMsg('Backup failed: ' + (e && e.message || e))).finally(() => setBusy(null));
+    };
+    const doRestore = () => {
+        if (!confirmRestore) { setConfirmRestore(true); setTimeout(() => setConfirmRestore(false), 4000); return; }
+        setConfirmRestore(false); setBusy('restore'); setMsg(null);
+        restore().then(() => setMsg('Downloaded and decrypted. Check the summary and confirm to restore.'))
+            .catch(e => setMsg('Restore failed: ' + (e && e.message || e))).finally(() => setBusy(null));
+    };
+    return React.createElement(Group, { title: 'Cloud Backup' },
+        React.createElement('div', { style: { padding: '13px 16px', borderBottom: '1px solid rgba(255,255,255,0.04)' } },
+            React.createElement('div', { style: { fontFamily: 'JetBrains Mono', fontSize: 12, color: st.error && (!st.at || st.errorAt > st.at) && ready ? C.amber : C.text, lineHeight: 1.45 } }, status),
+            field(token, v => { setToken(v); setCloudBackupToken(v); }, 'Backup token (the Worker\u2019s BACKUP_TOKEN)'),
+            field(pass, v => { setPass(v); setCloudBackupPass(v); }, 'Passphrase'),
+            React.createElement('div', { style: { fontFamily: sys, fontSize: 12, color: C.zinc500, lineHeight: 1.45, marginTop: 8 } },
+                'Backs up everything in the JSON backup, Estate included, whenever it changes. It\u2019s encrypted on this phone with the passphrase, so the Worker only stores scrambled data. Write the passphrase down somewhere safe: without it the backup can\u2019t be opened.'),
+            msg && React.createElement('div', { style: { fontFamily: sys, fontSize: 12, color: C.text, marginTop: 8 } }, msg)
+        ),
+        React.createElement(Row, { icon: Upload, iconColor: '#60a5fa', label: busy === 'backup' ? 'Backing up\u2026' : 'Back Up Now', disabled: !ready || !!busy, onClick: doBackup, right: null }),
+        React.createElement(Row, { icon: Download, iconColor: '#60a5fa', label: busy === 'restore' ? 'Downloading\u2026' : confirmRestore ? 'Tap again to restore' : 'Restore From Cloud Backup',
+            sub: 'Shows what it holds before anything is replaced', disabled: !ready || !!busy, onClick: doRestore, right: null, last: true })
+    );
+}
+
 function Group({ title, children }) {
     return React.createElement('div', { style: { marginBottom: 28 } },
         title && React.createElement('div', { style: { fontFamily: 'JetBrains Mono', fontSize: 10, color: '#888894', textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: 8, padding: '0 4px' } }, title),
@@ -9742,6 +9896,8 @@ function MoreTab(props) {
 
                 // ── Estate (balances): import, exports, delete ─────
                 props.onEstateImport && React.createElement(EstateGroup, { onImport: props.onEstateImport }),
+
+                props.cloudBackupNow && React.createElement(CloudBackupGroup, { backupNow: props.cloudBackupNow, restore: props.cloudRestore }),
 
                 // ── Group C: Backup & Recovery ─────────────────────
                 React.createElement(Group, { title: 'Backup & Recovery' },
@@ -16216,15 +16372,23 @@ function PortfolioApp() {
         // Dynamic instrument list: base + holdings. Ref keeps refreshMarketOverview stable.
         const marketOverviewInstrumentsRef = React.useRef(BASE_MARKET_OVERVIEW_INSTRUMENTS);
 
-        const exportPricesJson = useCallback(function() {
+        // With a function as `target` (the cloud backup), the JSON text goes to it instead of being saved as a file,
+        // and that call's result is returned; nothing to back up returns null. From a button, target is the click event.
+        const exportPricesJson = useCallback(function(target) {
+            var toFn = typeof target === 'function';
             try {
                 var rawTickers = Object.keys(prices);
                 var hasMarketOverviewRows = Array.isArray(marketRows) && marketRows.length > 0;
                 if (rawTickers.length === 0 && transactions.length === 0
                     && compConfigs.length === 0 && externalHoldings.length === 0
                     && !hasMarketOverviewRows) {
-                    setUploadError('No workspace data to export — upload transactions or prices first.');
-                    return;
+                    // The cloud backup still goes when Estate holds balances: they live in the same backup.
+                    var hasBalances = !!(window.BalancesStore && window.BalancesStore.get && window.BalancesStore.get().accounts.length);
+                    if (toFn && !hasBalances) return null;
+                    if (!toFn) {
+                        setUploadError('No workspace data to export — upload transactions or prices first.');
+                        return;
+                    }
                 }
 
                 // ── Effective P&L session date ───────────────────────────────────────
@@ -16356,6 +16520,7 @@ function PortfolioApp() {
                 var jsonString = JSON.stringify(envelope, null, 2);
                 var tsLabel    = exportTimestamp.slice(0, 10) + '-' + exportTimestamp.slice(11, 13) + exportTimestamp.slice(14, 16);
                 var filename   = 'portfolio-backup-v4-' + tsLabel + '.json';
+                if (toFn) return target(jsonString, filename);
 
                 setUploadError(null);
                 deliverJsonBackup(jsonString, filename).catch(function(err) {
@@ -16363,6 +16528,7 @@ function PortfolioApp() {
                 });
 
             } catch(err) {
+                if (toFn) throw err;
                 setUploadError('JSON export failed: ' + err.message);
             }
         }, [prices, livePrices, livePrevClose, liveDailyCloses, liveQuoteSessionDates,
@@ -16377,6 +16543,7 @@ function PortfolioApp() {
         // Uses sessionStorage rollback so the user can undo if they picked the wrong file.
         const [jsonImportPending, setJsonImportPending] = React.useState(null); // { parsed, summary } | null
         const [jsonImportMode, setJsonImportMode] = React.useState('both'); // 'both'|'tx'|'prices'
+        const handlePricesJsonRef = React.useRef(null);
         const handlePricesJson = useCallback(function(file) {
             if (!file) return;
             setUploadError(null);
@@ -16489,6 +16656,7 @@ function PortfolioApp() {
                 setUploadError('JSON restore failed: ' + err.message);
             });
         }, [setUploadError]);
+        handlePricesJsonRef.current = handlePricesJson;
         const confirmJsonImport = useCallback(async function() {
             if (!jsonImportPending) return;
             var data         = jsonImportPending.data;
@@ -17371,6 +17539,38 @@ function PortfolioApp() {
             if (window.BalancesStore && window.BalancesStore.syncLinked) window.BalancesStore.syncLinked(balancesAppValues);
         }, [balancesAppValues]);
 
+        // Cloud backup (see runCloudBackup): shortly after the app opens or comes back to the screen, after the ledger or
+        // Estate changes, and every 30 minutes while open. Each run sends only when the data changed (or daily).
+        const exportJsonRef = React.useRef(exportPricesJson);
+        exportJsonRef.current = exportPricesJson;
+        const cloudBackupNow = React.useCallback(function (force) {
+            if (!cloudBackupReady()) return Promise.resolve({ skipped: 'not set up' });
+            return Promise.resolve(exportJsonRef.current(function (json) { return runCloudBackup(json, force); }))
+                .then(r => r || { skipped: 'nothing to back up' });
+        }, []);
+        const cloudScheduleRef = React.useRef(() => {});
+        React.useEffect(() => {
+            let timer = null, busy = false;
+            const run = () => {
+                if (busy || document.visibilityState !== 'visible') return;
+                busy = true;
+                cloudBackupNow(false).catch(e => console.warn('Cloud backup failed:', e)).finally(() => { busy = false; });
+            };
+            const schedule = ms => { clearTimeout(timer); timer = setTimeout(run, ms); };
+            cloudScheduleRef.current = schedule;
+            schedule(20000);   // give the first price refresh a moment
+            const onVis = () => { if (document.visibilityState === 'visible') schedule(20000); };
+            document.addEventListener('visibilitychange', onVis);
+            const unsub = window.BalancesStore && window.BalancesStore.subscribe ? window.BalancesStore.subscribe(() => schedule(5000)) : null;
+            const iv = setInterval(() => schedule(1000), 30 * 60 * 1000);
+            return () => { clearTimeout(timer); clearInterval(iv); document.removeEventListener('visibilitychange', onVis); if (unsub) unsub(); };
+        }, [cloudBackupNow]);
+        React.useEffect(() => { cloudScheduleRef.current(5000); }, [transactions, compConfigs, externalHoldings]);
+        // Settings → Cloud Backup → Restore: the decrypted backup goes through the same check and confirm as a file restore.
+        const cloudRestore = React.useCallback(function () {
+            return fetchCloudBackup().then(text => { handlePricesJsonRef.current({ name: 'cloud backup', text: () => Promise.resolve(text) }); });
+        }, []);
+
         // ─── RENDER ───────────────────────────────────────────────────────────
         // Spec §II.2: native iOS typography engine for all financial data and labels.
         // All display constants (C, sys, mono, serif, fmtV, fmtA, fmtP, signColor) are now global.
@@ -17728,6 +17928,7 @@ function PortfolioApp() {
                         moneyStats, chartTimeframe,
                         purgeAndRebuildPrices,
                         // Settings → Estate → Import: close the sheet and open the Import view on the Estate tab.
+                        cloudBackupNow, cloudRestore,
                         onEstateImport: hasBalances ? () => { setShowSettings(false); setSettingsDragY(0); setActiveTab('estate'); window.BalancesStore.openView('import'); } : null,
                     })
                 )

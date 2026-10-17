@@ -23,6 +23,7 @@ function stubNode() {
 function loadApp() {
     const ctx = {
         console, setTimeout, clearTimeout, setInterval: () => 0, clearInterval() {}, Intl, Date, Math, JSON,
+        crypto: globalThis.crypto, TextEncoder, TextDecoder, btoa, atob, Blob, Response, CompressionStream, DecompressionStream, Event: class { constructor(t) { this.type = t; } }, dispatchEvent() {},
         localStorage: memoryStorage(), sessionStorage: memoryStorage(),
         React: { createElement: () => null, useState: v => [v, () => {}], useMemo: f => f(), useCallback: f => f, useEffect() {},
                  useLayoutEffect() {}, useRef: v => ({ current: v }), useReducer: (r, i) => [i, () => {}], useContext: () => null,
@@ -42,8 +43,12 @@ function loadApp() {
     const inline = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
     const main = inline.reduce((a, b) => (b.length > a.length ? b : a));   // the app itself; the others are boot helpers
     vm.runInContext(fs.readFileSync(path.join(DOCS, 'balances.js'), 'utf8'), ctx, { filename: 'balances.js' });
-    vm.runInContext(main, ctx, { filename: 'index.html' });
-    return { app: ctx, estate: ctx.__balancesInternals };
+    // The app's script is one try { } block, so its consts and async functions live in that block. A lookup added at the
+    // top of the block reaches them for the tests.
+    if (!/^\s*try\{/.test(main)) throw new Error('index.html main script no longer starts with try{; update tests/load.cjs');
+    vm.runInContext(main.replace(/^\s*try\{/, 'try{ globalThis.__lookup = n => eval(n);'), ctx, { filename: 'index.html' });
+    const app = new Proxy(ctx, { get: (t, name) => (name in t || typeof name !== 'string' ? t[name] : t.__lookup(name)) });
+    return { app, estate: ctx.__balancesInternals };
 }
 
 module.exports = { loadApp };

@@ -33,3 +33,48 @@ test('the copy in Settings → Worker code matches index.js', () => {
     const embedded = JSON.parse(html.match(/const CLOUDFLARE_WORKER_SOURCE = (".*");\n/)[1]);
     assert.equal(embedded, fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8'));
 });
+
+// ── Backups ──
+function memoryKV() {
+    const m = new Map();
+    return { map: m,
+             get: async k => (m.has(k) ? m.get(k) : null),
+             put: async (k, v) => { m.set(k, v); },
+             list: async ({ prefix }) => ({ keys: [...m.keys()].filter(k => k.startsWith(prefix)).map(name => ({ name })), list_complete: true }) };
+}
+const ENC = JSON.stringify({ format: 'portfolio-cloud-backup', v: 1, data: 'c2NyYW1ibGVk' });
+const call = (env, path, init = {}) => worker.fetch(new Request('https://w.example' + path,
+    { ...init, headers: { Origin: APP, ...(init.headers || {}) } }), env);
+const auth = { Authorization: 'Bearer s3cret' };
+
+test('backup: 501 until the KV namespace and token are set up', async () => {
+    assert.equal((await call({}, '/backup', { headers: auth })).status, 501);
+    assert.equal((await call(undefined, '/backup', { headers: auth })).status, 501);
+});
+
+test('backup: the token is required', async () => {
+    const env = { BACKUPS: memoryKV(), BACKUP_TOKEN: 's3cret' };
+    assert.equal((await call(env, '/backup')).status, 401);
+    assert.equal((await call(env, '/backup', { headers: { Authorization: 'Bearer s3cre' } })).status, 401);
+    assert.equal((await call(env, '/backup', { method: 'PUT', body: ENC, headers: { Authorization: 'Bearer nope' } })).status, 401);
+    assert.equal(env.BACKUPS.map.size, 0);
+});
+
+test('backup: store, read back, list days; only encrypted backups are accepted', async () => {
+    const env = { BACKUPS: memoryKV(), BACKUP_TOKEN: 's3cret' };
+    assert.equal((await call(env, '/backup', { headers: auth })).status, 404);
+    assert.equal((await call(env, '/backup', { method: 'PUT', body: '{"plain":true}', headers: auth })).status, 400);
+    const put = await call(env, '/backup', { method: 'PUT', body: ENC, headers: auth });
+    assert.equal(put.status, 200);
+    const { day } = await put.json();
+    assert.equal(await (await call(env, '/backup', { headers: auth })).text(), ENC);
+    assert.equal(await (await call(env, '/backup?day=' + day, { headers: auth })).text(), ENC);
+    assert.deepEqual((await (await call(env, '/backup/list', { headers: auth })).json()).days, [day]);
+});
+
+test('backup: preflight allows PUT with the token header', async () => {
+    const r = await call({}, '/backup', { method: 'OPTIONS' });
+    assert.equal(r.status, 204);
+    assert.match(r.headers.get('access-control-allow-methods'), /PUT/);
+    assert.match(r.headers.get('access-control-allow-headers'), /Authorization/);
+});
