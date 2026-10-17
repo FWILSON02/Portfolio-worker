@@ -204,7 +204,7 @@ window.XCircle=_li([{t:'c',cx:12,cy:12,r:10},'M15 9l-6 6','M9 9l6 6']);
 window.MinusCircle=_li([{t:'c',cx:12,cy:12,r:10},'M8 12h8']);
 window.HelpCircle=_li([{t:'c',cx:12,cy:12,r:10},'M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3',{t:'l',x1:12,y1:17,x2:12.01,y2:17}]);</script>
 <!-- Balances screen lives in its own file. Bump ?v= whenever balances.js changes so the Home Screen app never mixes versions. -->
-<script src="balances.js?v=35"></script>
+<script src="balances.js?v=36"></script>
 <script>
 try{"use strict";
 // ─── Lightweight SVG chart components (replaces Recharts) ──────────────────
@@ -7404,7 +7404,7 @@ function Row({ icon: Icon, iconColor, iconBg, label, sub, right, onClick, isLabe
 
 // The pull request that last changed the app. Bump it in every PR so Settings → App shows which change the phone is
 // running (Fergus asked; the Estate ?v= number only moved when balances.js changed, so it looked stuck).
-const APP_BUILD = 54;
+const APP_BUILD = 55;
 
 // Settings → App: pulls the newest index.html and balances.js past the browser's cache, then reloads. A Home Screen web app
 // on iOS keeps serving cached files for a while after a deploy, and closing it from the app switcher doesn't clear that.
@@ -12348,7 +12348,7 @@ function MarketOverviewScreen({ rows, status, updatedAt, error, onRefresh }) {
 
     // Sits under the app's tab bar (its height is published as --topbar-h), so the tabs stay visible.
     return React.createElement('div', {
-        'data-swipe-tabs': '',
+        'data-swipe-tabs': '', 'data-tab-screen': 'markets',
         style: {
             position: 'fixed', top: 'var(--topbar-h, 0px)', left: 0, right: 0, bottom: 0, zIndex: 9995,
             background: C.bg, display: 'flex', flexDirection: 'column',
@@ -17010,6 +17010,15 @@ function PortfolioApp() {
         // Swipe left or right to move between the tabs (Fergus asked). See swipeAllowed for where a swipe may start.
         const tabOrderRef = React.useRef([]);
         tabOrderRef.current = ['markets', 'investments'].concat(typeof window.BalancesScreen === 'function' ? ['estate'] : []);
+        // A swiped-to screen slides in from the side it came from (Fergus: an instant switch felt too abrupt).
+        const swipeDirRef = React.useRef(0);
+        React.useLayoutEffect(() => {
+            const dir = swipeDirRef.current;
+            swipeDirRef.current = 0;
+            const el = dir && document.querySelector('[data-tab-screen="' + activeTab + '"]');
+            if (el && el.animate) el.animate([{ transform: 'translateX(' + (dir * 28) + '%)', opacity: 0.3 }, { transform: 'none', opacity: 1 }],
+                                              { duration: 320, easing: 'cubic-bezier(0.22, 0.8, 0.3, 1)' });
+        }, [activeTab]);
         React.useEffect(() => {
             let start = null;
             const onStart = e => {
@@ -17026,6 +17035,7 @@ function PortfolioApp() {
                 setActiveTab(cur => {
                     const order = tabOrderRef.current, i = order.indexOf(cur);
                     const next = order[i + (dx < 0 ? 1 : -1)];
+                    if (next) swipeDirRef.current = dx < 0 ? 1 : -1;
                     return next || cur;
                 });
             };
@@ -18026,7 +18036,7 @@ function PortfolioApp() {
 
             // Scrollable content
             React.createElement('div', {
-                className: 'ios-scroll',
+                className: 'ios-scroll', 'data-tab-screen': 'investments',
                 style: { flex: 1, padding: '12px 16px 32px' }
             },
                 // Hero Card

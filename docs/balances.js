@@ -1054,8 +1054,10 @@ function Chart(props) {
     var dragging = React.useRef(false);
     var width = useWidth(ref);
     var accounts = props.accounts;
-    var mState = React.useState('liquid'), metric = mState[0];
-    var rState = React.useState('1Y'), range = rState[0];
+    // Kept for the session, so swiping away from Estate and back keeps the chart as it was.
+    var mState = React.useState(_chartView.metric), metric = mState[0];
+    var rState = React.useState(_chartView.range), range = rState[0];
+    React.useEffect(function () { _chartView.metric = metric; _chartView.range = range; }, [metric, range]);
     var hState = React.useState(null), scrub = hState[0], setScrub = hState[1];          // month under the finger
     var pState = React.useState(null), pin = pState[0], setPin = pState[1];               // last month lifted on
     var ppState = React.useState(null), prevPin = ppState[0], setPrevPin = ppState[1];    // the one before (Two months)
@@ -1843,6 +1845,10 @@ function ImportView(props) {
 }
 
 // ── Screen ───────────────────────────────────────────────────────────────────
+// Where the main view was scrolled to and how its chart was set, kept while the app is open: the screen unmounts
+// when another tab is shown, and Fergus wants to come back to where he was.
+var _mainScrollTop = 0;
+var _chartView = { metric: 'liquid', range: '1Y' };
 function BalancesScreenInner(props) {
     var ui = useUI();
     var state = useBalancesState();
@@ -1853,6 +1859,11 @@ function BalancesScreenInner(props) {
         return function () { window.removeEventListener('estate-open-view', onOpen); };
     }, []);
     var series = React.useMemo(function () { return buildSeries(state); }, [state]);
+    // Back on the main view (after switching tab, or from a form), reopen it where it was scrolled to.
+    var scrollRef = React.useRef(null);
+    React.useLayoutEffect(function () {
+        if (view === 'main' && _ready && scrollRef.current) scrollRef.current.scrollTo({ top: _mainScrollTop, behavior: 'instant' });
+    }, [view, _ready]);
     var title = view === 'update' ? 'Update balances' : 'Import';
     var back = view === 'main' ? null : function () { setView('main'); };
     var body;
@@ -1868,13 +1879,14 @@ function BalancesScreenInner(props) {
     }
     // The main view can be swiped to change tab (see swipeAllowed in index.html); the update and import forms can't.
     return E('div', {
-        'data-swipe-tabs': view === 'main' ? '' : null,
+        'data-swipe-tabs': view === 'main' ? '' : null, 'data-tab-screen': 'estate',
         style: { position: 'fixed', top: 'var(--topbar-h, 0px)', left: 0, right: 0, bottom: 0, zIndex: 9995, background: ui.C.bg, display: 'flex', flexDirection: 'column', WebkitTapHighlightColor: 'transparent' }
     },
         back && E(Header, { title: title, onBack: back }),
         _loadError && E('div', { style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.rose, padding: '8px 16px' } }, 'Storage problem: ' + _loadError),
-        // Keyed by view so each view opens scrolled to the top.
-        E('div', { key: view, className: 'ios-scroll', style: { flex: 1, minWidth: 0, overflowY: 'auto', overflowX: 'hidden', paddingBottom: 'max(env(safe-area-inset-bottom), 28px)' } },
+        // Keyed by view so each form opens scrolled to the top (the main view goes back to where it was).
+        E('div', { key: view, ref: scrollRef, onScroll: view === 'main' ? function (e) { _mainScrollTop = e.currentTarget.scrollTop; } : null,
+                   className: 'ios-scroll', style: { flex: 1, minWidth: 0, overflowY: 'auto', overflowX: 'hidden', paddingBottom: 'max(env(safe-area-inset-bottom), 28px)' } },
             body)
     );
 }
