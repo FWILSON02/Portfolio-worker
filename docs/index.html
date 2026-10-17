@@ -204,7 +204,7 @@ window.XCircle=_li([{t:'c',cx:12,cy:12,r:10},'M15 9l-6 6','M9 9l6 6']);
 window.MinusCircle=_li([{t:'c',cx:12,cy:12,r:10},'M8 12h8']);
 window.HelpCircle=_li([{t:'c',cx:12,cy:12,r:10},'M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3',{t:'l',x1:12,y1:17,x2:12.01,y2:17}]);</script>
 <!-- Balances screen lives in its own file. Bump ?v= whenever balances.js changes so the Home Screen app never mixes versions. -->
-<script src="balances.js?v=24"></script>
+<script src="balances.js?v=25"></script>
 <script>
 try{"use strict";
 // ─── Lightweight SVG chart components (replaces Recharts) ──────────────────
@@ -7292,6 +7292,36 @@ function Row({ icon: Icon, iconColor, iconBg, label, sub, right, onClick, isLabe
     return React.createElement('button', { style, onClick, disabled }, inner);
 }
 
+// Settings → Estate: the balances' import, exports and delete (moved here from the bottom of the Estate tab).
+// Re-renders when the Estate data changes, so "last exported" stays current.
+function EstateGroup({ onImport }) {
+    const store = window.BalancesStore;
+    const [, tick] = React.useState(0);
+    const [msg, setMsg] = React.useState(null);
+    const [del, setDel] = React.useState(false);
+    React.useEffect(() => store ? store.subscribe(() => tick(n => n + 1)) : undefined, [store]);
+    if (!store || !store.exportFile) return null;
+    const st = store.get();
+    const has = st.accounts.length > 0;
+    const stale = has && (!st.lastExportAt || (Date.now() - st.lastExportAt) > 35 * 86400000);
+    const exp = kind => store.exportFile(kind).then(name => setMsg('Exported ' + name))
+        .catch(e => { if (!e || e.name !== 'AbortError') setMsg('Export failed: ' + (e && e.message)); });
+    return React.createElement(Group, { title: 'Estate' },
+        React.createElement(Row, { icon: Upload, iconColor: '#a78bfa', label: 'Import Balances', sub: 'Spreadsheet or Estate JSON backup', onClick: onImport }),
+        React.createElement(Row, { icon: Download, iconColor: '#a78bfa', label: 'Export JSON', disabled: !has, onClick: () => exp('json'),
+            sub: React.createElement('span', { style: { color: stale ? C.amber : undefined } }, 'Last exported ' + store.relTime(st.lastExportAt)) }),
+        React.createElement(Row, { icon: Download, iconColor: '#a78bfa', label: 'Export CSV for Excel', disabled: !has, onClick: () => exp('csv') }),
+        React.createElement('div', { style: { padding: '10px 16px', borderBottom: '1px solid rgba(255,255,255,0.04)', fontFamily: sys, fontSize: 12, color: C.zinc500, lineHeight: 1.45 } },
+            msg ? React.createElement('div', { style: { color: C.text, marginBottom: 4 } }, msg) : null,
+            'Your balances live only on this phone. Export JSON saves every account, closed ones included, and every update, and Import restores it.'),
+        React.createElement(Row, { icon: Trash2, iconColor: '#ef4444', label: del ? 'Tap again to delete all balances' : 'Delete All Balances', disabled: !has, last: true, right: null,
+            onClick: () => {
+                if (!del) { setDel(true); setTimeout(() => setDel(false), 4000); return; }
+                store.deleteAll().catch(() => {}); setDel(false); setMsg(null);
+            } })
+    );
+}
+
 function Group({ title, children }) {
     return React.createElement('div', { style: { marginBottom: 28 } },
         title && React.createElement('div', { style: { fontFamily: 'JetBrains Mono', fontSize: 10, color: '#888894', textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: 8, padding: '0 4px' } }, title),
@@ -9647,6 +9677,9 @@ function MoreTab(props) {
                     ),
                     // Privacy toggle has moved to the Data group (Group A) above.
                 ),
+
+                // ── Estate (balances): import, exports, delete ─────
+                props.onEstateImport && React.createElement(EstateGroup, { onImport: props.onEstateImport }),
 
                 // ── Group C: Backup & Recovery ─────────────────────
                 React.createElement(Group, { title: 'Backup & Recovery' },
@@ -17617,6 +17650,8 @@ function PortfolioApp() {
                         giltMarket, giltFetchState, refreshGiltPrices,
                         moneyStats, chartTimeframe,
                         purgeAndRebuildPrices,
+                        // Settings → Estate → Import: close the sheet and open the Import view on the Estate tab.
+                        onEstateImport: hasBalances ? () => { setShowSettings(false); setSettingsDragY(0); setActiveTab('estate'); window.BalancesStore.openView('import'); } : null,
                     })
                 )
             )

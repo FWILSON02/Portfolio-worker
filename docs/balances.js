@@ -260,6 +260,7 @@ function saveState(next, opts) {
     });
 }
 
+var _pendingView = null;
 var BalancesStore = {
     ready: function () { return _loaded; },
     get: function () { return _state; },
@@ -284,6 +285,19 @@ var BalancesStore = {
             if (next) return saveState(next);
         }).catch(function () {});
     },
+    // Settings → Estate (index.html): export, delete, and open the Import view on the Estate tab.
+    exportFile: function (kind) {
+        var name = 'estate-' + todayISO() + (kind === 'csv' ? '.csv' : '.json');
+        var text = kind === 'csv' ? buildCsv(_state) : buildJson(_state);
+        return deliverText(text, name, kind === 'csv' ? 'text/csv' : 'application/json').then(function () {
+            saveState(Object.assign({}, _state, { lastExportAt: Date.now() })).catch(function () {});
+            return name;
+        });
+    },
+    deleteAll: function () { return saveState(emptyState()); },
+    relTime: function (ts) { return relTime(ts); },
+    // Asks the Estate screen to open a view ('import'); picked up when it mounts or, if open, straight away.
+    openView: function (v) { _pendingView = v; window.dispatchEvent(new Event('estate-open-view')); },
     // Replaces the balances with the ones from a backup. Returns false (and changes nothing) when invalid.
     restore: function (obj) {
         var clean = validateState(obj);
@@ -1280,8 +1294,6 @@ function Header(props) {
 function MainView(props) {
     var ui = useUI();
     var state = props.state, series = props.series;
-    var del = React.useState(false);
-    var msg = React.useState(null);
     if (!state.accounts.length) {
         return E('div', { style: { padding: '24px 16px' } },
             E('div', { style: cardStyle(ui, { padding: '22px 18px', textAlign: 'center' }) },
@@ -1298,14 +1310,6 @@ function MainView(props) {
     var latest = series.length ? series[series.length - 1] : null;
     var prev = series.length > 1 ? series[series.length - 2] : null;
     var stale = !state.lastExportAt || (Date.now() - state.lastExportAt) > 35 * 86400000;
-    function exportFile(kind) {
-        var name = 'estate-' + todayISO() + (kind === 'csv' ? '.csv' : '.json');
-        var text = kind === 'csv' ? buildCsv(state) : buildJson(state);
-        deliverText(text, name, kind === 'csv' ? 'text/csv' : 'application/json').then(function () {
-            saveState(Object.assign({}, state, { lastExportAt: Date.now() })).catch(function () {});
-            msg[1]('Exported ' + name);
-        }).catch(function (e) { if (!e || e.name !== 'AbortError') msg[1]('Export failed: ' + (e && e.message)); });
-    }
     return E('div', { style: { padding: '12px 16px 0' } },
         latest ? E(Hero, { series: series, privacy: props.privacy })
                : E('div', { style: cardStyle(ui, { marginBottom: 12, fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc600 }) }, 'No balances entered yet. Tap Update balances to add this month’s.'),
@@ -1318,27 +1322,9 @@ function MainView(props) {
             })
         ),
         E('button', { style: Object.assign(buttonStyle(ui, 'primary'), { width: '100%', fontSize: 15 }), onClick: props.onUpdate }, 'Update balances'),
-        E('div', { style: { display: 'flex', gap: 8, marginTop: 10 } },
-            E('button', { style: Object.assign(buttonStyle(ui), { flex: 1 }), onClick: props.onImport }, 'Import'),
-            E('button', { style: Object.assign(buttonStyle(ui), { flex: 1 }), onClick: function () { exportFile('json'); } }, 'Export JSON')
-        ),
-        E('div', { style: { display: 'flex', justifyContent: 'center', marginTop: 4 } },
-            E('button', { onClick: function () { exportFile('csv'); }, style: { background: 'none', border: 'none', color: ui.C.zinc600, fontFamily: ui.sys, fontSize: 12, padding: '8px', cursor: 'pointer', textDecoration: 'underline' } },
-                'Export CSV for Excel')
-        ),
-        E('div', { style: { fontFamily: ui.sys, fontSize: 12, color: stale ? ui.C.amber : ui.C.zinc600, textAlign: 'center', marginTop: 10, lineHeight: 1.4 } },
-            'Last exported ' + relTime(state.lastExportAt) + '. Your balances live only on this phone. Export JSON saves every account, closed ones included, and every update, and Import restores it.'),
-        msg[0] && E('div', { style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.zinc500, textAlign: 'center', marginTop: 6 } }, msg[0]),
-        E('div', { style: { display: 'flex', justifyContent: 'center', marginTop: 18 } },
-            E('button', {
-                style: Object.assign(buttonStyle(ui, del[0] ? 'danger' : null), { minHeight: 34, fontSize: 12, fontWeight: 500, background: 'transparent', border: del[0] ? undefined : 'none', color: del[0] ? ui.C.rose : ui.C.zinc700 }),
-                onClick: function () {
-                    if (!del[0]) { del[1](true); setTimeout(function () { del[1](false); }, 4000); return; }
-                    saveState(emptyState()).catch(function () {});
-                    del[1](false);
-                }
-            }, del[0] ? 'Tap again to delete all balances' : 'Delete all balances')
-        )
+        // Import, export, the backup reminder and Delete live in Settings → Estate (Fergus asked).
+        stale && E('div', { style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.amber, textAlign: 'center', marginTop: 10, lineHeight: 1.4 } },
+            'Last exported ' + relTime(state.lastExportAt) + '. Export a backup from Settings → Estate.')
     );
 }
 
@@ -1817,7 +1803,12 @@ function ImportView(props) {
 function BalancesScreenInner(props) {
     var ui = useUI();
     var state = useBalancesState();
-    var vState = React.useState('main'), view = vState[0], setView = vState[1];
+    var vState = React.useState(function () { var v = _pendingView || 'main'; _pendingView = null; return v; }), view = vState[0], setView = vState[1];
+    React.useEffect(function () {
+        function onOpen() { if (_pendingView) { setView(_pendingView); _pendingView = null; } }
+        window.addEventListener('estate-open-view', onOpen);
+        return function () { window.removeEventListener('estate-open-view', onOpen); };
+    }, []);
     var series = React.useMemo(function () { return buildSeries(state); }, [state]);
     var title = view === 'update' ? 'Update balances' : 'Import';
     var back = view === 'main' ? null : function () { setView('main'); };
