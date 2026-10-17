@@ -1067,14 +1067,14 @@ function Chart(props) {
     var W = Math.max(width, 10), plotW = W - padR;
     var vals = [];
     lines.forEach(function (l) { pts.forEach(function (p) { vals.push(l.val(p)); }); });
-    // The scale always takes in £0 (Fergus: a current account shouldn't start at its lowest balance, and a mix of
-    // positive and negative balances should show where zero is). Headroom goes only on the side away from zero.
+    // The scale fits the data in range, so changes are visible (Fergus, PR #51: a £0 floor flattened the line). It
+    // takes in £0 only when the data crosses it, and the headroom never pushes it past £0 on a one-sided chart.
     var dLo = Math.min.apply(null, vals), dHi = Math.max.apply(null, vals);
-    var lo = Math.min(dLo, 0), hi = Math.max(dHi, 0);
-    if (hi - lo < 1) hi += 1;
-    var pad = (hi - lo) * 0.08;
-    if (lo < 0) lo -= pad;
-    if (hi > 0) hi += pad;
+    var pad = Math.max((dHi - dLo) * 0.08, Math.abs(dHi) * 0.01, 1);
+    var lo = dLo - pad, hi = dHi + pad;
+    if (dLo >= 0 && lo < 0) lo = 0;
+    if (dHi <= 0 && hi > 0) hi = 0;
+    var crosses = lo < 0 && hi > 0;
     var t0 = monthIndex(pts[0].month), t1 = monthIndex(pts[pts.length - 1].month);
     var x = function (p) { return t1 === t0 ? plotW / 2 : ((monthIndex(p.month) - t0) / (t1 - t0)) * plotW; };
     var y = function (v) { return padT + (1 - (v - lo) / (hi - lo)) * (H - padT - padB); };
@@ -1083,13 +1083,14 @@ function Chart(props) {
     var color = up ? ui.C.emerald : ui.C.rose;
     lines.forEach(function (l) { if (!l.color) l.color = color; });
     var mainLine = pathFor(lines[0]);
-    var y0 = y(0).toFixed(1);
+    // The area fills down to £0 when it is on the chart, else to the bottom edge.
+    var y0 = y(crosses ? 0 : lo).toFixed(1);
     var area = !sel.length && (mainLine + ' L' + x(pts[pts.length - 1]).toFixed(1) + ' ' + y0 + ' L' + x(pts[0]).toFixed(1) + ' ' + y0 + ' Z');
-    // Grid: £0 always, plus the top and bottom of the data; a side too close to zero to label cleanly is left out.
-    var ticks = [0], span = hi - lo;
-    if (dHi > 0 && dHi > span * 0.12) ticks.push(dHi);
-    if (dLo < 0 && -dLo > span * 0.12) ticks.push(dLo);
-    if (ticks.length === 2) ticks.push(ticks[1] / 2);
+    // Grid: the top, middle and bottom of the data, and £0 when the data crosses it (a line too close to another is left out).
+    var ticks = [], span = hi - lo;
+    (crosses ? [0] : []).concat([dHi, dLo, (dHi + dLo) / 2]).forEach(function (v) {
+        if (ticks.every(function (t) { return Math.abs(t - v) > span * 0.12; })) ticks.push(v);
+    });
     var firstYear = pts[0].month.slice(0, 4), lastYear = pts[pts.length - 1].month.slice(0, 4);
 
     function pick(clientX) {
