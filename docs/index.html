@@ -202,7 +202,7 @@ window.XCircle=_li([{t:'c',cx:12,cy:12,r:10},'M15 9l-6 6','M9 9l6 6']);
 window.MinusCircle=_li([{t:'c',cx:12,cy:12,r:10},'M8 12h8']);
 window.HelpCircle=_li([{t:'c',cx:12,cy:12,r:10},'M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3',{t:'l',x1:12,y1:17,x2:12.01,y2:17}]);</script>
 <!-- Balances screen lives in its own file. Bump ?v= whenever balances.js changes so the Home Screen app never mixes versions. -->
-<script src="balances.js?v=1"></script>
+<script src="balances.js?v=2"></script>
 <script>
 try{"use strict";
 // ─── Lightweight SVG chart components (replaces Recharts) ──────────────────
@@ -11745,7 +11745,7 @@ async function fetchMarketOverviewData(opts) {
 
 // ── MarketOverviewScreen ──────────────────────────────────────────────────────
 // Tap a degraded row to reveal a compact one-line diagnostic; clean rows show no expansion.
-function MarketOverviewScreen({ onClose, rows, status, updatedAt, error, onRefresh }) {
+function MarketOverviewScreen({ rows, status, updatedAt, error, onRefresh }) {
     var expandedState = React.useState(null);
     var expandedRowId = expandedState[0];
     var setExpandedRowId = expandedState[1];
@@ -12055,32 +12055,30 @@ function MarketOverviewScreen({ onClose, rows, status, updatedAt, error, onRefre
         );
     }
 
+    // Sits under the app's tab bar (its height is published as --topbar-h), so the tabs stay visible.
     return React.createElement('div', {
         style: {
-            position: 'fixed', inset: 0, zIndex: 9995,
+            position: 'fixed', top: 'var(--topbar-h, 0px)', left: 0, right: 0, bottom: 0, zIndex: 9995,
             background: C.bg, display: 'flex', flexDirection: 'column',
             WebkitTapHighlightColor: 'transparent', userSelect: 'none',
         }
     },
 
         // ── Header ───────────────────────────────────────────────────────────
-        // One compact row: title on the left; Refresh with the "As of" time under it, and Close, on the right.
+        // One compact row: Refresh with the "As of" time under it, on the right (the tab bar names the screen).
         // A warning line (offline, cached, partial) only takes space when there is something to say.
         React.createElement('div', {
             style: {
-                paddingTop: 'max(env(safe-area-inset-top), 10px)',
-                paddingLeft: 20, paddingRight: 16, paddingBottom: 8,
+                paddingTop: 6,
+                paddingLeft: 20, paddingRight: 16, paddingBottom: 6,
                 background: 'rgba(13,18,24,0.98)',
                 borderBottom: '1px solid ' + C.border, flexShrink: 0,
             }
         },
             React.createElement('div', {
-                style: { display: 'flex', alignItems: 'center', gap: 10, minHeight: 40 }
+                style: { display: 'flex', alignItems: 'center', gap: 10, minHeight: 32 }
             },
-                React.createElement('div', {
-                    style: { fontFamily: sys, fontSize: 20, fontWeight: 700, flex: 1, minWidth: 0,
-                             color: C.white, letterSpacing: '-0.02em' }
-                }, 'Markets'),
+                React.createElement('div', { style: { flex: 1, minWidth: 0 } }),
                 React.createElement('div', {
                     style: { display: 'flex', flexDirection: 'column', alignItems: 'flex-end', flexShrink: 0 }
                 },
@@ -12105,16 +12103,6 @@ function MarketOverviewScreen({ onClose, rows, status, updatedAt, error, onRefre
                                  whiteSpace: 'nowrap', lineHeight: '14px' }
                     }, 'As of ' + new Date(updatedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' }))
                 ),
-                React.createElement('button', {
-                    onClick: onClose,
-                    'aria-label': 'Close',
-                    style: {
-                        height: 36, width: 36, flexShrink: 0, display: 'flex',
-                        alignItems: 'center', justifyContent: 'center',
-                        background: C.surfaceHigh, border: '1px solid ' + C.border,
-                        borderRadius: 10, color: C.zinc400,
-                    }
-                }, React.createElement(X, { style: { width: 16, height: 16 }, strokeWidth: 2 }))
             ),
             freshnessText && React.createElement('div', {
                 style: { fontFamily: sys, fontSize: 11, color: freshnessColor, marginTop: 2 }
@@ -16723,11 +16711,23 @@ function PortfolioApp() {
         const [sheetSearch, setSheetSearch] = React.useState('');
         const [sheetSort, setSheetSort] = React.useState('value'); // 'value'|'today'|'total'
         const [showSettings, setShowSettings] = React.useState(false);
-        // Market Overview screen — read-only, does not feed portfolio valuation
-        const [showMarketOverview, setShowMarketOverview] = React.useState(false);
-        // Balances screen (balances.js) — month-by-month account balances, separate from the portfolio valuation
-        const [showBalances, setShowBalances] = React.useState(false);
+        // Top tab bar: 'markets' | 'investments' | 'estate'. Markets is read-only and does not feed portfolio valuation;
+        // Estate (balances.js) tracks account balances month by month, separate from the portfolio valuation.
+        const [activeTab, setActiveTab] = React.useState('investments');
         const hasBalances = typeof window.BalancesScreen === 'function';
+        const showMarketOverview = activeTab === 'markets';
+        const showBalances = activeTab === 'estate' && hasBalances;
+        // The tab bar's height, published as --topbar-h so the Markets and Estate screens open below it.
+        const topBarRef = React.useRef(null);
+        React.useLayoutEffect(() => {
+            const el = topBarRef.current;
+            if (!el) return;
+            const publish = () => document.documentElement.style.setProperty('--topbar-h', el.offsetHeight + 'px');
+            publish();
+            const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(publish) : null;
+            if (ro) ro.observe(el);
+            return () => { if (ro) ro.disconnect(); };
+        }, []);
 
         // ── Pricing badge (main header) ──────────────────────────────────────
         // Same classification the Settings "Daily close check" grid uses (see
@@ -17512,7 +17512,6 @@ function PortfolioApp() {
 
         // ── Market Overview screen (read-only, does not feed portfolio valuation)
         showMarketOverview && React.createElement(MarketOverviewScreen, {
-            onClose:   () => setShowMarketOverview(false),
             rows:      marketRows,
             status:    marketStatus,
             updatedAt: marketAt,
@@ -17520,9 +17519,9 @@ function PortfolioApp() {
             onRefresh: function() { refreshMarketOverview({ silent: false, forceHistory: true }); },
         }),
 
-        // ── Balances screen (balances.js). appValues lets investment and pension accounts prefill from the app.
-        showBalances && hasBalances && React.createElement(window.BalancesScreen, {
-            onClose:     () => setShowBalances(false),
+        // ── Estate screen (balances.js). appValues lets investment and pension accounts prefill from the app.
+        showBalances && React.createElement(window.BalancesScreen, {
+            onClose:     () => setActiveTab('investments'),
             privacyMode,
             appValues:   balancesAppValues,
             ui:          { C, sys, rounded },
@@ -17530,7 +17529,8 @@ function PortfolioApp() {
 
         // ── Settings sheet (MoreTab)
         showSettings && React.createElement('div', {
-            style: { position: 'fixed', inset: 0, zIndex: 9990, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'flex-end' },
+            // Above the Markets / Estate screens (9995) so it opens from the tab bar on any tab.
+            style: { position: 'fixed', inset: 0, zIndex: 9996, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'flex-end' },
             className: 'ios-tap-backdrop',
             onClick: () => { setShowSettings(false); setSettingsDragY(0); },
         },
@@ -17598,50 +17598,64 @@ function PortfolioApp() {
             className: 'ios-scroll',
             style: { position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column' }
         },
-            // Status / Header bar
+            // ── Tab bar — stays at the top on every tab, like browser tabs: Markets / Investments / Estate, then
+            // privacy and settings. Sticky over the Investments scroll; the Markets and Estate screens open below it.
             React.createElement('div', {
+                ref: topBarRef,
                 className: 'safe-top',
-                style: { paddingLeft: '20px', paddingRight: '20px', paddingBottom: '8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexShrink: 0 }
+                style: { position: 'sticky', top: 0, zIndex: 60, background: C.surface, borderBottom: '1px solid ' + C.border,
+                         paddingLeft: 12, paddingRight: 14, display: 'flex', alignItems: 'flex-end', gap: 6, flexShrink: 0 }
             },
-                // Left side — Markets, plus the pricing badge beside it
-                React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, flex: '1 1 auto' } },
+                React.createElement('div', { role: 'tablist', style: { display: 'flex', alignItems: 'flex-end', gap: 2, minWidth: 0, flex: '1 1 auto' } },
+                    [
+                        { id: 'markets', label: 'Markets', color: C.blue,
+                          icon: React.createElement(Activity, {
+                              // The icon turns green (with a settled glow) once Markets data is ready to view.
+                              className: marketReady ? 'mkt-ready-icon' : '',
+                              style: { width: 13, height: 13, flexShrink: 0, color: marketReady ? C.emerald : 'currentColor',
+                                       filter: marketReady ? 'drop-shadow(0 0 2px rgba(52,211,153,0.9)) drop-shadow(0 0 6px rgba(52,211,153,0.5))' : 'none',
+                                       transition: 'color 0.5s ease, filter 0.5s ease' },
+                              strokeWidth: 2 }) },
+                        { id: 'investments', label: 'Investments', color: C.amber,
+                          icon: React.createElement(TrendingUp, { style: { width: 13, height: 13, flexShrink: 0 }, strokeWidth: 2 }) },
+                        hasBalances && { id: 'estate', label: 'Estate', color: C.violet,
+                          icon: window.BalancesIcon ? React.createElement(window.BalancesIcon, { style: { width: 13, height: 13, flexShrink: 0 }, strokeWidth: 2 }) : null },
+                    ].filter(Boolean).map(t => {
+                        const on = activeTab === t.id;
+                        return React.createElement('button', {
+                            key: t.id, role: 'tab', 'aria-selected': on, 'aria-label': t.label,
+                            onClick: () => setActiveTab(t.id),
+                            style: {
+                                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, minWidth: 0, flex: '1 1 auto',
+                                height: 36, padding: '0 7px', marginBottom: -1,
+                                // The active tab takes the page colour and drops its bottom edge, so it joins the screen below.
+                                background: on ? C.bg : 'transparent',
+                                border: '1px solid ' + (on ? C.border : 'transparent'), borderBottomColor: on ? C.bg : 'transparent',
+                                borderRadius: '10px 10px 0 0',
+                                color: on ? t.color : C.zinc600, fontFamily: sys, fontSize: 12.5, fontWeight: on ? 650 : 500,
+                                letterSpacing: '0.01em', whiteSpace: 'nowrap', overflow: 'hidden',
+                            }
+                        }, t.icon, React.createElement('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis' } }, t.label));
+                    })
+                ),
+                React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 0, flexShrink: 0, marginRight: -7, height: 36 } },
+                    // (The live-price refresh and the purge-and-rebuild buttons live in Settings → Data.)
+                    // Privacy toggle
                     React.createElement('button', {
-                        onClick: () => setShowMarketOverview(true), 'aria-label': 'Markets',
-                        style: {
-                            display: 'flex', alignItems: 'center', gap: 5,
-                            background: 'rgba(96,165,250,0.08)', border: '1px solid rgba(96,165,250,0.22)',
-                            borderRadius: 8, height: 30, padding: '0 10px', flexShrink: 0,
-                            color: '#60a5fa', fontFamily: sys, fontSize: 12, fontWeight: 600,
-                            letterSpacing: '0.02em',
-                        }
-                    },
-                        // Blue while Markets data is being fetched; the icon alone turns green (the pricing
-                        // badge's green) once it is ready to view. The rest of the button stays blue.
-                        React.createElement(Activity, {
-                            className: marketReady ? 'mkt-ready-icon' : '',
-                            style: { width: 13, height: 13, color: marketReady ? '#34d399' : '#60a5fa',
-                                     // settled green glow once the data is ready (mkt-ready-breathe then pulses it slowly from here)
-                                     filter: marketReady ? 'drop-shadow(0 0 2px rgba(52,211,153,0.9)) drop-shadow(0 0 6px rgba(52,211,153,0.5))' : 'none',
-                                     transition: 'color 0.5s ease, filter 0.5s ease' },
-                            strokeWidth: 2 }),
-                        'Markets'
-                    ),
-                    // Balances — only when balances.js loaded, so a failed load leaves the header as it was
-                    hasBalances && React.createElement('button', {
-                        onClick: () => setShowBalances(true), 'aria-label': 'Balances',
-                        style: {
-                            display: 'flex', alignItems: 'center', gap: 5,
-                            background: 'rgba(167,139,250,0.08)', border: '1px solid rgba(167,139,250,0.22)',
-                            borderRadius: 8, height: 30, padding: '0 10px', flexShrink: 0,
-                            color: C.violet, fontFamily: sys, fontSize: 12, fontWeight: 600,
-                            letterSpacing: '0.02em',
-                        }
-                    },
-                        window.BalancesIcon && React.createElement(window.BalancesIcon, { style: { width: 13, height: 13 }, strokeWidth: 2 }),
-                        'Balances'
-                    ),
-                    // ── Pricing badge — tap to jump straight to the Daily close check grid ──
-                    pricingBadge && React.createElement('button', {
+                        onClick: togglePrivacy,
+                        style: { color: privacyMode ? C.amber : C.zinc600, background: 'transparent', border: 'none', width: 32, height: 34, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }
+                    }, React.createElement(privacyMode ? EyeOff : Eye, { style: { width: 18, height: 18 }, strokeWidth: 1.5 })),
+                    // Settings
+                    React.createElement('button', {
+                        onClick: () => setShowSettings(true),
+                        style: { color: C.zinc600, background: 'transparent', border: 'none', width: 32, height: 34, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }
+                    }, React.createElement(Settings, { style: { width: 18, height: 18 }, strokeWidth: 1.5 }))
+                )
+            ),
+
+            // Pricing badge — tap to jump straight to the Daily close check grid (moved out of the tab bar to make room)
+            pricingBadge && React.createElement('div', { style: { display: 'flex', justifyContent: 'flex-end', padding: '8px 16px 0' } },
+                    React.createElement('button', {
                         'aria-label': pricingBadge.label,
                         onClick: () => {
                             setShowSettings(true);
@@ -17663,20 +17677,6 @@ function PortfolioApp() {
                         // Header shows the short form ("Verified", "Unconfirmed (2)"); the icon and colour carry the rest.
                         pricingBadge.label.replace(/^Pricing\s+/, '').replace('Fetching Prices', 'Fetching\u2026')
                     )
-                ),
-                React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 0, flexShrink: 0, marginRight: -7 } },
-                    // (The live-price refresh and the purge-and-rebuild buttons live in Settings → Data.)
-                    // Privacy toggle
-                    React.createElement('button', {
-                        onClick: togglePrivacy,
-                        style: { color: privacyMode ? C.amber : C.zinc600, background: 'transparent', border: 'none', width: 32, height: 34, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }
-                    }, React.createElement(privacyMode ? EyeOff : Eye, { style: { width: 18, height: 18 }, strokeWidth: 1.5 })),
-                    // Settings
-                    React.createElement('button', {
-                        onClick: () => setShowSettings(true),
-                        style: { color: C.zinc600, background: 'transparent', border: 'none', width: 32, height: 34, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }
-                    }, React.createElement(Settings, { style: { width: 18, height: 18 }, strokeWidth: 1.5 }))
-                )
             ),
 
             // Scrollable content

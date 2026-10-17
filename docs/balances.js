@@ -1,12 +1,13 @@
-// ─── Balances screen ─────────────────────────────────────────────────────────
+// ─── Estate screen (balances) ────────────────────────────────────────────────
 // Month-by-month balances of current, savings, card, investment, pension and property accounts, with total
-// wealth and liquid money on top. Opened from the "Balances" button beside Markets.
+// wealth and liquid money on top. Opened from the Estate tab in the app's top tab bar, and drawn below that bar
+// (its height comes from the --topbar-h CSS variable index.html publishes).
 //
 // Loaded by index.html as its own file: <script src="balances.js?v=N">. Bump N there whenever this file changes,
 // so the Home Screen app never pairs a new index.html with a cached old copy of this file.
 //
 // Exposes:
-//   window.BalancesScreen  — the full-screen view (props: onClose, privacyMode, appValues, ui)
+//   window.BalancesScreen  — the Estate view (props: onClose, privacyMode, appValues, ui)
 //   window.BalancesStore   — backupSnapshot() / restore(obj) for the app's JSON backup, plus load/subscribe
 //
 // Data lives in its own IndexedDB database ('portfolio-balances'), so Settings → Clear cache never touches it.
@@ -505,6 +506,38 @@ function buildCsv(state) {
     });
     return lines.join('\n') + '\n';
 }
+// Everything the Estate screen holds — every account (closed ones included, with group, share, rate and app link)
+// and every snapshot ever saved — in one file that Import can restore exactly.
+var JSON_FORMAT = 'estate-balances';
+function buildJson(state) {
+    var dates = state.snapshots.map(function (s) { return s.date; });
+    return JSON.stringify({
+        format: JSON_FORMAT,
+        format_version: 1,
+        exportedAt: new Date().toISOString(),
+        summary: {
+            accounts: state.accounts.length,
+            closedAccounts: state.accounts.filter(function (a) { return a.closed; }).length,
+            snapshots: state.snapshots.length,
+            firstDate: dates[0] || null,
+            lastDate: dates[dates.length - 1] || null,
+        },
+        data: { v: state.v, accounts: state.accounts, snapshots: state.snapshots },
+    }, null, 2);
+}
+// Accepts this screen's JSON export, or a full app backup (its payload.balances). Returns a clean state or throws.
+function parseJsonBackup(text) {
+    var obj;
+    try { obj = JSON.parse(text); } catch (e) { throw new Error('Not a valid JSON file.'); }
+    var raw = obj && obj.format === JSON_FORMAT ? obj.data
+            : obj && obj.payload && obj.payload.balances ? obj.payload.balances
+            : obj && Array.isArray(obj.accounts) ? obj
+            : null;
+    var clean = validateState(raw);
+    if (!clean || !clean.accounts.length) throw new Error('This file has no Estate balances in it.');
+    return clean;
+}
+
 // iOS: the share sheet (Save to Files); elsewhere a download.
 function deliverText(text, filename, mime) {
     var file = null;
@@ -765,24 +798,16 @@ function GroupCard(props) {
     );
 }
 
+// Sub-view header (Update balances, Import): Back and a title. The main view needs none; the tab bar names it.
 function Header(props) {
     var ui = useUI();
     return E('div', {
-        style: { paddingTop: 'max(env(safe-area-inset-top), 10px)', paddingLeft: 12, paddingRight: 16, paddingBottom: 8,
-                 background: 'rgba(13,18,24,0.98)', borderBottom: '1px solid ' + ui.C.border, flexShrink: 0 }
+        style: { padding: '6px 16px 6px 8px', background: 'rgba(13,18,24,0.98)', borderBottom: '1px solid ' + ui.C.border, flexShrink: 0,
+                 display: 'flex', alignItems: 'center', gap: 6, minHeight: 44, boxSizing: 'border-box' }
     },
-        E('div', { style: { display: 'flex', alignItems: 'center', gap: 6, minHeight: 40 } },
-            props.onBack
-                ? E('button', { onClick: props.onBack, 'aria-label': 'Back', style: { background: 'none', border: 'none', color: ui.C.blue, display: 'flex', alignItems: 'center', padding: '6px 4px', cursor: 'pointer', fontFamily: ui.sys, fontSize: 15 } },
-                    E(BackIcon, { style: { width: 18, height: 18 }, strokeWidth: 2 }), 'Back')
-                : E('div', { style: { width: 8 } }),
-            E('div', { style: { fontFamily: ui.sys, fontSize: 20, fontWeight: 700, flex: 1, minWidth: 0, color: ui.C.white, letterSpacing: '-0.02em' } }, props.title),
-            E('button', {
-                onClick: props.onClose, 'aria-label': 'Close',
-                style: { height: 36, width: 36, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                         background: ui.C.surfaceHigh, border: '1px solid ' + ui.C.border, borderRadius: 10, color: ui.C.zinc400 }
-            }, typeof X !== 'undefined' ? E(X, { style: { width: 16, height: 16 }, strokeWidth: 2 }) : '×')
-        )
+        E('button', { onClick: props.onBack, 'aria-label': 'Back', style: { background: 'none', border: 'none', color: ui.C.blue, display: 'flex', alignItems: 'center', padding: '6px 4px', cursor: 'pointer', fontFamily: ui.sys, fontSize: 15 } },
+            E(BackIcon, { style: { width: 18, height: 18 }, strokeWidth: 2 }), 'Back'),
+        E('div', { style: { fontFamily: ui.sys, fontSize: 17, fontWeight: 700, flex: 1, minWidth: 0, color: ui.C.white, letterSpacing: '-0.01em' } }, props.title)
     );
 }
 
@@ -808,10 +833,10 @@ function MainView(props) {
     var latest = series.length ? series[series.length - 1] : null;
     var prev = series.length > 1 ? series[series.length - 2] : null;
     var stale = !state.lastExportAt || (Date.now() - state.lastExportAt) > 35 * 86400000;
-    function exportCsv() {
-        var csv = buildCsv(state);
-        var name = 'balances-' + todayISO() + '.csv';
-        deliverText(csv, name, 'text/csv').then(function () {
+    function exportFile(kind) {
+        var name = 'estate-' + todayISO() + (kind === 'csv' ? '.csv' : '.json');
+        var text = kind === 'csv' ? buildCsv(state) : buildJson(state);
+        deliverText(text, name, kind === 'csv' ? 'text/csv' : 'application/json').then(function () {
             saveState(Object.assign({}, state, { lastExportAt: Date.now() })).catch(function () {});
             msg[1]('Exported ' + name);
         }).catch(function (e) { if (!e || e.name !== 'AbortError') msg[1]('Export failed: ' + (e && e.message)); });
@@ -830,10 +855,14 @@ function MainView(props) {
         E('button', { style: Object.assign(buttonStyle(ui, 'primary'), { width: '100%', fontSize: 15 }), onClick: props.onUpdate }, 'Update balances'),
         E('div', { style: { display: 'flex', gap: 8, marginTop: 10 } },
             E('button', { style: Object.assign(buttonStyle(ui), { flex: 1 }), onClick: props.onImport }, 'Import'),
-            E('button', { style: Object.assign(buttonStyle(ui), { flex: 1 }), onClick: exportCsv }, 'Export CSV')
+            E('button', { style: Object.assign(buttonStyle(ui), { flex: 1 }), onClick: function () { exportFile('json'); } }, 'Export JSON')
+        ),
+        E('div', { style: { display: 'flex', justifyContent: 'center', marginTop: 4 } },
+            E('button', { onClick: function () { exportFile('csv'); }, style: { background: 'none', border: 'none', color: ui.C.zinc600, fontFamily: ui.sys, fontSize: 12, padding: '8px', cursor: 'pointer', textDecoration: 'underline' } },
+                'Export CSV for Excel')
         ),
         E('div', { style: { fontFamily: ui.sys, fontSize: 12, color: stale ? ui.C.amber : ui.C.zinc600, textAlign: 'center', marginTop: 10, lineHeight: 1.4 } },
-            'Last exported ' + relTime(state.lastExportAt) + '. Your balances live only on this phone, so export or back up regularly.'),
+            'Last exported ' + relTime(state.lastExportAt) + '. Your balances live only on this phone. Export JSON saves every account, closed ones included, and every update, and Import restores it.'),
         msg[0] && E('div', { style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.zinc500, textAlign: 'center', marginTop: 6 } }, msg[0]),
         E('div', { style: { display: 'flex', justifyContent: 'center', marginTop: 18 } },
             E('button', {
@@ -996,6 +1025,7 @@ function ImportView(props) {
     var ui = useUI();
     var state = props.state;
     var pState = React.useState(null), parsed = pState[0], setParsed = pState[1];
+    var rState = React.useState(null), restoreState = rState[0];   // a JSON export (or app backup) to restore
     var err = React.useState(null);
     var busy = React.useState(false);
     var fileRef = React.useRef(null);
@@ -1005,9 +1035,11 @@ function ImportView(props) {
         e.target.value = '';
         if (!f) return;
         err[1](null); busy[1](true);
-        f.arrayBuffer().then(function (buf) {
-            setParsed(parseImport(buf));
-        }).catch(function (x) { err[1](x && x.message ? x.message : String(x)); }).then(function () { busy[1](false); });
+        var isJson = /\.json$/i.test(f.name) || /json/.test(f.type);
+        (isJson
+            ? f.text().then(function (text) { setParsed(null); rState[1](parseJsonBackup(text)); })
+            : f.arrayBuffer().then(function (buf) { rState[1](null); setParsed(parseImport(buf)); })
+        ).catch(function (x) { err[1](x && x.message ? x.message : String(x)); }).then(function () { busy[1](false); });
     }
     function patchRow(key, patch) {
         setParsed(Object.assign({}, parsed, { rows: parsed.rows.map(function (r) {
@@ -1024,13 +1056,36 @@ function ImportView(props) {
     }
 
     var checks = parsed ? runChecks(parsed) : [];
-    var picker = E('input', { ref: fileRef, type: 'file', accept: '.xlsx,.xls,.csv,text/csv', onChange: onFile, style: { display: 'none' } });
+    var picker = E('input', { ref: fileRef, type: 'file', accept: '.xlsx,.xls,.csv,.json,text/csv,application/json', onChange: onFile, style: { display: 'none' } });
+
+    if (restoreState) {
+        var rs = restoreState, rDates = rs.snapshots.map(function (x) { return x.date; });
+        var rClosed = rs.accounts.filter(function (a) { return a.closed; }).length;
+        return E('div', { style: { padding: '12px 16px 0' } }, picker,
+            E('div', { style: cardStyle(ui, { marginBottom: 12 }) },
+                E('div', { style: { fontFamily: ui.sys, fontSize: 15, color: ui.C.white, fontWeight: 600 } }, 'Restore from JSON'),
+                E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc400, marginTop: 6, lineHeight: 1.5 } },
+                    rs.accounts.length + ' accounts (' + rClosed + ' closed) and ' + rs.snapshots.length + ' snapshots' +
+                    (rDates.length ? ', ' + dayLabel(rDates[0]) + ' to ' + dayLabel(rDates[rDates.length - 1]) : '') + '.'),
+                state.accounts.length > 0 && E('div', { style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.amber, marginTop: 8, lineHeight: 1.45 } },
+                    'Restoring replaces everything on this screen now (' + state.accounts.length + ' accounts, ' + state.snapshots.length + ' snapshots).')
+            ),
+            err[0] && E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.rose, margin: '0 4px 10px' } }, err[0]),
+            E('div', { style: { display: 'flex', gap: 8 } },
+                E('button', { onClick: function () { rState[1](null); }, style: Object.assign(buttonStyle(ui), { flex: 1, whiteSpace: 'nowrap' }) }, 'Choose another'),
+                E('button', { onClick: function () {
+                    var next = Object.assign({}, rs, { lastExportAt: state.lastExportAt });
+                    saveState(next).then(props.onDone, function (x) { err[1]('Could not save: ' + (x && x.message)); });
+                }, style: Object.assign(buttonStyle(ui, 'primary'), { flex: 2 }) }, 'Restore')
+            )
+        );
+    }
 
     if (!parsed) {
         return E('div', { style: { padding: '16px' } }, picker,
             E('div', { style: cardStyle(ui, { padding: '18px' }) },
                 E('div', { style: { fontFamily: ui.sys, fontSize: 14, color: ui.C.zinc400, lineHeight: 1.5, marginBottom: 14 } },
-                    'Choose your balances spreadsheet (.xlsx or .csv). It should have one column per date and one row per account, or be a CSV exported from this screen. You’ll see a preview before anything is saved.'),
+                    'Choose your balances spreadsheet (.xlsx or .csv) with one column per date and one row per account, or a JSON or CSV file exported from this screen. You’ll see a preview before anything is saved.'),
                 E('button', { onClick: function () { fileRef.current && fileRef.current.click(); }, disabled: busy[0], style: Object.assign(buttonStyle(ui, 'primary'), { width: '100%' }) },
                     busy[0] ? 'Reading…' : 'Choose file'),
                 err[0] && E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.rose, marginTop: 12 } }, err[0])
@@ -1095,7 +1150,7 @@ function ImportView(props) {
         }),
         err[0] && E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.rose, margin: '0 4px 10px' } }, err[0]),
         E('div', { style: { display: 'flex', gap: 8 } },
-            E('button', { onClick: function () { setParsed(null); }, style: Object.assign(buttonStyle(ui), { flex: 1 }) }, 'Choose another'),
+            E('button', { onClick: function () { setParsed(null); }, style: Object.assign(buttonStyle(ui), { flex: 1, whiteSpace: 'nowrap' }) }, 'Choose another'),
             E('button', { onClick: confirm, style: Object.assign(buttonStyle(ui, 'primary'), { flex: 2 }) }, 'Import ' + inc.length + ' accounts')
         )
     );
@@ -1107,7 +1162,7 @@ function BalancesScreenInner(props) {
     var state = useBalancesState();
     var vState = React.useState('main'), view = vState[0], setView = vState[1];
     var series = React.useMemo(function () { return buildSeries(state); }, [state]);
-    var title = view === 'update' ? 'Update balances' : view === 'import' ? 'Import' : 'Balances';
+    var title = view === 'update' ? 'Update balances' : 'Import';
     var back = view === 'main' ? null : function () { setView('main'); };
     var body;
     if (!_ready) {
@@ -1121,9 +1176,9 @@ function BalancesScreenInner(props) {
                              onUpdate: function () { setView('update'); }, onImport: function () { setView('import'); } });
     }
     return E('div', {
-        style: { position: 'fixed', inset: 0, zIndex: 9995, background: ui.C.bg, display: 'flex', flexDirection: 'column', WebkitTapHighlightColor: 'transparent' }
+        style: { position: 'fixed', top: 'var(--topbar-h, 0px)', left: 0, right: 0, bottom: 0, zIndex: 9995, background: ui.C.bg, display: 'flex', flexDirection: 'column', WebkitTapHighlightColor: 'transparent' }
     },
-        E(Header, { title: title, onBack: back, onClose: props.onClose }),
+        back && E(Header, { title: title, onBack: back }),
         _loadError && E('div', { style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.rose, padding: '8px 16px' } }, 'Storage problem: ' + _loadError),
         // Keyed by view so each view opens scrolled to the top.
         E('div', { key: view, className: 'ios-scroll', style: { flex: 1, minWidth: 0, overflowY: 'auto', overflowX: 'hidden', paddingBottom: 'max(env(safe-area-inset-bottom), 28px)' } },
@@ -1139,11 +1194,11 @@ class BalancesBoundary extends React.Component {
     render() {
         if (!this.state.error) return this.props.children;
         var ui = this.props.ui;
-        return E('div', { style: { position: 'fixed', inset: 0, zIndex: 9995, background: ui.C.bg, padding: '60px 20px', fontFamily: ui.sys } },
-            E('div', { style: { color: ui.C.rose, fontSize: 16, fontWeight: 600, marginBottom: 8 } }, 'Balances hit a problem'),
+        return E('div', { style: { position: 'fixed', top: 'var(--topbar-h, 0px)', left: 0, right: 0, bottom: 0, zIndex: 9995, background: ui.C.bg, padding: '40px 20px', fontFamily: ui.sys } },
+            E('div', { style: { color: ui.C.rose, fontSize: 16, fontWeight: 600, marginBottom: 8 } }, 'Estate hit a problem'),
             E('div', { style: { color: ui.C.zinc600, fontSize: 13, marginBottom: 20, lineHeight: 1.5 } },
                 String(this.state.error && this.state.error.message || this.state.error) + '. Your saved balances are untouched.'),
-            E('button', { onClick: this.props.onClose, style: buttonStyle(ui) }, 'Close'));
+            E('button', { onClick: this.props.onClose, style: buttonStyle(ui) }, 'Back to Investments'));
     }
 }
 
@@ -1158,5 +1213,5 @@ window.BalancesScreen = BalancesScreen;
 window.BalancesStore = BalancesStore;
 window.BalancesIcon = WalletIcon;
 // For tests only: the pure parts, no UI.
-window.__balancesInternals = { parseImport: parseImport, importToState: importToState, runChecks: runChecks, buildSeries: buildSeries, parseAmount: parseAmount, buildCsv: buildCsv };
+window.__balancesInternals = { parseJsonBackup: parseJsonBackup, buildJson: buildJson, parseImport: parseImport, importToState: importToState, runChecks: runChecks, buildSeries: buildSeries, parseAmount: parseAmount, buildCsv: buildCsv };
 })();
