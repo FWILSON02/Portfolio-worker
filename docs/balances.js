@@ -37,6 +37,8 @@ function isLiquid(a) { return typeof a.liquid === 'boolean' ? a.liquid : !!group
 // state = { v: 1, accounts: [Account], snapshots: [Snapshot], lastExportAt, updatedAt }
 //   Account  = { id, name, group, debt, share, rate, closed, appLinks }
 //              growth:   % a year the value grows (+) or falls (−) after its last valuation (house, car); null = none.
+//              loan:     { rate (%/yr), start, end ('YYYY-MM-DD'), payment (£/month) } for a repayment mortgage; null = none.
+//                        After each balance you enter, the amount owed is worked down month by month from these terms.
 //              liquid:   true/false to count (or not) toward Liquid; null = the group's default.
 //              appLinks: keys of the Investments-tab values this account follows (their sum); [] = typed in by hand.
 //              debt:  balance stored negative (cards, mortgage); the form takes the amount owed as a positive number.
@@ -100,6 +102,14 @@ function linkedToInvestments(a) {
     return !a.closed && a.appLinks.length && a.group !== 'investments' ? Object.assign({}, a, { group: 'investments', debt: false }) : a;
 }
 
+function validLoan(l) {
+    if (!l || typeof l !== 'object') return null;
+    var num = function (v) { return typeof v === 'number' && isFinite(v) ? v : null; };
+    var out = { rate: num(l.rate), payment: num(l.payment),
+                start: ISO_DATE.test(l.start || '') ? l.start : null, end: ISO_DATE.test(l.end || '') ? l.end : null };
+    return out.rate == null && out.payment == null && !out.start && !out.end ? null : out;
+}
+
 function validateState(s) {
     if (!s || typeof s !== 'object' || !Array.isArray(s.accounts) || !Array.isArray(s.snapshots)) return null;
     var ids = {};
@@ -115,6 +125,7 @@ function validateState(s) {
             closed: !!a.closed,
             liquid: typeof a.liquid === 'boolean' ? a.liquid : null,
             growth: (typeof a.growth === 'number' && isFinite(a.growth)) ? a.growth : null,
+            loan: validLoan(a.loan),
             appLinks: linksOf(a),
         };
     }).map(linkedToInvestments);
@@ -251,14 +262,33 @@ function grow(v, growth, from, to) {
     var years = (Date.parse(to) - Date.parse(from)) / (864e5 * 365.25);
     return years > 0 ? Math.round(v * Math.pow(1 + growth / 100, years) * 100) / 100 : v;
 }
-// Balances at `r.date` with each growing account (house, car) moved on from its last valuation at its own rate.
-// Only the gap after a valuation is estimated: a value you enter always replaces the estimate.
+// Whether a loan has every term needed to work it down.
+function loanReady(l) { return !!(l && l.rate != null && l.payment != null && l.start && l.end); }
+// Amount owed on a repayment mortgage moved on from `from` to `to`: on each monthly payment day (the start date's day
+// of the month) between the start and end dates, a month's interest is added and the payment taken off. Never below 0.
+// `owed` is the stored balance (negative for a debt); the result keeps its sign.
+function payDown(owed, loan, from, to) {
+    var sign = owed < 0 ? -1 : 1, b = Math.abs(owed), i = loan.rate / 100 / 12;
+    var day = Number(loan.start.slice(8, 10)), y = Number(loan.start.slice(0, 4)), m = Number(loan.start.slice(5, 7));
+    for (var n = 0; n < 1200 && b > 0; n++) {
+        var dim = new Date(Date.UTC(y, m, 0)).getUTCDate();
+        var d = y + '-' + String(m).padStart(2, '0') + '-' + String(Math.min(day, dim)).padStart(2, '0');
+        if (d > to || d > loan.end) break;
+        if (d > from) b = Math.max(0, b * (1 + i) - loan.payment);
+        m++; if (m > 12) { m = 1; y++; }
+    }
+    return sign * Math.round(b * 100) / 100;
+}
+// Balances at `r.date` with each growing account (house, car) moved on from its last valuation at its own rate, and
+// each mortgage with loan terms worked down from its last balance. Only the gap after a value you enter is
+// estimated: an entered value always replaces the estimate.
 function withGrowth(r, accounts) {
     var out = null;
     accounts.forEach(function (a) {
-        if (a.growth == null || r.values[a.id] == null || !r.asOf[a.id] || r.asOf[a.id] >= r.date) return;
+        var loan = loanReady(a.loan) ? a.loan : null;
+        if ((a.growth == null && !loan) || r.values[a.id] == null || !r.asOf[a.id] || r.asOf[a.id] >= r.date) return;
         out = out || Object.assign({}, r.values);
-        out[a.id] = grow(r.values[a.id], a.growth, r.asOf[a.id], r.date);
+        out[a.id] = loan ? payDown(r.values[a.id], loan, r.asOf[a.id], r.date) : grow(r.values[a.id], a.growth, r.asOf[a.id], r.date);
     });
     return out ? Object.assign({}, r, { values: out }) : r;
 }
@@ -626,7 +656,8 @@ function buildCsv(state) {
     });
     return lines.join('\n') + '\n';
 }
-// Everything the Estate screen holds — every account (closed ones included, with group, share, rate and app link)
+// Everything the Estate screen holds — every account (closed ones included, with name, group, share, liquid flag,
+// growth rate, mortgage terms and app links)
 // and every snapshot ever saved — in one file that Import can restore exactly.
 var JSON_FORMAT = 'estate-balances';
 function buildJson(state) {
@@ -1046,28 +1077,40 @@ function GroupCard(props) {
     var g = props.group, latest = props.latest, prev = props.prev;
     var open = React.useState(false);
     var now = latest.groups[g.id] || 0;
-    var before = prev ? (prev.groups[g.id] || 0) : null;
-    var d = before == null ? null : now - before;
+    // Change against 1, 6 and 12 months earlier, in one row of three under the header (same periods as the hero).
+    var changes = PERIODS.map(function (p) {
+        var base = pointMonthsBack(props.series, latest, p.months);
+        var b = base ? (base.groups[g.id] || 0) : null;
+        return { p: p, base: base, d: b == null ? null : now - b, pct: b == null ? null : pctChange(now, b) };
+    });
     var rows = props.accounts.filter(function (a) { return a.group === g.id && (!a.closed || latest.values[a.id] != null); });
     var blur = props.privacy ? 'blur(6px)' : 'none';
     return E('div', { style: cardStyle(ui, { padding: 0 }) },
         E('button', {
             onClick: function () { open[1](!open[0]); },
-            style: { width: '100%', background: 'none', border: 'none', padding: '13px 14px 13px 16px', display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', textAlign: 'left' }
+            style: { width: '100%', background: 'none', border: 'none', padding: '12px 14px 10px 16px', display: 'block', cursor: 'pointer', textAlign: 'left' }
         },
+          E('div', { style: { display: 'flex', alignItems: 'center', gap: 10 } },
             E('div', { style: { flex: 1, minWidth: 0 } },
                 E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc400, fontWeight: 600 } }, g.label),
                 E('div', { style: { fontFamily: ui.sys, fontSize: 11, color: ui.C.zinc700, marginTop: 1 } },
                     rows.length + (rows.length === 1 ? ' account' : ' accounts'))
             ),
-            E('div', { style: { textAlign: 'right' } },
-                E('div', { style: moneyStyle(ui, 17, props.privacy, now < 0 ? ui.C.rose : ui.C.white) }, fmtGBP(now)),
-                d != null && E('div', { style: { fontFamily: ui.rounded, fontSize: 11, color: signColor(ui, d), fontVariantNumeric: 'tabular-nums', marginTop: 2 } },
-                    // Always says what it compares with: the previous month on record.
-                    E('span', { style: { fontFamily: ui.sys, color: ui.C.zinc600 } }, 'vs ' + (monthIndex(latest.month) - monthIndex(prev.month) === 1 ? MONTHS[Number(prev.month.slice(5, 7)) - 1] : monthLabel(prev.month)) + ' '),
-                    E('span', { style: { filter: blur } }, fmtSigned(d)), ' ', fmtPct(pctChange(now, before)))
-            ),
+            E('div', { style: moneyStyle(ui, 17, props.privacy, now < 0 ? ui.C.rose : ui.C.white) }, fmtGBP(now)),
             E(ChevronIcon, { style: { width: 14, height: 14, color: ui.C.zinc700, transform: open[0] ? 'rotate(90deg)' : 'none', transition: 'transform 150ms' }, strokeWidth: 2 })
+          ),
+          // One row: vs 1m / 6m / 1y, each with £ and %. A period with no entry that far back shows a dash.
+          E('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', columnGap: 8, marginTop: 7, paddingTop: 7, borderTop: '1px solid ' + ui.C.border,
+                               fontFamily: ui.rounded, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' } },
+              changes.map(function (c) {
+                  var col = c.d == null ? ui.C.zinc700 : signColor(ui, c.d);
+                  // Two short lines so the full figures fit on a narrow phone: the £ change, then "1m  +2.3%".
+                  return E('div', { key: c.p.months, style: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', color: col } },
+                      E('div', { style: { fontSize: 12, filter: blur, overflow: 'hidden', textOverflow: 'ellipsis' } }, c.d == null ? '—' : fmtSigned(c.d)),
+                      E('div', { style: { fontSize: 10, marginTop: 1 } },
+                          E('span', { style: { fontFamily: ui.sys, color: ui.C.zinc600, marginRight: 5 } }, 'vs ' + (c.p.months === 12 ? '1y' : c.p.months + 'm')),
+                          c.d == null ? '' : fmtPct(c.pct)));
+              }))
         ),
         open[0] && E('div', { style: { borderTop: '1px solid ' + ui.C.border, padding: '6px 16px 10px' } },
             prev && E('div', { style: { fontFamily: ui.sys, fontSize: 10, color: ui.C.zinc700, textAlign: 'right', paddingTop: 4, paddingRight: 84, letterSpacing: '0.04em' } },
@@ -1075,7 +1118,8 @@ function GroupCard(props) {
             rows.map(function (a) {
                 var v = latest.values[a.id] || 0, pv = prev ? (prev.values[a.id] || 0) : null;
                 var shareNote = (a.share < 1 ? ' · your ' + Math.round(a.share * 100) + '%' : '') + (isLiquid(a) !== !!g.liquid ? (isLiquid(a) ? ' · liquid' : ' · not liquid') : '')
-                    + (a.growth != null ? ' · ' + (a.growth > 0 ? '+' : '') + a.growth + '%/yr' : '');
+                    + (a.growth != null ? ' · ' + (a.growth > 0 ? '+' : '') + a.growth + '%/yr' : '')
+                    + (loanReady(a.loan) ? ' · ' + a.loan.rate + '% to ' + monthLabel(a.loan.end.slice(0, 7)) : '');
                 return E('div', { key: a.id, style: { display: 'flex', alignItems: 'baseline', gap: 8, padding: '6px 0' } },
                     E('div', { style: { flex: 1, minWidth: 0, fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
                         a.name, E('span', { style: { color: ui.C.zinc700, fontSize: 11 } }, shareNote),
@@ -1139,7 +1183,7 @@ function MainView(props) {
             GROUPS.filter(function (g) {
                 return state.accounts.some(function (a) { return a.group === g.id && (!a.closed || latest.values[a.id] != null); });
             }).map(function (g) {
-                return E(GroupCard, { key: g.id, group: g, latest: latest, prev: prev, accounts: state.accounts, privacy: props.privacy });
+                return E(GroupCard, { key: g.id, group: g, series: series, latest: latest, prev: prev, accounts: state.accounts, privacy: props.privacy });
             })
         ),
         E('button', { style: Object.assign(buttonStyle(ui, 'primary'), { width: '100%', fontSize: 15 }), onClick: props.onUpdate }, 'Update balances'),
@@ -1169,6 +1213,35 @@ function MainView(props) {
 
 // ── Update form ──────────────────────────────────────────────────────────────
 function amountText(v) { return v == null ? '' : String(Math.round(Math.abs(v) * 100) / 100); }
+
+// Rate, monthly payment, start and end of a mortgage, in a compact two-by-two block. Saved with the account.
+function LoanFields(props) {
+    var ui = useUI();
+    var a = props.a, l = a.loan || {};
+    var st = React.useState(function () {
+        return { rate: l.rate != null ? String(l.rate) : (a.rate != null ? String(a.rate) : ''), payment: l.payment != null ? String(l.payment) : '',
+                 start: l.start || '', end: l.end || '' };
+    });
+    var f = st[0];
+    function set(k, v) {
+        var next = Object.assign({}, f); next[k] = v; st[1](next);
+        var num = function (t) { var n = Number(String(t).replace(/[£,%\s]/g, '')); return t === '' || isNaN(n) ? null : n; };
+        props.onChange(validLoan({ rate: num(next.rate), payment: num(next.payment), start: next.start, end: next.end }));
+    }
+    var ready = loanReady(a.loan);
+    var lab = function (t) { return E('span', { style: { fontFamily: ui.sys, fontSize: 10, color: ui.C.zinc600, letterSpacing: '0.04em' } }, t); };
+    var box = function (k, extra) { return E('input', Object.assign({ value: f[k], onChange: function (e) { set(k, e.target.value); },
+        style: inputStyle(ui, { width: '100%', boxSizing: 'border-box', fontSize: 13, padding: '6px 8px', textAlign: extra.type === 'date' ? 'left' : 'right' }) }, extra)); };
+    return E('div', { style: { marginTop: 6 } },
+        E('div', { style: { fontFamily: ui.sys, fontSize: 11, color: ready ? ui.C.blue : ui.C.zinc700, marginBottom: 4 } },
+            ready ? 'Works down by £' + a.loan.payment.toLocaleString('en-GB') + ' a month at ' + a.loan.rate + '% until ' + monthLabel(a.loan.end.slice(0, 7))
+                  : 'Mortgage terms (fill all four to keep it up to date):'),
+        E('div', { style: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 6 } },
+            E('label', { style: { display: 'block', minWidth: 0 } }, lab('Interest rate %'), box('rate', { inputMode: 'decimal', placeholder: '4.5' })),
+            E('label', { style: { display: 'block', minWidth: 0 } }, lab('Monthly payment £'), box('payment', { inputMode: 'decimal', placeholder: '1,200' })),
+            E('label', { style: { display: 'block', minWidth: 0 } }, lab('Start date'), box('start', { type: 'date' })),
+            E('label', { style: { display: 'block', minWidth: 0 } }, lab('End date'), box('end', { type: 'date' }))));
+}
 
 function UpdateView(props) {
     var ui = useUI();
@@ -1300,6 +1373,8 @@ function UpdateView(props) {
                                     style: inputStyle(ui, { width: 64, textAlign: 'right', fontSize: 13, padding: '6px 8px' })
                                 }),
                                 E('span', { style: { fontFamily: ui.sys, fontSize: 11, color: ui.C.zinc600 } }, '%/yr')),
+                            // Mortgage: its terms, so the amount owed works itself down between the balances you enter.
+                            !manage[0] && g.id === 'property' && a.debt && E(LoanFields, { a: a, onChange: function (loan) { patchAccount(a.id, { loan: loan }); } }),
                             !manage[0] && linkable(a) && E('button', {
                                 onClick: function () { chooser[1](choosing ? null : a.id); },
                                 style: { display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, width: '100%', background: 'none', border: 'none', padding: 0, cursor: 'pointer', textAlign: 'left' }
