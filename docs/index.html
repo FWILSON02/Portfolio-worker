@@ -7404,7 +7404,7 @@ function Row({ icon: Icon, iconColor, iconBg, label, sub, right, onClick, isLabe
 
 // The pull request that last changed the app. Bump it in every PR so Settings → App shows which change the phone is
 // running (Fergus asked; the Estate ?v= number only moved when balances.js changed, so it looked stuck).
-const APP_BUILD = 55;
+const APP_BUILD = 56;
 
 // Settings → App: pulls the newest index.html and balances.js past the browser's cache, then reloads. A Home Screen web app
 // on iOS keeps serving cached files for a while after a deploy, and closing it from the app switcher doesn't clear that.
@@ -17010,8 +17010,21 @@ function PortfolioApp() {
         // Swipe left or right to move between the tabs (Fergus asked). See swipeAllowed for where a swipe may start.
         const tabOrderRef = React.useRef([]);
         tabOrderRef.current = ['markets', 'investments'].concat(typeof window.BalancesScreen === 'function' ? ['estate'] : []);
-        // A swiped-to screen slides in from the side it came from (Fergus: an instant switch felt too abrupt).
+        // A swiped- or tapped-to screen slides in from the side it came from (Fergus: an instant switch felt too abrupt).
         const swipeDirRef = React.useRef(0);
+        // Tapping a tab: another tab slides in like a swipe; the tab already open scrolls smoothly back to its top.
+        const tapTab = id => {
+            if (id === activeTab) {
+                const screen = document.querySelector('[data-tab-screen="' + id + '"]');
+                const scrollers = screen ? [screen].concat(Array.from(screen.querySelectorAll('.ios-scroll'))) : [];
+                for (let n = screen && screen.parentElement; n && n !== document.body; n = n.parentElement) scrollers.push(n);
+                scrollers.forEach(el => { if (el.scrollTop > 0) el.scrollTo({ top: 0, behavior: 'smooth' }); });
+                return;
+            }
+            const order = tabOrderRef.current;
+            swipeDirRef.current = order.indexOf(id) > order.indexOf(activeTab) ? 1 : -1;
+            setActiveTab(id);
+        };
         React.useLayoutEffect(() => {
             const dir = swipeDirRef.current;
             swipeDirRef.current = 0;
@@ -18005,7 +18018,7 @@ function PortfolioApp() {
                         const on = activeTab === t.id;
                         return React.createElement('button', {
                             key: t.id, role: 'tab', 'aria-selected': on, 'aria-label': t.label,
-                            onClick: () => setActiveTab(t.id),
+                            onClick: () => tapTab(t.id),
                             style: {
                                 display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, minWidth: 0, flex: '1 1 auto',
                                 height: 36, padding: '0 7px', marginBottom: -1,
