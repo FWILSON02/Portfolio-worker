@@ -202,7 +202,7 @@ window.XCircle=_li([{t:'c',cx:12,cy:12,r:10},'M15 9l-6 6','M9 9l6 6']);
 window.MinusCircle=_li([{t:'c',cx:12,cy:12,r:10},'M8 12h8']);
 window.HelpCircle=_li([{t:'c',cx:12,cy:12,r:10},'M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3',{t:'l',x1:12,y1:17,x2:12.01,y2:17}]);</script>
 <!-- Balances screen lives in its own file. Bump ?v= whenever balances.js changes so the Home Screen app never mixes versions. -->
-<script src="balances.js?v=2"></script>
+<script src="balances.js?v=3"></script>
 <script>
 try{"use strict";
 // ─── Lightweight SVG chart components (replaces Recharts) ──────────────────
@@ -17224,13 +17224,19 @@ function PortfolioApp() {
         // Live values the Balances update form can prefill from: each account card, then each restricted scheme.
         const balancesAppValues = React.useMemo(() => {
             const out = [];
-            accountGroups.forEach(a => { if (Number.isFinite(a.totalValue)) out.push({ key: 'acct:' + a.name, label: a.name, value: a.totalValue }); });
+            // ready: every holding has a price, so the total is safe for Estate to save as a live balance.
+            accountGroups.forEach(a => { if (Number.isFinite(a.totalValue)) out.push({ key: 'acct:' + a.name, label: a.name, value: a.totalValue,
+                                                                                      ready: (a.holdings || []).every(h => h.marketValue != null) }); });
             (restrictedDisplayRows || []).forEach(r => {
                 const v = r.marketValue != null ? r.marketValue : r.value;
                 if (r.name && Number.isFinite(v)) out.push({ key: 'restricted:' + r.name, label: r.name, value: v });
             });
             return out;
         }, [accountGroups, restrictedDisplayRows]);
+        // Estate accounts linked to an account here follow its value: each change is written into this month's entry.
+        React.useEffect(() => {
+            if (window.BalancesStore && window.BalancesStore.syncLinked) window.BalancesStore.syncLinked(balancesAppValues);
+        }, [balancesAppValues]);
 
         // ─── RENDER ───────────────────────────────────────────────────────────
         // Spec §II.2: native iOS typography engine for all financial data and labels.

@@ -151,6 +151,14 @@ var BalancesStore = {
         saveState(next).catch(function () {});
         return copy;
     },
+    // Writes the live values of accounts linked to the Investments tab into this month's entry (see applyLinked).
+    // index.html calls it whenever those values change, so linked accounts stay current without being typed in.
+    syncLinked: function (appValues) {
+        return _loaded.then(function () {
+            var next = applyLinked(_state, appValues, todayISO());
+            if (next) return saveState(next);
+        }).catch(function () {});
+    },
     // Replaces the balances with the ones from a backup. Returns false (and changes nothing) when invalid.
     restore: function (obj) {
         var clean = validateState(obj);
@@ -208,6 +216,40 @@ function buildSeries(state) {
         var t = totalsFor(s, byId);
         return { month: mk, date: s.date, values: s.values, groups: t.groups, liquid: t.liquid, total: t.total };
     });
+}
+
+// Live values for open accounts linked to the app: { [accountId]: value }. An app value that is still loading
+// (ready === false, e.g. a holding without a price yet) is skipped, so a half-priced total is never written.
+function liveLinked(accounts, appValues) {
+    var byKey = {};
+    (appValues || []).forEach(function (o) { if (o && o.ready !== false && Number.isFinite(o.value)) byKey[o.key] = o; });
+    var live = {};
+    accounts.forEach(function (a) {
+        if (!a.closed && a.appLink && byKey[a.appLink]) live[a.id] = Math.round(byKey[a.appLink].value * 100) / 100;
+    });
+    return live;
+}
+
+// Puts the live values of linked accounts into this month's entry. Returns the new state, or null when nothing changed.
+// This month's entry exists: only the linked values in it change. It doesn't yet: a new entry dated today starts from
+// the last entry's open accounts (a missing account would count as £0) and takes the live values on top.
+function applyLinked(state, appValues, today) {
+    var live = liveLinked(state.accounts, appValues);
+    var ids = Object.keys(live);
+    if (!ids.length) return null;
+    var mk = monthKey(today);
+    var last = state.snapshots.length ? state.snapshots[state.snapshots.length - 1] : null;
+    if (last && monthKey(last.date) > mk) return null;   // an entry dated in a later month: leave it alone
+    var sameMonth = !!last && monthKey(last.date) === mk;
+    var values = {}, changed = !sameMonth;
+    if (sameMonth) values = Object.assign({}, last.values);
+    else if (last) state.accounts.forEach(function (a) { if (!a.closed && last.values[a.id] != null) values[a.id] = last.values[a.id]; });
+    ids.forEach(function (id) { if (values[id] !== live[id]) { values[id] = live[id]; changed = true; } });
+    if (!changed) return null;
+    var date = sameMonth && last.date > today ? last.date : today;
+    var snaps = state.snapshots.filter(function (s) { return monthKey(s.date) !== mk; }).concat([{ date: date, values: values }])
+        .sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+    return Object.assign({}, state, { snapshots: snaps });
 }
 
 // The point to compare `latest` with for a "12 months" change: the latest one at least 12 months earlier.
@@ -789,7 +831,8 @@ function GroupCard(props) {
                 var shareNote = a.share < 1 ? ' · your ' + Math.round(a.share * 100) + '%' : '';
                 return E('div', { key: a.id, style: { display: 'flex', alignItems: 'baseline', gap: 8, padding: '6px 0' } },
                     E('div', { style: { flex: 1, minWidth: 0, fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
-                        a.name, E('span', { style: { color: ui.C.zinc700, fontSize: 11 } }, shareNote)),
+                        a.name, E('span', { style: { color: ui.C.zinc700, fontSize: 11 } }, shareNote),
+                        a.appLink && !a.closed ? E('span', { style: { color: ui.C.blue, fontSize: 10, marginLeft: 6 } }, 'LIVE') : null),
                     pv != null && E('span', { style: { fontFamily: ui.rounded, fontSize: 11, color: signColor(ui, v - pv), filter: blur, fontVariantNumeric: 'tabular-nums' } }, fmtSigned(v - pv)),
                     E('span', { style: { fontFamily: ui.rounded, fontSize: 13, color: v < 0 ? ui.C.rose : ui.C.white, filter: blur, fontVariantNumeric: 'tabular-nums', minWidth: 76, textAlign: 'right' } }, fmtGBP(v))
                 );
@@ -930,6 +973,8 @@ function UpdateView(props) {
         if (!ISO_DATE.test(date || '')) { err[1]('Pick a date.'); return; }
         var values = {}, bad = null;
         open.forEach(function (a) {
+            var linked = a.appLink && appByKey[a.appLink];
+            if (linked && Number.isFinite(linked.value)) { values[a.id] = Math.round(linked.value * 100) / 100; return; }
             var t = amounts[a.id];
             if (t == null || String(t).trim() === '') return;
             var v = parseAmount(t);
@@ -944,7 +989,8 @@ function UpdateView(props) {
         saveState(Object.assign({}, state, { accounts: accounts, snapshots: snaps })).then(props.onDone, function (e) { err[1]('Could not save: ' + (e && e.message)); });
     }
 
-    var linkable = function (a) { return appValues.length > 0 && (a.group === 'investments' || a.group === 'pensions'); };
+    // Accounts the Investments tab can hold: savings (e.g. a money market fund), investments, pensions and other.
+    var linkable = function (a) { return appValues.length > 0 && !a.debt && /^(savings|investments|pensions|other)$/.test(a.group); };
     return E('div', { style: { padding: '12px 16px 0' } },
         E('div', { style: cardStyle(ui, { display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }) },
             E('div', { style: { flex: 1, fontFamily: ui.sys, fontSize: 14, color: ui.C.zinc400 } }, 'Balances as at'),
@@ -970,14 +1016,17 @@ function UpdateView(props) {
                                     ? E('button', { onClick: function () { patchAccount(a.id, { closed: true }); }, style: Object.assign(buttonStyle(ui), { minHeight: 36, fontSize: 12 }) }, 'Close')
                                     : E('div', { style: { display: 'flex', alignItems: 'center', gap: 4 } },
                                         E('span', { style: { fontFamily: ui.rounded, color: ui.C.zinc600, fontSize: 15 } }, '£'),
-                                        E('input', {
+                                        linked
+                                            // Linked: the value comes from the Investments tab and keeps updating, so it isn't typed in.
+                                            ? E('div', { style: { width: 116, textAlign: 'right', fontFamily: ui.rounded, fontSize: 15, color: ui.C.blue, padding: '9px 0', fontVariantNumeric: 'tabular-nums', filter: props.privacy ? 'blur(6px)' : 'none' } }, Math.abs(linked.value).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 }))
+                                            : E('input', {
                                             inputMode: 'decimal', value: amounts[a.id] || '', placeholder: '0',
                                             onChange: function (e) { var o = Object.assign({}, amounts); o[a.id] = e.target.value; setAmounts(o); },
                                             style: inputStyle(ui, { width: 116, textAlign: 'right', filter: props.privacy ? 'blur(6px)' : 'none' })
                                         }))
                             ),
                             !manage[0] && linkable(a) && E('div', { style: { display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 } },
-                                E('span', { style: { fontFamily: ui.sys, fontSize: 11, color: linked ? ui.C.blue : ui.C.zinc700 } }, linked ? 'From app:' : 'Fill from app:'),
+                                E('span', { style: { fontFamily: ui.sys, fontSize: 11, color: linked ? ui.C.blue : ui.C.zinc700 } }, linked ? 'Live from Investments:' : 'Link to Investments:'),
                                 E('select', {
                                     value: a.appLink || '', onChange: function (e) { setLink(a, e.target.value); },
                                     style: { flex: 1, minWidth: 0, background: 'transparent', border: 'none', color: linked ? ui.C.blue : ui.C.zinc600, fontFamily: ui.sys, fontSize: 12 }
@@ -1213,5 +1262,5 @@ window.BalancesScreen = BalancesScreen;
 window.BalancesStore = BalancesStore;
 window.BalancesIcon = WalletIcon;
 // For tests only: the pure parts, no UI.
-window.__balancesInternals = { parseJsonBackup: parseJsonBackup, buildJson: buildJson, parseImport: parseImport, importToState: importToState, runChecks: runChecks, buildSeries: buildSeries, parseAmount: parseAmount, buildCsv: buildCsv };
+window.__balancesInternals = { applyLinked: applyLinked, parseJsonBackup: parseJsonBackup, buildJson: buildJson, parseImport: parseImport, importToState: importToState, runChecks: runChecks, buildSeries: buildSeries, parseAmount: parseAmount, buildCsv: buildCsv };
 })();
