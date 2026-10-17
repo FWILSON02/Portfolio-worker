@@ -31,6 +31,15 @@ var GROUP_BY_ID = {};
 GROUPS.forEach(function (g) { GROUP_BY_ID[g.id] = g; });
 function groupOf(id) { return GROUP_BY_ID[id] || GROUP_BY_ID.other; }
 // Whether an account counts toward Liquid: its own flag when set (e.g. unvested shares under Investments), else its group's.
+// Cards on the Estate screen. Current and Credit cards share one: the cards are paid off monthly from the current
+// account, so only together do they show the everyday cash position (Fergus asked). Entry and storage keep the groups.
+var CARDS = [{ id: 'cash', label: 'Current & credit cards', short: 'Cash', liquid: true, groups: ['current', 'cards'] }].concat(
+    GROUPS.filter(function (g) { return g.id !== 'current' && g.id !== 'cards'; })
+          .map(function (g) { return { id: g.id, label: g.label, liquid: g.liquid, groups: [g.id] }; }));
+var CARD_OF = {}, CARD_BY_ID = {};
+CARDS.forEach(function (c) { CARD_BY_ID[c.id] = c; c.groups.forEach(function (gid) { CARD_OF[gid] = c.id; }); });
+function cardId(a) { return CARD_OF[a.group] || 'other'; }
+function cardLabel(id) { return (CARD_BY_ID[id] || CARD_BY_ID.other).label; }
 function isLiquid(a) { return typeof a.liquid === 'boolean' ? a.liquid : !!groupOf(a.group).liquid; }
 
 // ── Store (IndexedDB, own database) ──────────────────────────────────────────
@@ -269,6 +278,9 @@ function totalsFor(snapshot, accountsById) {
         if (!a) return;
         var v = snapshot.values[id] * (a.share || 1);
         groups[a.group] = (groups[a.group] || 0) + v;
+        // A card covering several groups also gets its own sum (e.g. cash = current + cards).
+        var c = cardId(a);
+        if (c !== a.group) groups[c] = (groups[c] || 0) + v;
         total += v;
         if (isLiquid(a)) liquid += v;
     });
@@ -895,7 +907,8 @@ function breakdown(base, focus, accounts, metric) {
         if (metric === 'liquid' && !isLiquid(a)) return;
         var v0 = (base.values[a.id] || 0) * (a.share || 1), v1 = (focus.values[a.id] || 0) * (a.share || 1);
         if (!v0 && !v1) return;
-        var g = groups[a.group] || (groups[a.group] = { id: a.group, d: 0, v: 0, accounts: [] });
+        var c = cardId(a);
+        var g = groups[c] || (groups[c] = { id: c, d: 0, v: 0, accounts: [] });
         g.d += v1 - v0; g.v += v1;
         g.accounts.push({ a: a, d: v1 - v0, v: v1 });
     });
@@ -910,7 +923,7 @@ function breakdown(base, focus, accounts, metric) {
 function groupValue(p, gid, accounts, metric) {
     var t = 0;
     accounts.forEach(function (a) {
-        if (a.group !== gid || (metric === 'liquid' && !isLiquid(a))) return;
+        if (cardId(a) !== gid || (metric === 'liquid' && !isLiquid(a))) return;
         t += (p.values[a.id] || 0) * (a.share || 1);
     });
     return t;
@@ -1026,7 +1039,7 @@ function Chart(props) {
             E('span', { style: { fontSize: 12, color: ui.C.zinc500 } }, !analysing && !scrub ? 'Since ' + monthLabel(pts[0].month) : monthLabel(focus.month)),
             sel.length
                 ? lines.map(function (l) {
-                    return E('span', { key: l.gid, style: { fontSize: 12, color: l.color, filter: blur } }, groupOf(l.gid).label.split(' ')[0] + ' ' + fmtGBP(l.val(focus)));
+                    return E('span', { key: l.gid, style: { fontSize: 12, color: l.color, filter: blur } }, (CARD_BY_ID[l.gid] && CARD_BY_ID[l.gid].short || cardLabel(l.gid).split(' ')[0]) + ' ' + fmtGBP(l.val(focus)));
                 })
                 : [E('span', { key: 'v', style: { fontSize: 14, fontWeight: 600, color: ui.C.white, filter: blur } }, fmtGBP(focus[metric])),
                    from && E('span', { key: 'd', style: { fontSize: 12, color: signColor(ui, change), filter: blur } }, fmtSigned(change)),
@@ -1095,11 +1108,11 @@ function Chart(props) {
                     return E('div', { key: g.id, style: { borderTop: i ? '1px solid ' + ui.C.border : 'none' } },
                         E('div', { style: { display: 'flex', alignItems: 'center', gap: 8, padding: '7px 0' } },
                             // Dot: draws (or removes) this group's own line on the chart.
-                            E('button', { onClick: function () { toggleSel(g.id); }, 'aria-label': 'Draw ' + groupOf(g.id).label,
+                            E('button', { onClick: function () { toggleSel(g.id); }, 'aria-label': 'Draw ' + cardLabel(g.id),
                                 style: { width: 22, height: 22, flexShrink: 0, borderRadius: 11, border: '1px solid ' + (col || ui.C.border), background: col || 'transparent', cursor: 'pointer', padding: 0 } }),
                             E('button', { onClick: function () { setOpenGroup(isOpen ? null : g.id); },
                                 style: { flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 8, background: 'none', border: 'none', padding: 0, cursor: 'pointer', textAlign: 'left' } },
-                                E('span', { style: { flex: 1, minWidth: 0, fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, groupOf(g.id).label),
+                                E('span', { style: { flex: 1, minWidth: 0, fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, cardLabel(g.id)),
                                 // Bar sized against the largest block.
                                 E('span', { style: { width: 54, height: 6, borderRadius: 3, background: 'rgba(255,255,255,0.05)', position: 'relative', flexShrink: 0 } },
                                     E('span', { style: { position: 'absolute', left: 0, top: 0, bottom: 0, borderRadius: 3, width: Math.round(Math.abs(g.d) / maxAbs * 100) + '%', background: signColor(ui, g.d), opacity: 0.7 } })),
@@ -1131,7 +1144,8 @@ function GroupCard(props) {
         var b = base ? (base.groups[g.id] || 0) : null;
         return { p: p, base: base, d: b == null ? null : now - b, pct: b == null ? null : pctChange(now, b) };
     });
-    var rows = props.accounts.filter(function (a) { return a.group === g.id && (!a.closed || latest.values[a.id] != null); });
+    var rows = props.accounts.filter(function (a) { return cardId(a) === g.id && (!a.closed || latest.values[a.id] != null); })
+        .sort(function (x, y) { return g.groups.indexOf(x.group) - g.groups.indexOf(y.group); });   // current accounts, then cards
     var blur = props.privacy ? 'blur(6px)' : 'none';
     return E('div', { style: cardStyle(ui, { padding: 0 }) },
         E('button', {
@@ -1163,19 +1177,24 @@ function GroupCard(props) {
         open[0] && E('div', { style: { borderTop: '1px solid ' + ui.C.border, padding: '6px 16px 10px' } },
             prev && E('div', { style: { fontFamily: ui.sys, fontSize: 10, color: ui.C.zinc700, textAlign: 'right', paddingTop: 4, paddingRight: 84, letterSpacing: '0.04em' } },
                 'vs ' + monthLabel(prev.month)),
-            rows.map(function (a) {
+            (function () {
+            // Tags sit in their own column just before the change, so LIVE / FORMULA line up down the card (Fergus asked).
+            function tagOf(a) { return a.closed ? null : a.appLinks.length ? 'LIVE' : (a.growth != null || loanReady(a.loan) || assetReady(a.asset)) ? 'FORMULA' : null; }
+            var anyTag = rows.some(tagOf);
+            return rows.map(function (a) {
                 var v = latest.values[a.id] || 0, pv = prev ? (prev.values[a.id] || 0) : null;
                 var shareNote = (isLiquid(a) !== !!g.liquid ? (isLiquid(a) ? ' · liquid' : ' · not liquid') : '');
                 // Tag like LIVE: the value follows the Investments tab (LIVE) or is worked out from a rate or loan terms (FORMULA).
-                var tag = a.closed ? null : a.appLinks.length ? 'LIVE' : (a.growth != null || loanReady(a.loan) || assetReady(a.asset)) ? 'FORMULA' : null;
+                var tag = tagOf(a);
                 return E('div', { key: a.id, style: { display: 'flex', alignItems: 'baseline', gap: 8, padding: '6px 0' } },
                     E('div', { style: { flex: 1, minWidth: 0, fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
-                        a.name, E('span', { style: { color: ui.C.zinc700, fontSize: 11 } }, shareNote),
-                        tag ? E('span', { style: { color: ui.C.blue, fontSize: 10, marginLeft: 6 } }, tag) : null),
-                    pv != null && E('span', { style: { fontFamily: ui.rounded, fontSize: 11, color: signColor(ui, v - pv), filter: blur, fontVariantNumeric: 'tabular-nums' } }, fmtSigned(v - pv)),
-                    E('span', { style: { fontFamily: ui.rounded, fontSize: 13, color: v < 0 ? ui.C.rose : ui.C.white, filter: blur, fontVariantNumeric: 'tabular-nums', minWidth: 76, textAlign: 'right' } }, fmtGBP(v))
+                        a.name, E('span', { style: { color: ui.C.zinc700, fontSize: 11 } }, shareNote)),
+                    anyTag && E('span', { style: { fontFamily: ui.sys, color: ui.C.blue, fontSize: 10, width: 48, flexShrink: 0, textAlign: 'left', letterSpacing: '0.02em' } }, tag || ''),
+                    pv != null && E('span', { style: { fontFamily: ui.rounded, fontSize: 11, color: signColor(ui, v - pv), filter: blur, fontVariantNumeric: 'tabular-nums', minWidth: 58, flexShrink: 0, textAlign: 'right' } }, fmtSigned(v - pv)),
+                    E('span', { style: { fontFamily: ui.rounded, fontSize: 13, color: v < 0 ? ui.C.rose : ui.C.white, filter: blur, fontVariantNumeric: 'tabular-nums', minWidth: 76, flexShrink: 0, textAlign: 'right' } }, fmtGBP(v))
                 );
-            })
+            });
+            })()
         )
     );
 }
@@ -1228,8 +1247,8 @@ function MainView(props) {
                : E('div', { style: cardStyle(ui, { marginBottom: 12, fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc600 }) }, 'No balances entered yet. Tap Update balances to add this month’s.'),
         series.length > 1 && E(Chart, { series: series, accounts: state.accounts, privacy: props.privacy }),
         latest && E('div', { style: { display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 14 } },
-            GROUPS.filter(function (g) {
-                return state.accounts.some(function (a) { return a.group === g.id && (!a.closed || latest.values[a.id] != null); });
+            CARDS.filter(function (g) {
+                return state.accounts.some(function (a) { return cardId(a) === g.id && (!a.closed || latest.values[a.id] != null); });
             }).map(function (g) {
                 return E(GroupCard, { key: g.id, group: g, series: series, latest: latest, prev: prev, accounts: state.accounts, privacy: props.privacy });
             })
