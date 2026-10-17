@@ -204,7 +204,7 @@ window.XCircle=_li([{t:'c',cx:12,cy:12,r:10},'M15 9l-6 6','M9 9l6 6']);
 window.MinusCircle=_li([{t:'c',cx:12,cy:12,r:10},'M8 12h8']);
 window.HelpCircle=_li([{t:'c',cx:12,cy:12,r:10},'M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3',{t:'l',x1:12,y1:17,x2:12.01,y2:17}]);</script>
 <!-- Balances screen lives in its own file. Bump ?v= whenever balances.js changes so the Home Screen app never mixes versions. -->
-<script src="balances.js?v=34"></script>
+<script src="balances.js?v=35"></script>
 <script>
 try{"use strict";
 // ─── Lightweight SVG chart components (replaces Recharts) ──────────────────
@@ -7404,7 +7404,7 @@ function Row({ icon: Icon, iconColor, iconBg, label, sub, right, onClick, isLabe
 
 // The pull request that last changed the app. Bump it in every PR so Settings → App shows which change the phone is
 // running (Fergus asked; the Estate ?v= number only moved when balances.js changed, so it looked stuck).
-const APP_BUILD = 53;
+const APP_BUILD = 54;
 
 // Settings → App: pulls the newest index.html and balances.js past the browser's cache, then reloads. A Home Screen web app
 // on iOS keeps serving cached files for a while after a deploy, and closing it from the app switcher doesn't clear that.
@@ -8076,6 +8076,20 @@ function makeContribRange(S, topN) {
 // Segmented control, the same look as the Estate tab's (balances.js Segmented): a dark track, the chosen option lifted.
 // fill: takes the room left in its row and shares it between the options, so a long row (the six ranges) still fits a
 // 320px phone.
+// Whether a touch starting at `el` may swipe between tabs. Not from a chart (it drags to read values), a form field,
+// something that scrolls sideways, or any overlay (a sheet, Settings, a form): only from a tab's own screen, which is
+// a screen marked data-swipe-tabs: the app's own page (Investments), Markets, and Estate's main view.
+function swipeAllowed(el) {
+    for (let n = el; n && n !== document.body && n.nodeType === 1; n = n.parentElement) {
+        if (n.hasAttribute('data-swipe-tabs')) return true;
+        if (n.hasAttribute('data-no-swipe') || /^(INPUT|TEXTAREA|SELECT)$/.test(n.tagName) || n.tagName.toLowerCase() === 'svg') return false;
+        const cs = getComputedStyle(n);
+        if (cs.position === 'fixed') return false;
+        if ((cs.overflowX === 'auto' || cs.overflowX === 'scroll') && n.scrollWidth > n.clientWidth + 1) return false;
+    }
+    return false;
+}
+
 function SegmentedControl({ options, value, onChange, fill }) {
     return React.createElement('div', { style: { display: 'flex', background: 'rgba(0,0,0,0.3)', borderRadius: 9, padding: 2, gap: 2, minWidth: 0,
                                                  flex: fill ? '0 1 260px' : '0 0 auto' } },
@@ -8636,7 +8650,7 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
         // ── Chart area ──
         React.createElement('div', {
             ref: containerRef,
-            className: 'chart-noselect',
+            className: 'chart-noselect', 'data-no-swipe': '',
             style: { position: 'relative', height: SVG_H, cursor: 'crosshair', userSelect: 'none' },
             onTouchStart:  e => { e.preventDefault(); lastTouchRef.current = Date.now(); hitTest(e.touches[0].clientX, e.touches[0].clientY); },
             onTouchMove:   e => { e.preventDefault(); lastTouchRef.current = Date.now(); hitTest(e.touches[0].clientX, e.touches[0].clientY); },
@@ -12334,6 +12348,7 @@ function MarketOverviewScreen({ rows, status, updatedAt, error, onRefresh }) {
 
     // Sits under the app's tab bar (its height is published as --topbar-h), so the tabs stay visible.
     return React.createElement('div', {
+        'data-swipe-tabs': '',
         style: {
             position: 'fixed', top: 'var(--topbar-h, 0px)', left: 0, right: 0, bottom: 0, zIndex: 9995,
             background: C.bg, display: 'flex', flexDirection: 'column',
@@ -16992,6 +17007,32 @@ function PortfolioApp() {
             return t === 'markets' || t === 'estate' ? t : 'investments';
         });
         React.useEffect(() => { reloadReturnTab = activeTab; }, [activeTab]);
+        // Swipe left or right to move between the tabs (Fergus asked). See swipeAllowed for where a swipe may start.
+        const tabOrderRef = React.useRef([]);
+        tabOrderRef.current = ['markets', 'investments'].concat(typeof window.BalancesScreen === 'function' ? ['estate'] : []);
+        React.useEffect(() => {
+            let start = null;
+            const onStart = e => {
+                start = null;
+                if (e.touches.length !== 1 || !swipeAllowed(e.target)) return;
+                start = { x: e.touches[0].clientX, y: e.touches[0].clientY, t: Date.now() };
+            };
+            const onEnd = e => {
+                if (!start) return;
+                const t = e.changedTouches[0], dx = t.clientX - start.x, dy = t.clientY - start.y;
+                const quick = Date.now() - start.t < 700;
+                start = null;
+                if (!quick || Math.abs(dx) < 60 || Math.abs(dx) < 2 * Math.abs(dy)) return;
+                setActiveTab(cur => {
+                    const order = tabOrderRef.current, i = order.indexOf(cur);
+                    const next = order[i + (dx < 0 ? 1 : -1)];
+                    return next || cur;
+                });
+            };
+            document.addEventListener('touchstart', onStart, { passive: true });
+            document.addEventListener('touchend', onEnd, { passive: true });
+            return () => { document.removeEventListener('touchstart', onStart); document.removeEventListener('touchend', onEnd); };
+        }, []);
         const hasBalances = typeof window.BalancesScreen === 'function';
         const showMarketOverview = activeTab === 'markets';
         const showBalances = activeTab === 'estate' && hasBalances;
@@ -17594,6 +17635,7 @@ function PortfolioApp() {
 
         // ─── Main Dashboard Render ────────────────────────────────────────────
         return React.createElement('div', {
+            'data-swipe-tabs': '',
             style: {
                 position: 'fixed', inset: 0, background: C.bg, overflow: 'hidden',
                 WebkitTapHighlightColor: 'transparent', WebkitTouchCallout: 'none', userSelect: 'none',
