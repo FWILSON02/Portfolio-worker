@@ -30,10 +30,13 @@ var GROUPS = [
 var GROUP_BY_ID = {};
 GROUPS.forEach(function (g) { GROUP_BY_ID[g.id] = g; });
 function groupOf(id) { return GROUP_BY_ID[id] || GROUP_BY_ID.other; }
+// Whether an account counts toward Liquid: its own flag when set (e.g. unvested shares under Investments), else its group's.
+function isLiquid(a) { return typeof a.liquid === 'boolean' ? a.liquid : !!groupOf(a.group).liquid; }
 
 // ── Store (IndexedDB, own database) ──────────────────────────────────────────
 // state = { v: 1, accounts: [Account], snapshots: [Snapshot], lastExportAt, updatedAt }
 //   Account  = { id, name, group, debt, share, rate, closed, appLinks }
+//              liquid:   true/false to count (or not) toward Liquid; null = the group's default.
 //              appLinks: keys of the Investments-tab values this account follows (their sum); [] = typed in by hand.
 //              debt:  balance stored negative (cards, mortgage); the form takes the amount owed as a positive number.
 //              share: fraction of the balance that is yours (e.g. 0.5 of a jointly owned house and its mortgage).
@@ -107,6 +110,7 @@ function validateState(s) {
             share: (typeof a.share === 'number' && a.share > 0 && a.share <= 1) ? a.share : 1,
             rate: (typeof a.rate === 'number' && isFinite(a.rate)) ? a.rate : null,
             closed: !!a.closed,
+            liquid: typeof a.liquid === 'boolean' ? a.liquid : null,
             appLinks: linksOf(a),
         };
     }).map(linkedToInvestments);
@@ -210,7 +214,7 @@ function totalsFor(snapshot, accountsById) {
         var v = snapshot.values[id] * (a.share || 1);
         groups[a.group] = (groups[a.group] || 0) + v;
         total += v;
-        if (groupOf(a.group).liquid) liquid += v;
+        if (isLiquid(a)) liquid += v;
     });
     return { groups: groups, liquid: liquid, total: total };
 }
@@ -529,7 +533,7 @@ function importToState(parsed, prev) {
     var accounts = included.map(function (r, i) {
         return {
             id: 'a' + i + '-' + slug(r.name), name: renamed(r.name), group: r.group, debt: !!r.debt,
-            share: r.share, rate: r.rate, closed: r.closed, appLinks: [],
+            share: r.share, rate: r.rate, closed: r.closed, liquid: null, appLinks: [],
         };
     });
     // Keep app links from before a re-import, matched by name.
@@ -867,7 +871,7 @@ function GroupCard(props) {
         open[0] && E('div', { style: { borderTop: '1px solid ' + ui.C.border, padding: '6px 16px 10px' } },
             rows.map(function (a) {
                 var v = latest.values[a.id] || 0, pv = prev ? (prev.values[a.id] || 0) : null;
-                var shareNote = a.share < 1 ? ' · your ' + Math.round(a.share * 100) + '%' : '';
+                var shareNote = (a.share < 1 ? ' · your ' + Math.round(a.share * 100) + '%' : '') + (isLiquid(a) !== !!g.liquid ? (isLiquid(a) ? ' · liquid' : ' · not liquid') : '');
                 return E('div', { key: a.id, style: { display: 'flex', alignItems: 'baseline', gap: 8, padding: '6px 0' } },
                     E('div', { style: { flex: 1, minWidth: 0, fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
                         a.name, E('span', { style: { color: ui.C.zinc700, fontSize: 11 } }, shareNote),
@@ -1003,7 +1007,7 @@ function UpdateView(props) {
         if (accounts.some(function (a) { return a.name.toLowerCase() === name.toLowerCase(); })) { err[1]('There is already an account called ' + name + '.'); return; }
         var g = newGroup[0];
         var id = 'm' + Date.now().toString(36) + '-' + slug(name);
-        setAccounts(accounts.concat([{ id: id, name: name, group: g, debt: !!groupOf(g).debt, share: 1, rate: null, closed: false, appLinks: [] }]));
+        setAccounts(accounts.concat([{ id: id, name: name, group: g, debt: !!groupOf(g).debt, share: 1, rate: null, closed: false, liquid: null, appLinks: [] }]));
         newName[1]('');
         err[1](null);
     }
@@ -1052,7 +1056,13 @@ function UpdateView(props) {
                                     : E('div', { style: { flex: 1, minWidth: 0, fontFamily: ui.sys, fontSize: 14, color: ui.C.zinc400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
                                         a.name, a.debt && g.id === 'property' ? E('span', { style: { color: ui.C.zinc700, fontSize: 11 } }, ' · owed') : null),
                                 manage[0]
-                                    ? E('button', { onClick: function () { patchAccount(a.id, { closed: true }); }, style: Object.assign(buttonStyle(ui), { minHeight: 36, fontSize: 12 }) }, 'Close')
+                                    ? E('div', { style: { display: 'flex', gap: 6 } },
+                                        // Investments are liquid by default; switch off for money you can't get at (unvested shares).
+                                        g.id === 'investments' && E('button', {
+                                            onClick: function () { patchAccount(a.id, { liquid: !isLiquid(a) }); },
+                                            style: Object.assign(buttonStyle(ui), { minHeight: 36, fontSize: 12, color: isLiquid(a) ? ui.C.emerald : ui.C.zinc600 })
+                                        }, isLiquid(a) ? 'Liquid: yes' : 'Liquid: no'),
+                                        E('button', { onClick: function () { patchAccount(a.id, { closed: true }); }, style: Object.assign(buttonStyle(ui), { minHeight: 36, fontSize: 12 }) }, 'Close'))
                                     : E('div', { style: { display: 'flex', alignItems: 'center', gap: 4 } },
                                         E('span', { style: { fontFamily: ui.rounded, color: ui.C.zinc600, fontSize: 15 } }, '£'),
                                         linked
