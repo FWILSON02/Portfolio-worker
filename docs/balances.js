@@ -805,64 +805,147 @@ function Segmented(props) {
 }
 
 var RANGES = [{ id: '1Y', label: '1Y', months: 12 }, { id: '3Y', label: '3Y', months: 36 }, { id: 'ALL', label: 'All', months: null }];
+var CMP_MODES = [{ id: 'prev', label: 'Month before' }, { id: 'start', label: 'From start' }, { id: 'custom', label: 'Two months' }];
+var LINE_COLS = ['#60a5fa', '#f472b6', '#fbbf24'];
 
+// Change between two points, split into building blocks: per group and, within each group, per account. Built from the
+// accounts (share applied; for Liquid only liquid accounts), so the blocks always add up exactly to the change shown.
+function breakdown(base, focus, accounts, metric) {
+    var groups = {};
+    accounts.forEach(function (a) {
+        if (metric === 'liquid' && !isLiquid(a)) return;
+        var v0 = (base.values[a.id] || 0) * (a.share || 1), v1 = (focus.values[a.id] || 0) * (a.share || 1);
+        if (!v0 && !v1) return;
+        var g = groups[a.group] || (groups[a.group] = { id: a.group, d: 0, v: 0, accounts: [] });
+        g.d += v1 - v0; g.v += v1;
+        g.accounts.push({ a: a, d: v1 - v0, v: v1 });
+    });
+    var rows = Object.keys(groups).map(function (k) {
+        var g = groups[k];
+        g.accounts.sort(function (x, y) { return Math.abs(y.d) - Math.abs(x.d); });
+        return g;
+    }).sort(function (x, y) { return Math.abs(y.d) - Math.abs(x.d); });
+    return { rows: rows, total: rows.reduce(function (t, g) { return t + g.d; }, 0) };
+}
+// A group's figure at a point (share applied; for Liquid only liquid accounts): what a drawn group line plots.
+function groupValue(p, gid, accounts, metric) {
+    var t = 0;
+    accounts.forEach(function (a) {
+        if (a.group !== gid || (metric === 'liquid' && !isLiquid(a))) return;
+        t += (p.values[a.id] || 0) * (a.share || 1);
+    });
+    return t;
+}
+
+// The balances chart, modelled on the Investments chart: press and drag to read any month, lift to pin it; the panel
+// underneath splits the change into building blocks (groups, then accounts). Compare with the month before, the start
+// of the range, or a second pinned month; tap a group's dot to draw its own line.
 function Chart(props) {
     var ui = useUI();
     var ref = React.useRef(null);
+    var dragging = React.useRef(false);
     var width = useWidth(ref);
+    var accounts = props.accounts;
     var mState = React.useState('total'), metric = mState[0];
     var rState = React.useState('ALL'), range = rState[0];
-    var hState = React.useState(null), hover = hState[0], setHover = hState[1];
+    var hState = React.useState(null), scrub = hState[0], setScrub = hState[1];          // month under the finger
+    var pState = React.useState(null), pin = pState[0], setPin = pState[1];               // last month lifted on
+    var ppState = React.useState(null), prevPin = ppState[0], setPrevPin = ppState[1];    // the one before (Two months)
+    var cState = React.useState('prev'), cmp = cState[0], setCmp = cState[1];
+    var sState = React.useState([]), sel = sState[0], setSel = sState[1];                // groups drawn as lines
+    var oState = React.useState(null), openGroup = oState[0], setOpenGroup = oState[1];
     var all = props.series;
     var last = all[all.length - 1];
     var r = RANGES.find(function (x) { return x.id === range; });
     var pts = r.months == null ? all : all.filter(function (p) { return monthIndex(p.month) >= monthIndex(last.month) - r.months; });
+    var byMonth = {};
+    all.forEach(function (p, i) { byMonth[p.month] = i; });
+    function inRange(mk) { return mk && pts.some(function (p) { return p.month === mk; }); }
+
+    // Focus = the month under the finger, else the pinned month, else the latest. Base depends on the compare mode.
+    var focus = all[byMonth[scrub]] || (inRange(pin) ? all[byMonth[pin]] : null) || pts[pts.length - 1];
+    var base = null, waiting = false;
+    if (cmp === 'start') base = pts[0];
+    else if (cmp === 'custom') {
+        var other = scrub ? pin : prevPin;
+        if (inRange(other) && other !== focus.month) base = all[byMonth[other]];
+        else waiting = true;
+    }
+    if (!base) base = byMonth[focus.month] > 0 ? all[byMonth[focus.month] - 1] : null;
+    var from = base, to = focus;
+    if (from && monthIndex(from.month) > monthIndex(to.month)) { from = focus; to = base; }
+    var bd = from ? breakdown(from, to, accounts, metric) : null;
+
+    // Lines: the total, or the drawn groups on their own scale (they'd be flat lines next to the total).
+    var lines = sel.length
+        ? sel.map(function (gid, i) { return { gid: gid, color: LINE_COLS[i % LINE_COLS.length], val: function (p) { return groupValue(p, gid, accounts, metric); } }; })
+        : [{ gid: null, color: null, val: function (p) { return p[metric]; } }];
     var H = 170, padT = 10, padB = 22, padR = 44;
     var W = Math.max(width, 10), plotW = W - padR;
-    var vals = pts.map(function (p) { return p[metric]; });
+    var vals = [];
+    lines.forEach(function (l) { pts.forEach(function (p) { vals.push(l.val(p)); }); });
     var lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals);
     if (hi - lo < 1) { hi += 1; lo -= 1; }
     var pad = (hi - lo) * 0.08; lo -= pad; hi += pad;
     var t0 = monthIndex(pts[0].month), t1 = monthIndex(pts[pts.length - 1].month);
     var x = function (p) { return t1 === t0 ? plotW / 2 : ((monthIndex(p.month) - t0) / (t1 - t0)) * plotW; };
     var y = function (v) { return padT + (1 - (v - lo) / (hi - lo)) * (H - padT - padB); };
-    var line = pts.map(function (p, i) { return (i ? 'L' : 'M') + x(p).toFixed(1) + ' ' + y(p[metric]).toFixed(1); }).join(' ');
-    var area = line + ' L' + x(pts[pts.length - 1]).toFixed(1) + ' ' + (H - padB) + ' L' + x(pts[0]).toFixed(1) + ' ' + (H - padB) + ' Z';
+    var pathFor = function (l) { return pts.map(function (p, i) { return (i ? 'L' : 'M') + x(p).toFixed(1) + ' ' + y(l.val(p)).toFixed(1); }).join(' '); };
     var up = pts[pts.length - 1][metric] >= pts[0][metric];
     var color = up ? ui.C.emerald : ui.C.rose;
+    lines.forEach(function (l) { if (!l.color) l.color = color; });
+    var mainLine = pathFor(lines[0]);
+    var area = !sel.length && (mainLine + ' L' + x(pts[pts.length - 1]).toFixed(1) + ' ' + (H - padB) + ' L' + x(pts[0]).toFixed(1) + ' ' + (H - padB) + ' Z');
     var ticks = [hi - pad, (hi + lo) / 2, lo + pad];
     var firstYear = pts[0].month.slice(0, 4), lastYear = pts[pts.length - 1].month.slice(0, 4);
 
     function pick(clientX) {
         if (!ref.current || pts.length === 0) return;
         var rect = ref.current.getBoundingClientRect();
-        var px = clientX - rect.left, best = null, bd = Infinity;
-        pts.forEach(function (p) { var d = Math.abs(x(p) - px); if (d < bd) { bd = d; best = p; } });
-        setHover(best);
+        var px = clientX - rect.left, best = null, bdist = Infinity;
+        pts.forEach(function (p) { var d = Math.abs(x(p) - px); if (d < bdist) { bdist = d; best = p; } });
+        if (best) setScrub(best.month);
     }
-    var shown = hover && pts.indexOf(hover) >= 0 ? hover : null;
-    var head = shown || pts[pts.length - 1];
-    var first = pts[0];
-    var change = head[metric] - first[metric];
+    function lift() {
+        dragging.current = false;
+        if (!scrub) return;
+        if (scrub !== pin) { setPrevPin(pin); setPin(scrub); }
+        setScrub(null);
+    }
+    function reset() { setScrub(null); setPin(null); setPrevPin(null); setOpenGroup(null); }
+    function toggleSel(gid) {
+        setSel(sel.indexOf(gid) >= 0 ? sel.filter(function (g) { return g !== gid; }) : sel.concat([gid]).slice(-3));
+    }
+
+    var change = to[metric] - (from ? from[metric] : to[metric]);
+    var marked = focus !== pts[pts.length - 1] || scrub || pin;
+    var blur = props.privacy ? 'blur(6px)' : 'none';
+    var maxAbs = bd ? Math.max.apply(null, bd.rows.map(function (g) { return Math.abs(g.d); }).concat([1])) : 1;
 
     return E('div', { style: cardStyle(ui, { borderRadius: 20, padding: '14px 16px 10px', marginBottom: 12 }) },
         E('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8 } },
-            E(Segmented, { options: [{ id: 'total', label: 'Total' }, { id: 'liquid', label: 'Liquid' }], value: metric, onChange: function (v) { mState[1](v); setHover(null); } }),
-            E(Segmented, { options: RANGES, value: range, onChange: function (v) { rState[1](v); setHover(null); } })
+            E(Segmented, { options: [{ id: 'total', label: 'Total' }, { id: 'liquid', label: 'Liquid' }], value: metric, onChange: function (v) { mState[1](v); } }),
+            E(Segmented, { options: RANGES, value: range, onChange: function (v) { rState[1](v); reset(); } })
         ),
+        // Reading of the chart: the focus month's figure (or each drawn group's), and its change from the base.
         E('div', { style: { display: 'flex', alignItems: 'baseline', columnGap: 8, flexWrap: 'wrap', minHeight: 20, fontFamily: ui.rounded, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' } },
-            E('span', { style: { fontSize: 12, color: ui.C.zinc500 } }, shown ? monthLabel(shown.month) : 'Since ' + monthLabel(first.month)),
-            E('span', { style: { fontSize: 14, fontWeight: 600, color: ui.C.white, filter: props.privacy ? 'blur(6px)' : 'none' } }, fmtGBP(head[metric])),
-            pts.length > 1 && E('span', { style: { fontSize: 12, color: signColor(ui, change), filter: props.privacy ? 'blur(6px)' : 'none' } }, fmtSigned(change)),
-            pts.length > 1 && E('span', { style: { fontSize: 12, color: signColor(ui, change) } }, fmtPct(pctChange(head[metric], first[metric])))
+            E('span', { style: { fontSize: 12, color: ui.C.zinc500 } }, monthLabel(focus.month)),
+            sel.length
+                ? lines.map(function (l) {
+                    return E('span', { key: l.gid, style: { fontSize: 12, color: l.color, filter: blur } }, groupOf(l.gid).label.split(' ')[0] + ' ' + fmtGBP(l.val(focus)));
+                })
+                : [E('span', { key: 'v', style: { fontSize: 14, fontWeight: 600, color: ui.C.white, filter: blur } }, fmtGBP(focus[metric])),
+                   from && E('span', { key: 'd', style: { fontSize: 12, color: signColor(ui, change), filter: blur } }, fmtSigned(change)),
+                   from && E('span', { key: 'p', style: { fontSize: 12, color: signColor(ui, change) } }, fmtPct(pctChange(to[metric], from[metric])))]
         ),
         E('div', {
             ref: ref,
-            style: { position: 'relative', height: H, touchAction: 'none', marginTop: 4 },
-            onPointerDown: function (e) { pick(e.clientX); },
-            onPointerMove: function (e) { pick(e.clientX); },
-            onPointerLeave: function () { setHover(null); },
-            onPointerUp: function (e) { if (e.pointerType !== 'mouse') setHover(null); },
+            className: 'chart-noselect', style: { position: 'relative', height: H, touchAction: 'none', marginTop: 4, cursor: 'crosshair' },
+            onPointerDown: function (e) { dragging.current = true; pick(e.clientX); },
+            onPointerMove: function (e) { if (dragging.current || e.pointerType === 'mouse') pick(e.clientX); },
+            onPointerUp: lift,
+            onPointerCancel: function () { dragging.current = false; setScrub(null); },
+            onPointerLeave: function (e) { if (e.pointerType === 'mouse' && !dragging.current) setScrub(null); },
         },
             width > 0 && E('svg', { width: W, height: H, style: { display: 'block', overflow: 'visible' } },
                 E('defs', null,
@@ -875,14 +958,60 @@ function Chart(props) {
                         E('text', { x: W - 2, y: y(v), textAnchor: 'end', dominantBaseline: 'middle', fill: ui.C.zinc700, fontSize: 10, fontFamily: ui.rounded },
                             props.privacy ? '' : kLabel(v)));
                 }),
-                E('path', { d: area, fill: 'url(#bal-area)' }),
-                E('path', { d: line, fill: 'none', stroke: color, strokeWidth: 2, strokeLinejoin: 'round', strokeLinecap: 'round' }),
+                // The compared period, shaded.
+                from && E('rect', { x: x(from), y: padT, width: Math.max(1, x(to) - x(from)), height: H - padT - padB, fill: 'rgba(255,255,255,0.05)' }),
+                area && E('path', { d: area, fill: 'url(#bal-area)' }),
+                lines.map(function (l) {
+                    return E('path', { key: l.gid || 'main', d: pathFor(l), fill: 'none', stroke: l.color, strokeWidth: 2, strokeLinejoin: 'round', strokeLinecap: 'round' });
+                }),
                 E('text', { x: 0, y: H - 6, fill: ui.C.zinc700, fontSize: 10, fontFamily: ui.sys }, firstYear),
                 lastYear !== firstYear && E('text', { x: plotW, y: H - 6, textAnchor: 'end', fill: ui.C.zinc700, fontSize: 10, fontFamily: ui.sys }, lastYear),
-                shown && E('g', null,
-                    E('line', { x1: x(shown), x2: x(shown), y1: padT, y2: H - padB, stroke: 'rgba(255,255,255,0.25)', strokeWidth: 1 }),
-                    E('circle', { cx: x(shown), cy: y(shown[metric]), r: 4, fill: color, stroke: ui.C.bg, strokeWidth: 2 }))
+                from && E('line', { x1: x(from), x2: x(from), y1: padT, y2: H - padB, stroke: 'rgba(255,255,255,0.22)', strokeWidth: 1, strokeDasharray: '3 3' }),
+                marked && E('g', null,
+                    E('line', { x1: x(focus), x2: x(focus), y1: padT, y2: H - padB, stroke: 'rgba(255,255,255,0.35)', strokeWidth: 1 }),
+                    lines.map(function (l) {
+                        return E('circle', { key: l.gid || 'main', cx: x(focus), cy: y(l.val(focus)), r: 4, fill: l.color, stroke: ui.C.bg, strokeWidth: 2 });
+                    }))
             )
+        ),
+        // Building blocks for the compared period.
+        E('div', { style: { borderTop: '1px solid ' + ui.C.border, marginTop: 6, paddingTop: 10 } },
+            E('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8 } },
+                E(Segmented, { options: CMP_MODES, value: cmp, onChange: function (v) { setCmp(v); } }),
+                (pin || sel.length) ? E('button', { onClick: function () { reset(); setSel([]); }, style: { background: 'none', border: 'none', color: ui.C.blue, fontFamily: ui.sys, fontSize: 12, padding: 0, cursor: 'pointer' } }, 'Clear') : null
+            ),
+            waiting && E('div', { style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.amber, marginBottom: 6 } }, 'Tap a second month on the chart to compare the two.'),
+            from ? E('div', null,
+                E('div', { style: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8, marginBottom: 4, fontFamily: ui.rounded, fontVariantNumeric: 'tabular-nums' } },
+                    E('span', { style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.zinc500 } }, monthLabel(from.month) + ' → ' + monthLabel(to.month)),
+                    E('span', { style: { fontSize: 13, color: signColor(ui, bd.total), filter: blur } }, fmtSigned(bd.total))),
+                bd.rows.map(function (g, i) {
+                    var on = sel.indexOf(g.id) >= 0, isOpen = openGroup === g.id;
+                    var col = on ? LINE_COLS[sel.indexOf(g.id) % LINE_COLS.length] : null;
+                    return E('div', { key: g.id, style: { borderTop: i ? '1px solid ' + ui.C.border : 'none' } },
+                        E('div', { style: { display: 'flex', alignItems: 'center', gap: 8, padding: '7px 0' } },
+                            // Dot: draws (or removes) this group's own line on the chart.
+                            E('button', { onClick: function () { toggleSel(g.id); }, 'aria-label': 'Draw ' + groupOf(g.id).label,
+                                style: { width: 22, height: 22, flexShrink: 0, borderRadius: 11, border: '1px solid ' + (col || ui.C.border), background: col || 'transparent', cursor: 'pointer', padding: 0 } }),
+                            E('button', { onClick: function () { setOpenGroup(isOpen ? null : g.id); },
+                                style: { flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 8, background: 'none', border: 'none', padding: 0, cursor: 'pointer', textAlign: 'left' } },
+                                E('span', { style: { flex: 1, minWidth: 0, fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, groupOf(g.id).label),
+                                // Bar sized against the largest block.
+                                E('span', { style: { width: 54, height: 6, borderRadius: 3, background: 'rgba(255,255,255,0.05)', position: 'relative', flexShrink: 0 } },
+                                    E('span', { style: { position: 'absolute', left: 0, top: 0, bottom: 0, borderRadius: 3, width: Math.round(Math.abs(g.d) / maxAbs * 100) + '%', background: signColor(ui, g.d), opacity: 0.7 } })),
+                                E('span', { style: { fontFamily: ui.rounded, fontSize: 13, color: signColor(ui, g.d), fontVariantNumeric: 'tabular-nums', minWidth: 74, textAlign: 'right', filter: blur } }, fmtSigned(g.d)),
+                                E(ChevronIcon, { style: { width: 12, height: 12, color: ui.C.zinc700, flexShrink: 0, transform: isOpen ? 'rotate(90deg)' : 'none' }, strokeWidth: 2 }))),
+                        isOpen && E('div', { style: { padding: '0 0 6px 30px' } },
+                            g.accounts.map(function (r) {
+                                return E('div', { key: r.a.id, style: { display: 'flex', alignItems: 'baseline', gap: 8, padding: '3px 0', fontFamily: ui.rounded, fontVariantNumeric: 'tabular-nums' } },
+                                    E('span', { style: { flex: 1, minWidth: 0, fontFamily: ui.sys, fontSize: 12, color: ui.C.zinc500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, r.a.name),
+                                    E('span', { style: { fontSize: 12, color: signColor(ui, r.d), filter: blur } }, fmtSigned(r.d)),
+                                    E('span', { style: { fontSize: 12, color: ui.C.zinc400, minWidth: 70, textAlign: 'right', filter: blur } }, fmtGBP(r.v)));
+                            })));
+                })
+            ) : E('div', { style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.zinc600 } }, 'Nothing earlier to compare with.'),
+            E('div', { style: { fontFamily: ui.sys, fontSize: 11, color: ui.C.zinc700, marginTop: 8, lineHeight: 1.4 } },
+                'Press and drag on the chart to read any month; lift to keep it. Tap a dot to draw that group’s own line.')
         )
     );
 }
@@ -980,7 +1109,7 @@ function MainView(props) {
     return E('div', { style: { padding: '12px 16px 0' } },
         latest ? E(Hero, { series: series, privacy: props.privacy })
                : E('div', { style: cardStyle(ui, { marginBottom: 12, fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc600 }) }, 'No balances entered yet. Tap Update balances to add this month’s.'),
-        series.length > 1 && E(Chart, { series: series, privacy: props.privacy }),
+        series.length > 1 && E(Chart, { series: series, accounts: state.accounts, privacy: props.privacy }),
         latest && E('div', { style: { display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 14 } },
             GROUPS.filter(function (g) {
                 return state.accounts.some(function (a) { return a.group === g.id && (!a.closed || latest.values[a.id] != null); });
