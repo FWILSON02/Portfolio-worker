@@ -995,7 +995,7 @@ function Chart(props) {
     var width = useWidth(ref);
     var accounts = props.accounts;
     var mState = React.useState('total'), metric = mState[0];
-    var rState = React.useState('ALL'), range = rState[0];
+    var rState = React.useState('3Y'), range = rState[0];
     var hState = React.useState(null), scrub = hState[0], setScrub = hState[1];          // month under the finger
     var pState = React.useState(null), pin = pState[0], setPin = pState[1];               // last month lifted on
     var ppState = React.useState(null), prevPin = ppState[0], setPrevPin = ppState[1];    // the one before (Two months)
