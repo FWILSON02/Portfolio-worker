@@ -318,6 +318,17 @@ function monthKey(date) { return date.slice(0, 7); }
 function monthIndex(mk) { return Number(mk.slice(0, 4)) * 12 + Number(mk.slice(5, 7)) - 1; }
 var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 function monthLabel(mk) { return MONTHS[Number(mk.slice(5, 7)) - 1] + ' ' + mk.slice(0, 4); }
+// Round months between t0 and t1 (month indexes) for the chart's x-axis, at most about five: every 1, 2, 3 or 6
+// months (January shows its year), or every 1, 2 or 5 years.
+function monthTicks(t0, t1) {
+    var step = [1, 2, 3, 6, 12, 24, 60].filter(function (k) { return (t1 - t0) / k <= 4; })[0] || 120;
+    var out = [];
+    for (var i = Math.ceil(t0 / step) * step; i <= t1; i += step) {
+        var y = Math.floor(i / 12), m = i % 12;
+        out.push({ i: i, label: step >= 12 || m === 0 ? String(y) : MONTHS[m] });
+    }
+    return out;
+}
 function dayLabel(date) { return Number(date.slice(8, 10)) + ' ' + MONTHS[Number(date.slice(5, 7)) - 1] + ' ' + date.slice(0, 4); }
 
 // Totals for one snapshot. Every figure is built from the accounts: summary rows are never copied.
@@ -1106,7 +1117,8 @@ function Chart(props) {
     // Grid: every step from the bottom to the top, £0 among them when the data crosses it.
     var ticks = [];
     for (var tv = lo; tv <= hi + step / 2; tv += step) ticks.push(Math.round(tv / step) * step);
-    var firstYear = pts[0].month.slice(0, 4), lastYear = pts[pts.length - 1].month.slice(0, 4);
+    // x-axis: up to about five labels on round months (Fergus: more than start and end, but not crowded).
+    var xTicks = monthTicks(t0, t1);
 
     function pick(clientX) {
         if (!ref.current || pts.length === 0) return;
@@ -1179,8 +1191,11 @@ function Chart(props) {
                 lines.map(function (l) {
                     return E('path', { key: l.gid || 'main', d: pathFor(l), fill: 'none', stroke: l.color, strokeWidth: 2, strokeLinejoin: 'round', strokeLinecap: 'round' });
                 }),
-                E('text', { x: 0, y: H - 6, fill: ui.C.zinc700, fontSize: 10, fontFamily: ui.sys }, firstYear),
-                lastYear !== firstYear && E('text', { x: plotW, y: H - 6, textAnchor: 'end', fill: ui.C.zinc700, fontSize: 10, fontFamily: ui.sys }, lastYear),
+                xTicks.map(function (t) {
+                    var tx = t1 === t0 ? plotW / 2 : ((t.i - t0) / (t1 - t0)) * plotW;
+                    var anchor = tx < 14 ? 'start' : tx > plotW - 14 ? 'end' : 'middle';
+                    return E('text', { key: t.i, x: tx, y: H - 6, textAnchor: anchor, fill: ui.C.zinc700, fontSize: 10, fontFamily: ui.sys }, t.label);
+                }),
                 analysing && from && E('line', { x1: x(from), x2: x(from), y1: padT, y2: H - padB, stroke: 'rgba(255,255,255,0.22)', strokeWidth: 1, strokeDasharray: '3 3' }),
                 marked && E('g', null,
                     E('line', { x1: x(focus), x2: x(focus), y1: padT, y2: H - padB, stroke: 'rgba(255,255,255,0.35)', strokeWidth: 1 }),
@@ -1890,6 +1905,6 @@ window.BalancesStore = BalancesStore;
 window.BalancesIcon = WalletIcon;
 // For tests only: the pure parts, no UI.
 window.__balancesInternals = { applyLinked: applyLinked, parseJsonBackup: parseJsonBackup, buildJson: buildJson, parseImport: parseImport, importToState: importToState, runChecks: runChecks, buildSeries: buildSeries, parseAmount: parseAmount, buildCsv: buildCsv,
-    resolveTimeline: resolveTimeline, niceStep: niceStep, axisLabel: axisLabel, totalsFor: totalsFor, indexAccounts: indexAccounts, withPartial: withPartial, liveLinked: liveLinked,
+    resolveTimeline: resolveTimeline, monthTicks: monthTicks, niceStep: niceStep, axisLabel: axisLabel, totalsFor: totalsFor, indexAccounts: indexAccounts, withPartial: withPartial, liveLinked: liveLinked,
     grow: grow, payDown: payDown, loanOwed: loanOwed, assetValue: assetValue, validateState: validateState };
 })();
