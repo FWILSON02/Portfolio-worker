@@ -33,7 +33,8 @@ function groupOf(id) { return GROUP_BY_ID[id] || GROUP_BY_ID.other; }
 
 // ── Store (IndexedDB, own database) ──────────────────────────────────────────
 // state = { v: 1, accounts: [Account], snapshots: [Snapshot], lastExportAt, updatedAt }
-//   Account  = { id, name, group, debt, share, rate, closed, appLink }
+//   Account  = { id, name, group, debt, share, rate, closed, appLinks }
+//              appLinks: keys of the Investments-tab values this account follows (their sum); [] = typed in by hand.
 //              debt:  balance stored negative (cards, mortgage); the form takes the amount owed as a positive number.
 //              share: fraction of the balance that is yours (e.g. 0.5 of a jointly owned house and its mortgage).
 //   Snapshot = { date: 'YYYY-MM-DD', values: { [accountId]: number } }. An account missing from values = £0 then.
@@ -76,6 +77,17 @@ function idbWrite(value) {
 
 var ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 // Returns a cleaned copy of a stored or restored state, or null when it is not a balances state at all.
+// Old spreadsheet names shown by the employer instead (Fergus asked for these). Applied on load and on import, so a
+// re-import of the spreadsheet keeps the new names and the links made under them.
+var RENAMES = { 'Equate Plus': 'HSBC', 'Citi Stock': 'Citi' };
+function renamed(name) { return Object.prototype.hasOwnProperty.call(RENAMES, name) ? RENAMES[name] : name; }
+
+// appLinks from a stored account: the array, or the single appLink saved before several links were allowed.
+function linksOf(a) {
+    if (Array.isArray(a.appLinks)) return a.appLinks.filter(function (k) { return typeof k === 'string' && k; });
+    return typeof a.appLink === 'string' && a.appLink ? [a.appLink] : [];
+}
+
 function validateState(s) {
     if (!s || typeof s !== 'object' || !Array.isArray(s.accounts) || !Array.isArray(s.snapshots)) return null;
     var ids = {};
@@ -84,12 +96,12 @@ function validateState(s) {
     }).map(function (a) {
         ids[a.id] = true;
         return {
-            id: a.id, name: a.name, group: GROUP_BY_ID[a.group] ? a.group : 'other',
+            id: a.id, name: renamed(a.name), group: GROUP_BY_ID[a.group] ? a.group : 'other',
             debt: !!a.debt,
             share: (typeof a.share === 'number' && a.share > 0 && a.share <= 1) ? a.share : 1,
             rate: (typeof a.rate === 'number' && isFinite(a.rate)) ? a.rate : null,
             closed: !!a.closed,
-            appLink: typeof a.appLink === 'string' ? a.appLink : null,
+            appLinks: linksOf(a),
         };
     });
     var snapshots = s.snapshots.filter(function (sn) {
@@ -220,14 +232,35 @@ function buildSeries(state) {
 
 // Live values for open accounts linked to the app: { [accountId]: value }. An app value that is still loading
 // (ready === false, e.g. a holding without a price yet) is skipped, so a half-priced total is never written.
+// An account linked to several values takes their sum, and only once every one of them is there and ready.
 function liveLinked(accounts, appValues) {
-    var byKey = {};
-    (appValues || []).forEach(function (o) { if (o && o.ready !== false && Number.isFinite(o.value)) byKey[o.key] = o; });
+    var byKey = appIndex(appValues);
     var live = {};
     accounts.forEach(function (a) {
-        if (!a.closed && a.appLink && byKey[a.appLink]) live[a.id] = Math.round(byKey[a.appLink].value * 100) / 100;
+        if (a.closed || !a.appLinks.length) return;
+        var sum = 0;
+        for (var i = 0; i < a.appLinks.length; i++) {
+            var o = byKey[a.appLinks[i]];
+            if (!o || o.ready === false || !Number.isFinite(o.value)) return;
+            sum += o.value;
+        }
+        live[a.id] = Math.round(sum * 100) / 100;
     });
     return live;
+}
+
+// App values by key. A value's legacyKey (the key it had before) also finds it, so links made earlier keep working.
+function appIndex(appValues) {
+    var byKey = {};
+    (appValues || []).forEach(function (o) { if (o && o.key) byKey[o.key] = o; });
+    (appValues || []).forEach(function (o) { if (o && o.legacyKey && !byKey[o.legacyKey]) byKey[o.legacyKey] = o; });
+    return byKey;
+}
+// The linked values of an account that the app has right now, and their sum (null when none are there).
+function linkedNow(a, byKey) {
+    var found = a.appLinks.map(function (k) { return byKey[k]; }).filter(Boolean);
+    if (!found.length) return null;
+    return { items: found, value: found.reduce(function (t, o) { return t + (Number.isFinite(o.value) ? o.value : 0); }, 0) };
 }
 
 // Puts the live values of linked accounts into this month's entry. Returns the new state, or null when nothing changed.
@@ -489,14 +522,14 @@ function importToState(parsed, prev) {
     var included = parsed.rows.filter(function (r) { return r.include; });
     var accounts = included.map(function (r, i) {
         return {
-            id: 'a' + i + '-' + slug(r.name), name: r.name, group: r.group, debt: !!r.debt,
-            share: r.share, rate: r.rate, closed: r.closed, appLink: null,
+            id: 'a' + i + '-' + slug(r.name), name: renamed(r.name), group: r.group, debt: !!r.debt,
+            share: r.share, rate: r.rate, closed: r.closed, appLinks: [],
         };
     });
     // Keep app links from before a re-import, matched by name.
     var prevLinks = {};
-    (prev && prev.accounts || []).forEach(function (a) { if (a.appLink) prevLinks[a.name] = a.appLink; });
-    accounts.forEach(function (a) { if (prevLinks[a.name]) a.appLink = prevLinks[a.name]; });
+    (prev && prev.accounts || []).forEach(function (a) { if (a.appLinks && a.appLinks.length) prevLinks[a.name] = a.appLinks.slice(); });
+    accounts.forEach(function (a) { if (prevLinks[a.name]) a.appLinks = prevLinks[a.name]; });
     var snapshots = parsed.dates.map(function (d, j) {
         var values = {};
         included.forEach(function (r, i) {
@@ -832,7 +865,7 @@ function GroupCard(props) {
                 return E('div', { key: a.id, style: { display: 'flex', alignItems: 'baseline', gap: 8, padding: '6px 0' } },
                     E('div', { style: { flex: 1, minWidth: 0, fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
                         a.name, E('span', { style: { color: ui.C.zinc700, fontSize: 11 } }, shareNote),
-                        a.appLink && !a.closed ? E('span', { style: { color: ui.C.blue, fontSize: 10, marginLeft: 6 } }, 'LIVE') : null),
+                        a.appLinks.length && !a.closed ? E('span', { style: { color: ui.C.blue, fontSize: 10, marginLeft: 6 } }, 'LIVE') : null),
                     pv != null && E('span', { style: { fontFamily: ui.rounded, fontSize: 11, color: signColor(ui, v - pv), filter: blur, fontVariantNumeric: 'tabular-nums' } }, fmtSigned(v - pv)),
                     E('span', { style: { fontFamily: ui.rounded, fontSize: 13, color: v < 0 ? ui.C.rose : ui.C.white, filter: blur, fontVariantNumeric: 'tabular-nums', minWidth: 76, textAlign: 'right' } }, fmtGBP(v))
                 );
@@ -927,8 +960,7 @@ function UpdateView(props) {
     var ui = useUI();
     var state = props.state;
     var appValues = props.appValues || [];
-    var appByKey = {};
-    appValues.forEach(function (o) { appByKey[o.key] = o; });
+    var appByKey = appIndex(appValues);
     var lastSnap = state.snapshots.length ? state.snapshots[state.snapshots.length - 1] : null;
 
     // Working copies: accounts (for manage mode) and the typed amounts (positive = amount owed for debts).
@@ -937,8 +969,7 @@ function UpdateView(props) {
     var amtState = React.useState(function () {
         var m = {};
         state.accounts.forEach(function (a) {
-            var linked = a.appLink && appByKey[a.appLink];
-            m[a.id] = linked ? amountText(linked.value) : amountText(lastSnap ? lastSnap.values[a.id] : null);
+            m[a.id] = amountText(lastSnap ? lastSnap.values[a.id] : null);
         });
         return m;
     });
@@ -955,9 +986,10 @@ function UpdateView(props) {
     function patchAccount(id, patch) {
         setAccounts(accounts.map(function (a) { return a.id === id ? Object.assign({}, a, patch) : a; }));
     }
-    function setLink(a, key) {
-        patchAccount(a.id, { appLink: key || null });
-        if (key && appByKey[key]) setAmounts(Object.assign({}, amounts, (function () { var o = {}; o[a.id] = amountText(appByKey[key].value); return o; })()));
+    var chooser = React.useState(null);   // id of the account whose link list is open
+    function toggleLink(a, key) {
+        var has = a.appLinks.indexOf(key) >= 0;
+        patchAccount(a.id, { appLinks: has ? a.appLinks.filter(function (k) { return k !== key; }) : a.appLinks.concat([key]) });
     }
     function addAccount() {
         var name = newName[0].trim();
@@ -965,7 +997,7 @@ function UpdateView(props) {
         if (accounts.some(function (a) { return a.name.toLowerCase() === name.toLowerCase(); })) { err[1]('There is already an account called ' + name + '.'); return; }
         var g = newGroup[0];
         var id = 'm' + Date.now().toString(36) + '-' + slug(name);
-        setAccounts(accounts.concat([{ id: id, name: name, group: g, debt: !!groupOf(g).debt, share: 1, rate: null, closed: false, appLink: null }]));
+        setAccounts(accounts.concat([{ id: id, name: name, group: g, debt: !!groupOf(g).debt, share: 1, rate: null, closed: false, appLinks: [] }]));
         newName[1]('');
         err[1](null);
     }
@@ -973,8 +1005,8 @@ function UpdateView(props) {
         if (!ISO_DATE.test(date || '')) { err[1]('Pick a date.'); return; }
         var values = {}, bad = null;
         open.forEach(function (a) {
-            var linked = a.appLink && appByKey[a.appLink];
-            if (linked && Number.isFinite(linked.value)) { values[a.id] = Math.round(linked.value * 100) / 100; return; }
+            var linked = linkedNow(a, appByKey);
+            if (linked) { values[a.id] = Math.round(linked.value * 100) / 100; return; }
             var t = amounts[a.id];
             if (t == null || String(t).trim() === '') return;
             var v = parseAmount(t);
@@ -1005,7 +1037,8 @@ function UpdateView(props) {
                 E('div', { style: Object.assign(capsLabel(ui), { margin: '0 4px 6px' }) }, g.label + (g.debt ? ' · amount owed' : '')),
                 E('div', { style: cardStyle(ui, { padding: '4px 14px' }) },
                     list.map(function (a, i) {
-                        var linked = a.appLink && appByKey[a.appLink];
+                        var linked = linkedNow(a, appByKey);
+                        var choosing = chooser[0] === a.id;
                         return E('div', { key: a.id, style: { padding: '8px 0', borderTop: i ? '1px solid ' + ui.C.border : 'none' } },
                             E('div', { style: { display: 'flex', alignItems: 'center', gap: 10 } },
                                 manage[0]
@@ -1025,15 +1058,25 @@ function UpdateView(props) {
                                             style: inputStyle(ui, { width: 116, textAlign: 'right', filter: props.privacy ? 'blur(6px)' : 'none' })
                                         }))
                             ),
-                            !manage[0] && linkable(a) && E('div', { style: { display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 } },
-                                E('span', { style: { fontFamily: ui.sys, fontSize: 11, color: linked ? ui.C.blue : ui.C.zinc700 } }, linked ? 'Live from Investments:' : 'Link to Investments:'),
-                                E('select', {
-                                    value: a.appLink || '', onChange: function (e) { setLink(a, e.target.value); },
-                                    style: { flex: 1, minWidth: 0, background: 'transparent', border: 'none', color: linked ? ui.C.blue : ui.C.zinc600, fontFamily: ui.sys, fontSize: 12 }
-                                },
-                                    E('option', { value: '' }, 'Not linked'),
-                                    appValues.map(function (o) { return E('option', { key: o.key, value: o.key }, o.label + (props.privacy ? '' : ' (' + fmtGBP(o.value) + ')')); })
-                                ))
+                            !manage[0] && linkable(a) && E('button', {
+                                onClick: function () { chooser[1](choosing ? null : a.id); },
+                                style: { display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, width: '100%', background: 'none', border: 'none', padding: 0, cursor: 'pointer', textAlign: 'left' }
+                            },
+                                E('span', { style: { fontFamily: ui.sys, fontSize: 11, color: linked ? ui.C.blue : ui.C.zinc700, flexShrink: 0 } }, linked ? 'Live from Investments:' : 'Link to Investments:'),
+                                E('span', { style: { flex: 1, minWidth: 0, fontFamily: ui.sys, fontSize: 12, color: linked ? ui.C.blue : ui.C.zinc600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+                                    a.appLinks.length ? a.appLinks.map(function (k) { return appByKey[k] ? appByKey[k].label : 'not in Investments now'; }).join(' + ') : 'Not linked'),
+                                E(ChevronIcon, { style: { width: 12, height: 12, color: ui.C.zinc700, flexShrink: 0, transform: choosing ? 'rotate(90deg)' : 'none' }, strokeWidth: 2 })),
+                            // Tick every Investments value this account should add up (e.g. a share plan's account and its unvested shares).
+                            !manage[0] && linkable(a) && choosing && E('div', { style: { marginTop: 4, paddingLeft: 2 } },
+                                appValues.map(function (o) {
+                                    // An old link counts for the one value its key resolves to, not every value sharing that old key.
+                                    var viaLegacy = !!o.legacyKey && appByKey[o.legacyKey] === o && a.appLinks.indexOf(o.legacyKey) >= 0;
+                                    var on = a.appLinks.indexOf(o.key) >= 0 || viaLegacy;
+                                    return E('label', { key: o.key, style: { display: 'flex', alignItems: 'center', gap: 8, padding: '5px 0', fontFamily: ui.sys, fontSize: 13, color: on ? ui.C.white : ui.C.zinc400 } },
+                                        E('input', { type: 'checkbox', checked: on, onChange: function () { toggleLink(a, viaLegacy ? o.legacyKey : o.key); }, style: { width: 18, height: 18, accentColor: ui.C.blue, margin: 0 } }),
+                                        E('span', { style: { flex: 1, minWidth: 0 } }, o.label),
+                                        !props.privacy && E('span', { style: { fontFamily: ui.rounded, fontSize: 12, color: ui.C.zinc600, fontVariantNumeric: 'tabular-nums' } }, fmtGBP(o.value)));
+                                }))
                         );
                     })
                 )

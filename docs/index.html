@@ -202,7 +202,7 @@ window.XCircle=_li([{t:'c',cx:12,cy:12,r:10},'M15 9l-6 6','M9 9l6 6']);
 window.MinusCircle=_li([{t:'c',cx:12,cy:12,r:10},'M8 12h8']);
 window.HelpCircle=_li([{t:'c',cx:12,cy:12,r:10},'M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3',{t:'l',x1:12,y1:17,x2:12.01,y2:17}]);</script>
 <!-- Balances screen lives in its own file. Bump ?v= whenever balances.js changes so the Home Screen app never mixes versions. -->
-<script src="balances.js?v=3"></script>
+<script src="balances.js?v=4"></script>
 <script>
 try{"use strict";
 // ─── Lightweight SVG chart components (replaces Recharts) ──────────────────
@@ -17229,7 +17229,9 @@ function PortfolioApp() {
                                                                                       ready: (a.holdings || []).every(h => h.marketValue != null) }); });
             (restrictedDisplayRows || []).forEach(r => {
                 const v = r.marketValue != null ? r.marketValue : r.value;
-                if (r.name && Number.isFinite(v)) out.push({ key: 'restricted:' + r.name, label: r.name, value: v });
+                // Keyed by employer and scheme: two employers can each have an "Unvested" row. legacyKey keeps older links.
+                if (r.name && Number.isFinite(v)) out.push({ key: 'restricted:' + (r.ticker || '') + ':' + r.name, legacyKey: 'restricted:' + r.name,
+                                                             label: (r.ticker ? r.ticker + ' ' : '') + r.name, value: v });
             });
             return out;
         }, [accountGroups, restrictedDisplayRows]);
