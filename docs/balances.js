@@ -707,37 +707,47 @@ function inputStyle(ui, extra) {
 }
 
 // One "vs <month>  +£x  +y%" line.
-function ChangeLine(props) {
+// Change against 1, 6 and 12 months earlier, £ and %, one row each. A period with no entry far enough back is left out;
+// when the nearest earlier entry is older than asked (a gap in the history), its month says which one was used.
+var PERIODS = [{ months: 1, label: '1 month' }, { months: 6, label: '6 months' }, { months: 12, label: '12 months' }];
+function ChangeTable(props) {
     var ui = useUI();
-    if (!props.base) return null;
-    var d = props.now - props.base.value;
-    return E('div', { style: { display: 'flex', alignItems: 'baseline', gap: 8, fontFamily: ui.rounded, fontSize: 13, fontVariantNumeric: 'tabular-nums' } },
-        E('span', { style: { color: ui.C.zinc500, fontSize: 11, minWidth: 74 } }, props.label),
-        E('span', { style: { color: signColor(ui, d), filter: props.privacy ? 'blur(6px)' : 'none' } }, fmtSigned(d)),
-        E('span', { style: { color: signColor(ui, d) } }, fmtPct(pctChange(props.now, props.base.value)))
+    var s = props.series, latest = s[s.length - 1];
+    var rows = PERIODS.map(function (p) {
+        var base = pointMonthsBack(s, latest, p.months);
+        return base ? { p: p, base: base, d: latest[props.field] - base[props.field] } : null;
+    }).filter(Boolean);
+    if (!rows.length) return null;
+    return E('div', { style: { display: 'grid', gridTemplateColumns: '1fr auto auto', columnGap: 14, rowGap: 4, alignItems: 'baseline', marginTop: 8,
+                               fontFamily: ui.rounded, fontVariantNumeric: 'tabular-nums' } },
+        rows.map(function (r) {
+            var c = signColor(ui, r.d);
+            return [
+                E('div', { key: r.p.months + 'l', style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.zinc500, whiteSpace: 'nowrap' } },
+                    'vs ' + r.p.label, E('span', { style: { color: ui.C.zinc700, fontSize: 11 } }, ' · ' + monthLabel(r.base.month))),
+                E('div', { key: r.p.months + 'd', style: { fontSize: 13, color: c, textAlign: 'right', filter: props.privacy ? 'blur(6px)' : 'none' } }, fmtSigned(r.d)),
+                E('div', { key: r.p.months + 'p', style: { fontSize: 13, color: c, textAlign: 'right', minWidth: 54 } }, fmtPct(pctChange(latest[props.field], r.base[props.field])))
+            ];
+        })
     );
 }
 
 function Hero(props) {
     var ui = useUI();
-    var s = props.series, latest = s[s.length - 1], prev = s.length > 1 ? s[s.length - 2] : null;
-    var yearAgo = pointMonthsBack(s, latest, 12);
+    var s = props.series, latest = s[s.length - 1];
     return E('div', { style: cardStyle(ui, { borderRadius: 20, padding: '16px 18px', marginBottom: 12 }) },
         E('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 } },
             E('span', { style: capsLabel(ui) }, 'Total wealth'),
             E('span', { style: { fontFamily: ui.sys, fontSize: 11, color: ui.C.zinc600 } }, 'As at ' + dayLabel(latest.date))
         ),
         E('div', { style: moneyStyle(ui, 34, props.privacy) }, props.privacy ? '£ •••,•••' : fmtGBP(latest.total)),
-        E('div', { style: { display: 'flex', flexDirection: 'column', gap: 2, marginTop: 8 } },
-            prev && E(ChangeLine, { label: 'vs ' + monthLabel(prev.month), now: latest.total, base: { value: prev.total }, privacy: props.privacy }),
-            yearAgo && E(ChangeLine, { label: 'vs ' + monthLabel(yearAgo.month), now: latest.total, base: { value: yearAgo.total }, privacy: props.privacy })
-        ),
-        E('div', { style: { borderTop: '1px solid ' + ui.C.border, marginTop: 12, paddingTop: 10, display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' } },
-            E('div', { style: { display: 'flex', alignItems: 'baseline', gap: 10 } },
-                E('span', { style: capsLabel(ui) }, 'Liquid'),
-                E('span', { style: moneyStyle(ui, 18, props.privacy) }, props.privacy ? '£ ••,•••' : fmtGBP(latest.liquid))
+        E(ChangeTable, { series: s, field: 'total', privacy: props.privacy }),
+        E('div', { style: { borderTop: '1px solid ' + ui.C.border, marginTop: 14, paddingTop: 12 } },
+            E('div', { style: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 } },
+                E('span', { style: capsLabel(ui) }, 'Liquid wealth'),
+                E('span', { style: moneyStyle(ui, 22, props.privacy) }, props.privacy ? '£ ••,•••' : fmtGBP(latest.liquid))
             ),
-            prev && E(ChangeLine, { label: 'vs ' + MONTHS[Number(prev.month.slice(5, 7)) - 1], now: latest.liquid, base: { value: prev.liquid }, privacy: props.privacy })
+            E(ChangeTable, { series: s, field: 'liquid', privacy: props.privacy })
         )
     );
 }
