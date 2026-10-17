@@ -37,8 +37,10 @@ function isLiquid(a) { return typeof a.liquid === 'boolean' ? a.liquid : !!group
 // state = { v: 1, accounts: [Account], snapshots: [Snapshot], lastExportAt, updatedAt }
 //   Account  = { id, name, group, debt, share, rate, closed, appLinks }
 //              growth:   % a year the value grows (+) or falls (−) after its last valuation (house, car); null = none.
-//              asset:    { bought ('YYYY-MM-DD'), price } for a house or car: when it was bought and what was paid. With
-//                        a growth rate, months before the first valuation you enter are filled from the price paid.
+//              asset:    { bought, price, rate, valuations: [{ date, value }] } for a house or car: the purchase, then
+//                        any later valuations. Between two points the value runs in a straight line; after the latest
+//                        it rises (+) or falls (−) by `rate` % a year. Once bought and price are set, every month from
+//                        the purchase is worked out from these points.
 //              loan:     { rate (%/yr), start, end ('YYYY-MM-DD'), payment (£/month) } for a repayment mortgage; null = none.
 //                        After each balance you enter, the amount owed is worked down month by month from these terms.
 //              liquid:   true/false to count (or not) toward Liquid; null = the group's default.
@@ -112,12 +114,41 @@ function validLoan(l) {
     return out.rate == null && out.payment == null && !out.start && !out.end ? null : out;
 }
 
-function validAsset(x) {
+// legacyRate: the account's old single growth rate, used as the purchase rate for data saved before rates per point.
+function validAsset(x, legacyRate) {
     if (!x || typeof x !== 'object') return null;
-    var out = { bought: ISO_DATE.test(x.bought || '') ? x.bought : null,
-                price: typeof x.price === 'number' && isFinite(x.price) ? x.price : null };
-    return out.bought || out.price != null ? out : null;
+    var num = function (v) { return typeof v === 'number' && isFinite(v) ? v : null; };
+    var vals = (Array.isArray(x.valuations) ? x.valuations : []).filter(function (v) {
+        return v && ISO_DATE.test(v.date || '') && num(v.value) != null;
+    }).map(function (v) { return { date: v.date, value: v.value }; })
+      .sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+    var out = { bought: ISO_DATE.test(x.bought || '') ? x.bought : null, price: num(x.price),
+                rate: x.rate === undefined ? num(legacyRate) : num(x.rate), valuations: vals };
+    return out.bought || out.price != null || vals.length ? out : null;
 }
+// Bought and price paid set: the value is worked out from the purchase and valuations.
+function assetReady(x) { return !!(x && x.bought && x.price != null); }
+// The purchase, then each valuation, in date order: { date, value }.
+function assetPoints(x) {
+    return [{ date: x.bought, value: x.price }].concat(x.valuations.filter(function (v) { return v.date > x.bought; }));
+}
+// Value on date `d` (Fergus): a straight line between the two points either side of it; after the latest point, that
+// value moved on at the yearly rate. null before the purchase.
+function assetValue(x, d) {
+    if (!assetReady(x) || d < x.bought) return null;
+    var pts = assetPoints(x), last = pts[pts.length - 1];
+    if (d >= last.date) return grow(last.value, x.rate || 0, last.date, d);
+    for (var i = 0; i < pts.length - 1; i++) {
+        var p0 = pts[i], p1 = pts[i + 1];
+        if (d >= p0.date && d < p1.date) {
+            var t = (Date.parse(d) - Date.parse(p0.date)) / (Date.parse(p1.date) - Date.parse(p0.date));
+            return Math.round((p0.value + (p1.value - p0.value) * t) * 100) / 100;
+        }
+    }
+    return last.value;
+}
+// The yearly rate after the latest point, kept on the account as `growth`.
+function assetRate(x) { return x.rate; }
 
 function validateState(s) {
     if (!s || typeof s !== 'object' || !Array.isArray(s.accounts) || !Array.isArray(s.snapshots)) return null;
@@ -135,10 +166,10 @@ function validateState(s) {
             liquid: typeof a.liquid === 'boolean' ? a.liquid : null,
             growth: (typeof a.growth === 'number' && isFinite(a.growth)) ? a.growth : null,
             loan: validLoan(a.loan),
-            asset: validAsset(a.asset),
+            asset: validAsset(a.asset, a.growth),
             appLinks: linksOf(a),
         };
-    }).map(linkedToInvestments);
+    }).map(function (a) { return assetReady(a.asset) ? Object.assign({}, a, { growth: assetRate(a.asset) }) : a; }).map(linkedToInvestments);
     var snapshots = s.snapshots.filter(function (sn) {
         return sn && typeof sn.date === 'string' && ISO_DATE.test(sn.date) && sn.values && typeof sn.values === 'object';
     }).map(function (sn) {
@@ -295,11 +326,11 @@ function payDown(owed, loan, from, to) {
 function withGrowth(r, accounts) {
     var out = null;
     accounts.forEach(function (a) {
-        // Bought, with a price and a rate, but no valuation entered yet at this point: the price paid, moved on at the rate.
-        var asset = a.asset && a.asset.bought && a.asset.price != null && a.growth != null ? a.asset : null;
-        if (asset && r.values[a.id] == null && r.date >= asset.bought) {
+        // House or car with a purchase (and maybe later valuations): worked out from those points from the purchase on.
+        if (assetReady(a.asset)) {
+            if (r.date < a.asset.bought) return;
             out = out || Object.assign({}, r.values);
-            out[a.id] = grow(asset.price, a.growth, asset.bought, r.date);
+            out[a.id] = assetValue(a.asset, r.date);
             return;
         }
         var loan = loanReady(a.loan) ? a.loan : null;
@@ -1136,7 +1167,7 @@ function GroupCard(props) {
                 var v = latest.values[a.id] || 0, pv = prev ? (prev.values[a.id] || 0) : null;
                 var shareNote = (a.share < 1 ? ' · your ' + Math.round(a.share * 100) + '%' : '') + (isLiquid(a) !== !!g.liquid ? (isLiquid(a) ? ' · liquid' : ' · not liquid') : '');
                 // Tag like LIVE: the value follows the Investments tab (LIVE) or is worked out from a rate or loan terms (FORMULA).
-                var tag = a.closed ? null : a.appLinks.length ? 'LIVE' : (a.growth != null || loanReady(a.loan)) ? 'FORMULA' : null;
+                var tag = a.closed ? null : a.appLinks.length ? 'LIVE' : (a.growth != null || loanReady(a.loan) || assetReady(a.asset)) ? 'FORMULA' : null;
                 return E('div', { key: a.id, style: { display: 'flex', alignItems: 'baseline', gap: 8, padding: '6px 0' } },
                     E('div', { style: { flex: 1, minWidth: 0, fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
                         a.name, E('span', { style: { color: ui.C.zinc700, fontSize: 11 } }, shareNote),
@@ -1231,44 +1262,82 @@ function MainView(props) {
 // ── Update form ──────────────────────────────────────────────────────────────
 function amountText(v) { return v == null ? '' : String(Math.round(Math.abs(v) * 100) / 100); }
 
-// House or car: bought on / price paid, the yearly change (a Rises / Falls switch, since the iPhone decimal keypad has no
-// minus sign), and the date the value in the balance box is from. The first three are saved with the account.
+// House or car: the purchase (date, price paid, yearly rise or fall) and any later valuations, each with the rate it
+// rises or falls at until the next. Rises / Falls is a switch because the iPhone decimal keypad has no minus sign.
 function AssetFields(props) {
     var ui = useUI();
-    var a = props.a, x = a.asset || {};
+    var a = props.a, x = a.asset || { valuations: [] };
+    var rateDraft = function (r, dflt) { return { falls: r != null ? r < 0 : dflt, pct: r != null ? String(Math.abs(r)) : '' }; };
+    var isCar = /car|vehicle/i.test(a.name);
     var st = React.useState(function () {
-        return { bought: x.bought || '', price: x.price != null ? String(x.price) : '', rate: a.growth != null ? String(Math.abs(a.growth)) : '',
-                 falls: a.growth != null ? a.growth < 0 : /car|vehicle/i.test(a.name) };
+        return { bought: x.bought || '', price: x.price != null ? String(x.price) : '', rate: rateDraft(x.rate != null ? x.rate : a.growth, isCar),
+                 vals: (x.valuations || []).map(function (v) { return { date: v.date, value: String(v.value) }; }) };
     });
     var f = st[0];
-    function set(k, v) {
-        var next = Object.assign({}, f); next[k] = v; st[1](next);
-        var num = function (t) { var n = Number(String(t).replace(/[£,%\s]/g, '')); return t === '' || isNaN(n) ? null : n; };
-        var r = num(next.rate);
-        props.onChange({ asset: validAsset({ bought: next.bought, price: num(next.price) }), growth: r == null ? null : (next.falls ? -Math.abs(r) : Math.abs(r)) });
+    var num = function (t) { var n = Number(String(t).replace(/[£,%\s]/g, '')); return t === '' || isNaN(n) ? null : n; };
+    var rateOf = function (r) { var n = num(r.pct); return n == null ? null : (r.falls ? -Math.abs(n) : Math.abs(n)); };
+    var toAsset = function (d) {
+        return validAsset({ bought: d.bought, price: num(d.price), rate: rateOf(d.rate),
+            valuations: d.vals.map(function (v) { return { date: v.date, value: num(v.value) }; }) });
+    };
+    function update(next) {
+        st[1](next);
+        var asset = toAsset(next);
+        props.onChange({ asset: asset, growth: asset && assetReady(asset) ? assetRate(asset) : rateOf(next.rate) });
     }
+    function setTop(k, v) { var n = Object.assign({}, f); n[k] = v; update(n); }
+    function setVal(i, k, v) { var n = Object.assign({}, f, { vals: f.vals.slice() }); n.vals[i] = Object.assign({}, n.vals[i]); n.vals[i][k] = v; update(n); }
+    function addVal() {
+        var cur = toAsset(f), today = todayISO();
+        var guess = cur && assetReady(cur) ? assetValue(cur, today) : null;
+        update(Object.assign({}, f, { vals: f.vals.concat([{ date: today, value: guess != null ? String(Math.round(guess)) : '' }]) }));
+    }
+    function removeVal(i) { update(Object.assign({}, f, { vals: f.vals.filter(function (_, k) { return k !== i; }) })); }
+
     var lab = function (t) { return E('span', { style: { fontFamily: ui.sys, fontSize: 10, color: ui.C.zinc600, letterSpacing: '0.04em' } }, t); };
-    var box = function (k, extra) { return E('input', Object.assign({ value: f[k], onChange: function (e) { set(k, e.target.value); },
-        style: inputStyle(ui, { width: '100%', boxSizing: 'border-box', fontSize: 13, padding: '6px 8px', textAlign: extra.type === 'date' ? 'left' : 'right' }) }, extra)); };
+    var input = function (value, onChange, extra) {
+        return E('input', Object.assign({ value: value, onChange: function (e) { onChange(e.target.value); },
+            style: inputStyle(ui, { width: '100%', boxSizing: 'border-box', fontSize: 13, padding: '6px 8px', textAlign: extra.type === 'date' ? 'left' : 'right' }) }, extra));
+    };
     var cell = function (t, el) { return E('label', { style: { display: 'block', minWidth: 0 } }, lab(t), el); };
-    var g = a.growth;
-    return E('div', { style: { marginTop: 6 } },
-        E('div', { style: { fontFamily: ui.sys, fontSize: 11, color: g != null ? ui.C.blue : ui.C.zinc700, marginBottom: 4 } },
-            g != null ? (g < 0 ? 'Falls ' : 'Rises ') + Math.abs(g) + '% a year from each valuation' + (a.asset && a.asset.bought && a.asset.price != null ? ', and from the price paid before the first' : '')
-                      : 'Fill these in to keep it up to date between valuations:'),
-        E('div', { style: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 6 } },
-            cell('Bought on', box('bought', { type: 'date' })),
-            cell('Price paid £', box('price', { inputMode: 'decimal', placeholder: '0' })),
-            cell('Each year it', E('div', { style: { display: 'flex', background: 'rgba(0,0,0,0.3)', borderRadius: 9, padding: 2, gap: 2 } },
+    var grid = function (kids) { return E('div', { style: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 6 } }, kids); };
+    var rateCells = function (r, onChange, label) {
+        return [
+            cell(label, E('div', { key: 's', style: { display: 'flex', background: 'rgba(0,0,0,0.3)', borderRadius: 9, padding: 2, gap: 2 } },
                 [['Rises', false], ['Falls', true]].map(function (o) {
-                    var on = f.falls === o[1];
-                    return E('button', { key: o[0], type: 'button', onClick: function () { set('falls', o[1]); },
+                    var on = r.falls === o[1];
+                    return E('button', { key: o[0], type: 'button', onClick: function () { onChange(Object.assign({}, r, { falls: o[1] })); },
                         style: { flex: 1, border: 'none', borderRadius: 7, padding: '6px 0', fontFamily: ui.sys, fontSize: 12, fontWeight: 600, cursor: 'pointer',
                                  background: on ? 'rgba(255,255,255,0.10)' : 'transparent', color: on ? (o[1] ? ui.C.rose : ui.C.emerald) : ui.C.zinc600 } }, o[0]);
                 }))),
-            cell('By % a year', box('rate', { inputMode: 'decimal', placeholder: f.falls ? '13' : '0.5' })),
-            cell('Valued on (the £ above)', E('input', { type: 'date', value: props.valDate, onChange: function (e) { props.onValDate(e.target.value); },
-                style: inputStyle(ui, { width: '100%', boxSizing: 'border-box', fontSize: 13, padding: '6px 8px' }) }))));
+            cell('By % a year', input(r.pct, function (v) { onChange(Object.assign({}, r, { pct: v })); }, { inputMode: 'decimal', placeholder: r.falls ? '13' : '1' }))
+        ];
+    };
+    var asset = toAsset(f), ready = assetReady(asset);
+    var nowV = ready ? assetValue(asset, todayISO()) : null, rNow = ready ? assetRate(asset) : null;
+    var blur = props.privacy ? 'blur(6px)' : 'none';
+    return E('div', { style: { marginTop: 6 } },
+        E('div', { style: { fontFamily: ui.sys, fontSize: 11, color: ready ? ui.C.blue : ui.C.zinc700, marginBottom: 4 } },
+            ready ? E('span', null, 'Today ', E('span', { style: { filter: blur } }, fmtGBP(nowV)),
+                      rNow ? ', ' + (rNow < 0 ? 'falling ' : 'rising ') + Math.abs(rNow) + '% a year from the ' + (asset.valuations.some(function (v) { return v.date > asset.bought; }) ? 'latest valuation' : 'price paid') : '',
+                      asset.valuations.length ? '; straight line between valuations' : '')
+                  : 'Add when it was bought and the price paid to keep it up to date:'),
+        grid([cell('Bought on', input(f.bought, function (v) { setTop('bought', v); }, { type: 'date' })),
+              cell('Price paid £', input(f.price, function (v) { setTop('price', v); }, { inputMode: 'decimal', placeholder: '0' }))]),
+        f.vals.map(function (v, i) {
+            return E('div', { key: i, style: { marginTop: 8, paddingTop: 8, borderTop: '1px dashed ' + ui.C.border } },
+                E('div', { style: { display: 'flex', alignItems: 'center', marginBottom: 4 } },
+                    E('span', { style: { flex: 1, fontFamily: ui.sys, fontSize: 11, color: ui.C.zinc400, fontWeight: 600 } }, 'Valuation ' + (i + 1)),
+                    E('button', { type: 'button', onClick: function () { removeVal(i); }, style: { background: 'none', border: 'none', color: ui.C.rose, fontFamily: ui.sys, fontSize: 12, padding: 0, cursor: 'pointer' } }, 'Remove')),
+                grid([cell('Valued on', input(v.date, function (d) { setVal(i, 'date', d); }, { type: 'date' })),
+                      cell('Valued at £', input(v.value, function (d) { setVal(i, 'value', d); }, { inputMode: 'decimal', placeholder: '0' }))]));
+        }),
+        ready && E('button', { type: 'button', onClick: addVal,
+            style: { marginTop: 8, background: 'none', border: '1px dashed ' + ui.C.border, borderRadius: 8, width: '100%', padding: '7px 0', color: ui.C.blue, fontFamily: ui.sys, fontSize: 12, cursor: 'pointer' } },
+            '+ Add a valuation'),
+        // One rate: it runs on from the latest valuation (or the price paid, before any).
+        E('div', { style: { marginTop: 8, paddingTop: 8, borderTop: '1px dashed ' + ui.C.border } },
+            grid(rateCells(f.rate, function (r) { setTop('rate', r); }, f.vals.length ? 'After the latest, each year it' : 'Each year it'))));
 }
 
 // Rate, monthly payment, start and end of a mortgage, in a compact two-by-two block. Saved with the account.
@@ -1321,7 +1390,6 @@ function UpdateView(props) {
     var amounts = amtState[0], setAmounts = amtState[1];
     var initial = React.useState(amounts)[0];   // what each box showed on opening: unchanged boxes aren't saved
     var dateState = React.useState(todayISO()), date = dateState[0];
-    var vdState = React.useState({}), valDates = vdState[0], setValDates = vdState[1];   // house/car: date of a new valuation
     var manage = React.useState(state.accounts.length === 0);
     var newName = React.useState(''), newGroup = React.useState('current');
     var err = React.useState(null);
@@ -1359,6 +1427,7 @@ function UpdateView(props) {
                 if (current.values[a.id] !== lv) values[a.id] = lv;
                 return;
             }
+            if (assetReady(a.asset)) return;                    // worked out from its purchase and valuations
             var t = amounts[a.id];
             if (t === initial[a.id]) return;                    // left as it was
             if (t == null || String(t).trim() === '') { values[a.id] = 0; return; }
@@ -1372,14 +1441,7 @@ function UpdateView(props) {
             if (a.closed && before && !before.closed && current.values[a.id]) values[a.id] = 0;
         });
         if (bad) { err[1]('Check the amount for ' + bad + '.'); return; }
-        // A house or car valuation goes in on its own date (it may be from a survey or quote some time ago).
-        var byDate = {};
-        Object.keys(values).forEach(function (id) {
-            var d = ISO_DATE.test(valDates[id] || '') ? valDates[id] : date;
-            (byDate[d] = byDate[d] || {})[id] = values[id];
-        });
-        var snaps = state.snapshots;
-        Object.keys(byDate).sort().forEach(function (d) { snaps = withPartial(snaps, d, byDate[d]); });
+        var snaps = Object.keys(values).length ? withPartial(state.snapshots, date, values) : state.snapshots;
         saveState(Object.assign({}, state, { accounts: accounts.map(linkedToInvestments), snapshots: snaps })).then(props.onDone, function (e) { err[1]('Could not save: ' + (e && e.message)); });
     }
 
@@ -1407,7 +1469,8 @@ function UpdateView(props) {
                                     ? E('input', { value: a.name, onChange: function (e) { patchAccount(a.id, { name: e.target.value }); }, style: inputStyle(ui, { flex: 1, minWidth: 0, fontFamily: ui.sys, fontSize: 14 }) })
                                     : E('div', { style: { flex: 1, minWidth: 0, fontFamily: ui.sys, fontSize: 14, color: ui.C.zinc400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
                                         a.name, a.debt && g.id === 'property' ? E('span', { style: { color: ui.C.zinc700, fontSize: 11 } }, ' · owed') : null,
-                                        current.asOf[a.id] && E('div', { style: { fontSize: 11, color: amounts[a.id] !== initial[a.id] ? ui.C.amber : ui.C.zinc700, marginTop: 1 } },
+                                        assetReady(a.asset) ? E('div', { style: { fontSize: 11, color: ui.C.zinc700, marginTop: 1 } }, 'From its purchase and valuations')
+                                        : current.asOf[a.id] && E('div', { style: { fontSize: 11, color: amounts[a.id] !== initial[a.id] ? ui.C.amber : ui.C.zinc700, marginTop: 1 } },
                                             amounts[a.id] !== initial[a.id] ? 'Will update' : 'Updated ' + dayLabel(current.asOf[a.id]))),
                                 manage[0]
                                     ? E('div', { style: { display: 'flex', gap: 6 } },
@@ -1419,7 +1482,10 @@ function UpdateView(props) {
                                         E('button', { onClick: function () { patchAccount(a.id, { closed: true }); }, style: Object.assign(buttonStyle(ui), { minHeight: 36, fontSize: 12 }) }, 'Close'))
                                     : E('div', { style: { display: 'flex', alignItems: 'center', gap: 4 } },
                                         E('span', { style: { fontFamily: ui.rounded, color: ui.C.zinc600, fontSize: 15 } }, '£'),
-                                        linked
+                                        assetReady(a.asset)
+                                            // House or car with a purchase: worked out from its valuations below, so not typed in.
+                                            ? E('div', { style: { width: 116, textAlign: 'right', fontFamily: ui.rounded, fontSize: 15, color: ui.C.blue, padding: '9px 0', fontVariantNumeric: 'tabular-nums', filter: props.privacy ? 'blur(6px)' : 'none' } }, Math.round(assetValue(a.asset, date) || 0).toLocaleString('en-GB'))
+                                            : linked
                                             // Linked: the value comes from the Investments tab and keeps updating, so it isn't typed in.
                                             ? E('div', { style: { width: 116, textAlign: 'right', fontFamily: ui.rounded, fontSize: 15, color: ui.C.blue, padding: '9px 0', fontVariantNumeric: 'tabular-nums', filter: props.privacy ? 'blur(6px)' : 'none' } }, Math.abs(linked.value).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 }))
                                             : E('input', {
@@ -1428,9 +1494,8 @@ function UpdateView(props) {
                                             style: inputStyle(ui, { width: 116, textAlign: 'right', filter: props.privacy ? 'blur(6px)' : 'none' })
                                         }))
                             ),
-                            // House and car: when bought, price paid, yearly rise or fall, and the date of the value in the box above.
-                            !manage[0] && g.id === 'property' && !a.debt && E(AssetFields, { a: a, valDate: valDates[a.id] || date,
-                                onValDate: function (d) { var o = Object.assign({}, valDates); o[a.id] = d; setValDates(o); },
+                            // House and car: the purchase and any later valuations, each with its yearly rise or fall.
+                            !manage[0] && g.id === 'property' && !a.debt && E(AssetFields, { a: a, privacy: props.privacy,
                                 onChange: function (patch) { patchAccount(a.id, patch); } }),
                             // Mortgage: its terms, so the amount owed works itself down between the balances you enter.
                             !manage[0] && g.id === 'property' && a.debt && E(LoanFields, { a: a, onChange: function (loan) { patchAccount(a.id, { loan: loan }); } }),
