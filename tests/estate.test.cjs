@@ -116,6 +116,25 @@ test('buildSeries: one point per month, from the month\'s last entry', () => {
     assert.deepEqual(s.map(p => [p.month, p.total]), [['2024-01', 150], ['2024-02', 175]]);
 });
 
+test('chart C&C: only Current and Credit cards, in the series and the breakdown', () => {
+    const state = plain(E.validateState({ v: 1, accounts: [
+        { id: 'bank', name: 'Bank', group: 'current' },
+        { id: 'amex', name: 'Amex', group: 'cards' },
+        { id: 'isa', name: 'ISA', group: 'investments' },
+    ], snapshots: [
+        { date: '2024-01-31', values: { bank: 2000, amex: -500, isa: 50000 } },
+        { date: '2024-02-28', values: { bank: 2600, amex: -800, isa: 52000 } },
+    ] }));
+    const s = plain(E.buildSeries(state));
+    assert.deepEqual(s.map(p => p.cash), [1500, 1800]);
+    assert.deepEqual(s.map(p => p.liquid), [51500, 53800]);
+    const bd = plain(E.breakdown(s[0], s[1], state.accounts, 'cash'));
+    assert.deepEqual(bd.rows.map(g => g.id), ['cash']);   // Investments left out
+    assert.equal(bd.total, 300);
+    assert.equal(E.groupValue(s[1], 'investments', state.accounts, 'cash'), 0);
+    assert.equal(E.groupValue(s[1], 'a:amex', state.accounts, 'cash'), -800);
+});
+
 test('chart y-axis: round steps and labels', () => {
     assert.equal(E.niceStep(8700), 10000);
     assert.equal(E.niceStep(2200), 2500);
