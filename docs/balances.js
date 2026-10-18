@@ -41,6 +41,9 @@ CARDS.forEach(function (c) { CARD_BY_ID[c.id] = c; c.groups.forEach(function (gi
 function cardId(a) { return CARD_OF[a.group] || 'other'; }
 function cardLabel(id) { return (CARD_BY_ID[id] || CARD_BY_ID.other).label; }
 function isLiquid(a) { return typeof a.liquid === 'boolean' ? a.liquid : !!groupOf(a.group).liquid; }
+// Whether an account counts toward a chart metric: Total takes everything, Liquid the liquid accounts, C&C only the
+// Current and Credit card (the everyday cash that no other tab tracks; Fergus asked for it as the default).
+function inMetric(a, metric) { return metric === 'cash' ? cardId(a) === 'cash' : metric === 'liquid' ? isLiquid(a) : true; }
 
 // ── Store (IndexedDB, own database) ──────────────────────────────────────────
 // state = { v: 1, accounts: [Account], snapshots: [Snapshot], lastExportAt, updatedAt }
@@ -441,7 +444,7 @@ function buildSeries(state) {
     return Object.keys(byMonth).sort().map(function (mk) {
         var r = withGrowth(byMonth[mk], state.accounts);
         var t = totalsFor(r, byId);
-        return { month: mk, date: r.date, values: r.values, asOf: r.asOf, groups: t.groups, liquid: t.liquid, total: t.total };
+        return { month: mk, date: r.date, values: r.values, asOf: r.asOf, groups: t.groups, liquid: t.liquid, total: t.total, cash: t.groups.cash || 0 };
     });
 }
 
@@ -1003,23 +1006,24 @@ function Segmented(props) {
             var on = o.id === props.value;
             return E('button', {
                 key: o.id, onClick: function () { props.onChange(o.id); },
-                style: { border: 'none', borderRadius: 7, padding: '5px 10px', fontFamily: ui.sys, fontSize: 12, fontWeight: 600,
+                style: { border: 'none', borderRadius: 7, padding: props.tight ? '5px 7px' : '5px 10px', fontFamily: ui.sys, fontSize: 12, fontWeight: 600,
                          background: on ? 'rgba(255,255,255,0.10)' : 'transparent', color: on ? ui.C.white : ui.C.zinc600, cursor: 'pointer', whiteSpace: 'nowrap' }
             }, o.label);
         })
     );
 }
 
+var METRICS = [{ id: 'total', label: 'Total' }, { id: 'liquid', label: 'Liquid' }, { id: 'cash', label: 'C&C' }];
 var RANGES = [{ id: '1Y', label: '1Y', months: 12 }, { id: '3Y', label: '3Y', months: 36 }, { id: 'ALL', label: 'All', months: null }];
 var CMP_MODES = [{ id: 'prev', label: 'Month before' }, { id: 'start', label: 'From start' }, { id: 'custom', label: 'Custom' }];
 var LINE_COLS = ['#60a5fa', '#f472b6', '#fbbf24'];
 
 // Change between two points, split into building blocks: per group and, within each group, per account. Built from the
-// accounts (share applied; for Liquid only liquid accounts), so the blocks always add up exactly to the change shown.
+// accounts (share applied; only the accounts in the metric), so the blocks always add up exactly to the change shown.
 function breakdown(base, focus, accounts, metric) {
     var groups = {};
     accounts.forEach(function (a) {
-        if (metric === 'liquid' && !isLiquid(a)) return;
+        if (!inMetric(a, metric)) return;
         var v0 = (base.values[a.id] || 0) * (a.share || 1), v1 = (focus.values[a.id] || 0) * (a.share || 1);
         if (!v0 && !v1) return;
         var c = cardId(a);
@@ -1034,12 +1038,12 @@ function breakdown(base, focus, accounts, metric) {
     }).sort(function (x, y) { return Math.abs(y.d) - Math.abs(x.d); });
     return { rows: rows, total: rows.reduce(function (t, g) { return t + g.d; }, 0) };
 }
-// A group's figure at a point (share applied; for Liquid only liquid accounts): what a drawn group line plots.
+// A group's figure at a point (share applied; only the accounts in the metric): what a drawn group line plots.
 // 'a:<id>' is a single account (e.g. just the mortgage), drawn on its own.
 function groupValue(p, gid, accounts, metric) {
     var t = 0, one = gid.slice(0, 2) === 'a:' ? gid.slice(2) : null;
     accounts.forEach(function (a) {
-        if ((one ? a.id !== one : cardId(a) !== gid) || (metric === 'liquid' && !isLiquid(a))) return;
+        if ((one ? a.id !== one : cardId(a) !== gid) || !inMetric(a, metric)) return;
         t += (p.values[a.id] || 0) * (a.share || 1);
     });
     return t;
@@ -1142,6 +1146,14 @@ function Chart(props) {
         if (gid.slice(0, 2) === 'a:') { var a = accounts.filter(function (x) { return x.id === gid.slice(2); })[0]; return a ? a.name : ''; }
         return CARD_BY_ID[gid] && CARD_BY_ID[gid].short || cardLabel(gid).split(' ')[0];
     }
+    // Drawn lines with nothing in the new metric would sit flat at £0 (e.g. Pension under C&C), so they are dropped.
+    function changeMetric(v) {
+        setSel(sel.filter(function (gid) {
+            var one = gid.slice(0, 2) === 'a:' ? gid.slice(2) : null;
+            return accounts.some(function (a) { return (one ? a.id === one : cardId(a) === gid) && inMetric(a, v); });
+        }));
+        mState[1](v);
+    }
     function toggleSel(gid) {
         setSel(sel.indexOf(gid) >= 0 ? sel.filter(function (g) { return g !== gid; }) : sel.concat([gid]).slice(-3));
     }
@@ -1152,9 +1164,10 @@ function Chart(props) {
     var maxAbs = bd ? Math.max.apply(null, bd.rows.map(function (g) { return Math.abs(g.d); }).concat([1])) : 1;
 
     return E('div', { style: cardStyle(ui, { borderRadius: 20, padding: '16px 18px 12px', marginBottom: 12 }) },
-        E('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8 } },
-            E(Segmented, { options: [{ id: 'total', label: 'Total' }, { id: 'liquid', label: 'Liquid' }], value: metric, onChange: function (v) { mState[1](v); } }),
-            E(Segmented, { options: RANGES, value: range, onChange: function (v) { rState[1](v); reset(); } })
+        // Tight padding so Total / Liquid / C&C and the ranges share one row on a 320px phone; they wrap below that.
+        E('div', { style: { display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8 } },
+            E(Segmented, { options: METRICS, value: metric, onChange: changeMetric, tight: true }),
+            E(Segmented, { options: RANGES, value: range, onChange: function (v) { rState[1](v); reset(); }, tight: true })
         ),
         // Reading of the chart: the focus month's figure (or each drawn group's), and its change from the base.
         E('div', { style: { display: 'flex', alignItems: 'baseline', columnGap: 8, flexWrap: 'wrap', minHeight: 20, fontFamily: ui.rounded, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' } },
@@ -1848,7 +1861,7 @@ function ImportView(props) {
 // Where the main view was scrolled to and how its chart was set, kept while the app is open: the screen unmounts
 // when another tab is shown, and Fergus wants to come back to where he was.
 var _mainScrollTop = 0;
-var _chartView = { metric: 'liquid', range: '1Y' };
+var _chartView = { metric: 'cash', range: '1Y' };
 function BalancesScreenInner(props) {
     var ui = useUI();
     var state = useBalancesState();
@@ -1920,5 +1933,5 @@ window.BalancesIcon = WalletIcon;
 // For tests only: the pure parts, no UI.
 window.__balancesInternals = { applyLinked: applyLinked, parseJsonBackup: parseJsonBackup, buildJson: buildJson, parseImport: parseImport, importToState: importToState, runChecks: runChecks, buildSeries: buildSeries, parseAmount: parseAmount, buildCsv: buildCsv,
     resolveTimeline: resolveTimeline, monthTicks: monthTicks, niceStep: niceStep, axisLabel: axisLabel, totalsFor: totalsFor, indexAccounts: indexAccounts, withPartial: withPartial, liveLinked: liveLinked,
-    grow: grow, payDown: payDown, loanOwed: loanOwed, assetValue: assetValue, validateState: validateState };
+    grow: grow, payDown: payDown, loanOwed: loanOwed, assetValue: assetValue, validateState: validateState, breakdown: breakdown, groupValue: groupValue };
 })();
