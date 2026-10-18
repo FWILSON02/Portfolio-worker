@@ -57,6 +57,8 @@ function inMetric(a, metric) { return metric === 'cash' ? cardId(a) === 'cash' :
 //                        After each balance you enter, the amount owed is worked down month by month from these terms.
 //              liquid:   true/false to count (or not) toward Liquid; null = the group's default.
 //              appLinks: keys of the Investments-tab values this account follows (their sum); [] = typed in by hand.
+//              link:     where to check the balance: a https:// website, or an app address such as
+//                        shortcuts://run-shortcut?name=HSBC (a Shortcut that opens the app); null = none.
 //              debt:  balance stored negative (cards, mortgage); the form takes the amount owed as a positive number.
 //              share: fraction of the balance that is yours (e.g. 0.5 of a jointly owned house and its mortgage).
 //   Snapshot = { date: 'YYYY-MM-DD', values: { [accountId]: number }, partial? }
@@ -107,6 +109,21 @@ var RENAMES = { 'Equate Plus': 'HSBC', 'Citi Stock': 'Citi' };
 function renamed(name) { return Object.prototype.hasOwnProperty.call(RENAMES, name) ? RENAMES[name] : name; }
 
 // appLinks from a stored account: the array, or the single appLink saved before several links were allowed.
+// An account's link, if it is a website or an app address. Script and data addresses are never kept.
+function validLink(v) {
+    if (typeof v !== 'string') return null;
+    var t = v.trim();
+    var m = /^([a-z][a-z0-9+.-]*):\/\/\S+$/i.exec(t);
+    if (!m || t.length > 500 || /^(javascript|data|vbscript|file|blob)$/i.test(m[1]) || (/^http$/i.test(m[1]))) return null;
+    return t;
+}
+// Login hints from the API key file (index.html writes them; see parseApiKeyCsv), by account name with case, spaces
+// and punctuation ignored. They stay on this device: never in the Estate export, the app backup or the cloud backup.
+var LOGIN_HINTS_KEY = 'estate_login_hints';
+function hintName(n) { return String(n == null ? '' : n).toLowerCase().replace(/[^a-z0-9]/g, ''); }
+function loginHints() {
+    try { var o = JSON.parse(localStorage.getItem(LOGIN_HINTS_KEY) || '{}'); return o && typeof o === 'object' ? o : {}; } catch (e) { return {}; }
+}
 function linksOf(a) {
     if (Array.isArray(a.appLinks)) return a.appLinks.filter(function (k) { return typeof k === 'string' && k; });
     return typeof a.appLink === 'string' && a.appLink ? [a.appLink] : [];
@@ -218,6 +235,7 @@ function validateState(s) {
             loan: fixLoanRate(validLoan(a.loan), a.rate),
             asset: validAsset(a.asset, a.growth),
             appLinks: linksOf(a),
+            link: validLink(a.link),
         };
     }).map(function (a) { return assetReady(a.asset) ? Object.assign({}, a, { growth: assetRate(a.asset) }) : a; }).map(linkedToInvestments);
     var snapshots = s.snapshots.filter(function (sn) {
@@ -1595,6 +1613,8 @@ function UpdateView(props) {
         setAccounts(accounts.map(function (a) { return a.id === id ? Object.assign({}, a, patch) : a; }));
     }
     var chooser = React.useState(null);   // id of the account whose link list is open
+    var hints = React.useState(loginHints)[0];
+    var hintOpen = React.useState(null);   // id of the account whose login hint is showing
     function toggleLink(a, key) {
         var has = a.appLinks.indexOf(key) >= 0;
         patchAccount(a.id, { appLinks: has ? a.appLinks.filter(function (k) { return k !== key; }) : a.appLinks.concat([key]) });
@@ -1636,7 +1656,7 @@ function UpdateView(props) {
         });
         if (bad) { err[1]('Check the amount for ' + bad + '.'); return; }
         var snaps = Object.keys(values).length ? withPartial(state.snapshots, date, values) : state.snapshots;
-        saveState(Object.assign({}, state, { accounts: accounts.map(linkedToInvestments), snapshots: snaps })).then(props.onDone, function (e) { err[1]('Could not save: ' + (e && e.message)); });
+        saveState(Object.assign({}, state, { accounts: accounts.map(function (a) { return linkedToInvestments(Object.assign({}, a, { link: validLink(a.link) })); }), snapshots: snaps })).then(props.onDone, function (e) { err[1]('Could not save: ' + (e && e.message)); });
     }
 
     // Accounts the Investments tab can hold: savings (e.g. a money market fund), investments, pensions and other.
@@ -1657,12 +1677,19 @@ function UpdateView(props) {
                     list.map(function (a, i) {
                         var linked = linkedNow(a, appByKey);
                         var choosing = chooser[0] === a.id;
+                        var hint = hints[hintName(a.name)], showHint = hintOpen[0] === a.id;
+                        var link = validLink(a.link);
                         return E('div', { key: a.id, style: { padding: '8px 0', borderTop: i ? '1px solid ' + ui.C.border : 'none' } },
                             E('div', { style: { display: 'flex', alignItems: 'center', gap: 10 } },
                                 manage[0]
                                     ? E('input', { value: a.name, onChange: function (e) { patchAccount(a.id, { name: e.target.value }); }, style: inputStyle(ui, { flex: 1, minWidth: 0, fontFamily: ui.sys, fontSize: 14 }) })
                                     : E('div', { style: { flex: 1, minWidth: 0, fontFamily: ui.sys, fontSize: 14, color: ui.C.zinc400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
-                                        a.name, a.debt && g.id === 'property' ? E('span', { style: { color: ui.C.zinc700, fontSize: 11 } }, ' · owed') : null,
+                                        // With a link, the name opens the bank's website or app to check the balance.
+                                        link ? E('a', { href: link, target: /^https:/i.test(link) ? '_blank' : undefined, rel: 'noopener noreferrer',
+                                                        style: { color: ui.C.blue, textDecoration: 'none' } }, a.name, ' ↗') : a.name,
+                                        hint && E('button', { onClick: function () { hintOpen[1](showHint ? null : a.id); },
+                                            style: { marginLeft: 8, background: 'none', border: '1px solid ' + ui.C.border, borderRadius: 6, padding: '1px 6px', fontFamily: ui.sys, fontSize: 11, color: showHint ? ui.C.amber : ui.C.zinc600, cursor: 'pointer', verticalAlign: 1 } }, 'Hint'),
+                                        a.debt && g.id === 'property' ? E('span', { style: { color: ui.C.zinc700, fontSize: 11 } }, ' · owed') : null,
                                         assetReady(a.asset) ? E('div', { style: { fontSize: 11, color: ui.C.zinc700, marginTop: 1 } }, 'From its purchase and valuations')
                                         : loanFormula(a.loan) ? E('div', { style: { fontSize: 11, color: ui.C.zinc700, marginTop: 1 } }, 'Worked out below')
                                         : current.asOf[a.id] && E('div', { style: { fontSize: 11, color: amounts[a.id] !== initial[a.id] ? ui.C.amber : ui.C.zinc700, marginTop: 1 } },
@@ -1692,6 +1719,11 @@ function UpdateView(props) {
                                             style: inputStyle(ui, { width: 116, textAlign: 'right', filter: props.privacy ? 'blur(6px)' : 'none' })
                                         }))
                             ),
+                            showHint && hint && !manage[0] && E('div', { style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.amber, marginTop: 4, lineHeight: 1.4, whiteSpace: 'pre-wrap', wordBreak: 'break-word' } }, hint),
+                            // Where to check this balance: a website, or a Shortcut that opens the bank's app.
+                            manage[0] && E('input', { value: a.link || '', placeholder: 'Link to check it (website or app)', autoCapitalize: 'off', autoCorrect: 'off', spellCheck: false,
+                                onChange: function (e) { patchAccount(a.id, { link: e.target.value }); },
+                                style: inputStyle(ui, Object.assign({ width: '100%', marginTop: 6, fontFamily: ui.sys, fontSize: 13 }, a.link && a.link.trim() && !validLink(a.link) ? { border: '1px solid ' + ui.C.rose } : {})) }),
                             // House and car: the purchase and any later valuations, each with its yearly rise or fall.
                             !manage[0] && g.id === 'property' && !a.debt && E(AssetFields, { a: a, privacy: props.privacy,
                                 onChange: function (patch) { patchAccount(a.id, patch); } }),
@@ -1963,6 +1995,6 @@ window.BalancesStore = BalancesStore;
 window.BalancesIcon = WalletIcon;
 // For tests only: the pure parts, no UI.
 window.__balancesInternals = { applyLinked: applyLinked, parseJsonBackup: parseJsonBackup, buildJson: buildJson, parseImport: parseImport, importToState: importToState, runChecks: runChecks, buildSeries: buildSeries, parseAmount: parseAmount, buildCsv: buildCsv,
-    resolveTimeline: resolveTimeline, paydayOf: paydayOf, monthTicks: monthTicks, niceStep: niceStep, axisLabel: axisLabel, totalsFor: totalsFor, indexAccounts: indexAccounts, withPartial: withPartial, liveLinked: liveLinked,
+    resolveTimeline: resolveTimeline, paydayOf: paydayOf, validLink: validLink, hintName: hintName, monthTicks: monthTicks, niceStep: niceStep, axisLabel: axisLabel, totalsFor: totalsFor, indexAccounts: indexAccounts, withPartial: withPartial, liveLinked: liveLinked,
     grow: grow, payDown: payDown, loanOwed: loanOwed, assetValue: assetValue, validateState: validateState, breakdown: breakdown, groupValue: groupValue };
 })();

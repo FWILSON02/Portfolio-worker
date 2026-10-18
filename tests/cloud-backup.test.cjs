@@ -35,3 +35,10 @@ test('the API key file can carry the backup token and passphrase', () => {
     assert.equal(short.updates.length, 0);
     assert.match(short.invalid[0].reason, /8 to 200/);
 });
+
+test('the API key file can carry login hints by Estate account name', () => {
+    const res = app.parseApiKeyCsv('setting,value\nhint: HSBC Premier,email + usual\nLogin hint - Aviva Pension,\ntwelve_data_api_key,abcdef123456\n');
+    assert.deepEqual(plainList(res.hints.map(h => [h.account, h.hint])), [['HSBC Premier', 'email + usual'], ['Aviva Pension', '']]);
+    assert.equal(res.updates.length, 1);
+    assert.equal(res.unknown.length, 0);
+});
