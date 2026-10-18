@@ -1114,7 +1114,11 @@ function Chart(props) {
     var y = function (v) { return padT + (1 - (v - lo) / (hi - lo)) * (H - padT - padB); };
     var pathFor = function (l) { return pts.map(function (p, i) { return (i ? 'L' : 'M') + x(p).toFixed(1) + ' ' + y(l.val(p)).toFixed(1); }).join(' '); };
     var up = pts[pts.length - 1][metric] >= pts[0][metric];
-    var color = up ? ui.C.emerald : ui.C.rose;
+    // C&C is drawn in Estate's violet, its tab colour (as the Investments chart is amber), not green/red: cash going up
+    // or down isn't good or bad in itself, since spare cash is meant to move into savings and investments (Fergus
+    // asked). Its change figures are neutral too.
+    var neutral = metric === 'cash';
+    var color = neutral ? ui.C.violet : up ? ui.C.emerald : ui.C.rose;
     lines.forEach(function (l) { if (!l.color) l.color = color; });
     var mainLine = pathFor(lines[0]);
     // The area fills down to £0 when it is on the chart, else to the bottom edge.
@@ -1177,8 +1181,8 @@ function Chart(props) {
                     return E('span', { key: l.gid, style: { fontSize: 12, color: l.color, filter: blur } }, lineLabel(l.gid) + ' ' + fmtGBP(l.val(focus)));
                 })
                 : [E('span', { key: 'v', style: { fontSize: 14, fontWeight: 600, color: ui.C.white, filter: blur } }, fmtGBP(focus[metric])),
-                   from && E('span', { key: 'd', style: { fontSize: 12, color: signColor(ui, change), filter: blur } }, fmtSigned(change)),
-                   from && E('span', { key: 'p', style: { fontSize: 12, color: signColor(ui, change) } }, fmtPct(pctChange(to[metric], from[metric])))]
+                   from && E('span', { key: 'd', style: { fontSize: 12, color: neutral ? ui.C.zinc400 : signColor(ui, change), filter: blur } }, fmtSigned(change)),
+                   from && E('span', { key: 'p', style: { fontSize: 12, color: neutral ? ui.C.zinc400 : signColor(ui, change) } }, fmtPct(pctChange(to[metric], from[metric])))]
         ),
         E('div', {
             ref: ref,
