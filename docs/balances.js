@@ -436,13 +436,40 @@ function withGrowth(r, accounts) {
     return out ? Object.assign({}, r, { values: out }) : r;
 }
 
-// One point per month: the balances as they stood after the month's last snapshot.
+// Payday: the 20th, or the working day before it when the 20th is a weekend or bank holiday.
+var PAYDAY = 20;
+// Easter Sunday (anonymous Gregorian algorithm), as a UTC date.
+function easter(y) {
+    var a = y % 19, b = Math.floor(y / 100), c = y % 100, d = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25);
+    var g = Math.floor((b - f + 1) / 3), h = (19 * a + b - d - g + 15) % 30, i = Math.floor(c / 4), k = c % 4;
+    var l = (32 + 2 * e + 2 * i - h - k) % 7, m = Math.floor((a + 11 * h + 22 * l) / 451);
+    var month = Math.floor((h + l - 7 * m + 114) / 31), day = (h + l - 7 * m + 114) % 31 + 1;
+    return Date.UTC(y, month - 1, day);
+}
+// The payday in month `mk` ('YYYY-MM') as 'YYYY-MM-DD'. Of the England and Wales bank holidays only Good Friday and
+// Easter Monday can land near the 20th, so those are the ones checked.
+function paydayOf(mk) {
+    var y = Number(mk.slice(0, 4)), t = Date.UTC(y, Number(mk.slice(5, 7)) - 1, PAYDAY), es = easter(y), day = 864e5;
+    var off = function (x) { var w = new Date(x).getUTCDay(); return w === 0 || w === 6 || x === es - 2 * day || x === es + day; };
+    while (off(t)) t -= day;
+    return new Date(t).toISOString().slice(0, 10);
+}
+
+// One point per month. A finished month shows the balances after its payday update: the last entry on payday, or
+// if there was none that day, the first one after it. A month with nothing from payday on (the old spreadsheet
+// was often filled in a few days before) takes its last entry. The latest month always shows the latest entry.
 function buildSeries(state) {
     var byId = indexAccounts(state.accounts);
     var byMonth = {};
-    resolveTimeline(state.snapshots).forEach(function (r) { byMonth[monthKey(r.date)] = r; });
-    return Object.keys(byMonth).sort().map(function (mk) {
-        var r = withGrowth(byMonth[mk], state.accounts);
+    resolveTimeline(state.snapshots).forEach(function (r) { (byMonth[monthKey(r.date)] = byMonth[monthKey(r.date)] || []).push(r); });
+    var months = Object.keys(byMonth).sort();
+    return months.map(function (mk, n) {
+        var rs = byMonth[mk], pick = rs[rs.length - 1];
+        if (n < months.length - 1) {
+            var pd = paydayOf(mk), after = rs.filter(function (r) { return r.date >= pd; });
+            if (after.length) pick = after.filter(function (r) { return r.date === after[0].date; }).pop();
+        }
+        var r = withGrowth(pick, state.accounts);
         var t = totalsFor(r, byId);
         return { month: mk, date: r.date, values: r.values, asOf: r.asOf, groups: t.groups, liquid: t.liquid, total: t.total, cash: t.groups.cash || 0 };
     });
@@ -936,7 +963,7 @@ function ChangeTable(props) {
             var c = signColor(ui, r.d);
             return [
                 E('div', { key: r.p.months + 'l', style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.zinc500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } },
-                    'vs ' + r.p.label, E('span', { style: { color: ui.C.zinc700, fontSize: 11 } }, ' · ' + monthLabel(r.base.month))),
+                    'vs ' + r.p.label, E('span', { style: { color: ui.C.zinc700, fontSize: 11 } }, ' · ' + dayLabel(r.base.date))),
                 E('div', { key: r.p.months + 'd', style: { fontSize: 13, color: c, textAlign: 'right', whiteSpace: 'nowrap', filter: props.privacy ? 'blur(6px)' : 'none' } }, fmtSigned(r.d)),
                 E('div', { key: r.p.months + 'p', style: { fontSize: 13, color: c, textAlign: 'right', whiteSpace: 'nowrap', minWidth: 54 } }, fmtPct(pctChange(latest[props.field], r.base[props.field])))
             ];
@@ -1936,6 +1963,6 @@ window.BalancesStore = BalancesStore;
 window.BalancesIcon = WalletIcon;
 // For tests only: the pure parts, no UI.
 window.__balancesInternals = { applyLinked: applyLinked, parseJsonBackup: parseJsonBackup, buildJson: buildJson, parseImport: parseImport, importToState: importToState, runChecks: runChecks, buildSeries: buildSeries, parseAmount: parseAmount, buildCsv: buildCsv,
-    resolveTimeline: resolveTimeline, monthTicks: monthTicks, niceStep: niceStep, axisLabel: axisLabel, totalsFor: totalsFor, indexAccounts: indexAccounts, withPartial: withPartial, liveLinked: liveLinked,
+    resolveTimeline: resolveTimeline, paydayOf: paydayOf, monthTicks: monthTicks, niceStep: niceStep, axisLabel: axisLabel, totalsFor: totalsFor, indexAccounts: indexAccounts, withPartial: withPartial, liveLinked: liveLinked,
     grow: grow, payDown: payDown, loanOwed: loanOwed, assetValue: assetValue, validateState: validateState, breakdown: breakdown, groupValue: groupValue };
 })();
