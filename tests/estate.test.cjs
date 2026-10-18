@@ -106,14 +106,30 @@ test('applyLinked: saves only the balances that changed, as a partial entry for 
     assert.equal(E.applyLinked(next, [{ key: 'acct:ISA', value: 1000 }], '2024-02-02'), null);   // nothing changed
 });
 
-test('buildSeries: one point per month, from the month\'s last entry', () => {
+test('paydayOf: the 20th, or the working day before a weekend or Easter bank holiday', () => {
+    assert.equal(E.paydayOf('2026-10'), '2026-10-20');   // Tuesday
+    assert.equal(E.paydayOf('2026-06'), '2026-06-19');   // Saturday → Friday
+    assert.equal(E.paydayOf('2026-09'), '2026-09-18');   // Sunday → Friday
+    assert.equal(E.paydayOf('2025-04'), '2025-04-17');   // Easter Sunday, then Saturday, then Good Friday → Thursday
+    assert.equal(E.paydayOf('2014-04'), '2014-04-17');   // Easter Sunday 2014 too
+    assert.equal(E.paydayOf('2020-04'), '2020-04-20');   // Monday after Easter Monday
+});
+
+test('buildSeries: a finished month takes its payday entry, else the next one, else its last', () => {
     const state = plain(E.validateState({ v: 1, accounts: [{ id: 'bank', name: 'Bank', group: 'current' }], snapshots: [
-        { date: '2024-01-05', values: { bank: 100 } },
-        { date: '2024-01-20', values: { bank: 150 } },
-        { date: '2024-02-18', values: { bank: 175 } },
+        { date: '2026-06-05', values: { bank: 100 } },
+        { date: '2026-06-19', values: { bank: 150 } },   // payday (the 20th is a Saturday)
+        { date: '2026-06-27', values: { bank: 120 } },
+        { date: '2026-08-10', values: { bank: 90 } },
+        { date: '2026-08-22', values: { bank: 200 } },   // missed payday (the 20th), next entry
+        { date: '2026-08-28', values: { bank: 180 } },
+        { date: '2026-09-16', values: { bank: 170 } },   // nothing from payday on: the month's last
+        { date: '2026-10-20', values: { bank: 300 } },
+        { date: '2026-10-25', values: { bank: 260 } },   // latest month: the latest entry
     ] }));
     const s = plain(E.buildSeries(state));
-    assert.deepEqual(s.map(p => [p.month, p.total]), [['2024-01', 150], ['2024-02', 175]]);
+    assert.deepEqual(s.map(p => [p.month, p.date, p.total]), [
+        ['2026-06', '2026-06-19', 150], ['2026-08', '2026-08-22', 200], ['2026-09', '2026-09-16', 170], ['2026-10', '2026-10-25', 260]]);
 });
 
 test('chart C&C: only Current and Credit cards, in the series and the breakdown', () => {
