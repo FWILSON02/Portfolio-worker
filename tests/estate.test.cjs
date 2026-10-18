@@ -180,3 +180,20 @@ test('validLink: websites and app addresses only', () => {
     assert.equal(E.validLink('www.hsbc.co.uk'), null);
     assert.equal(plain(E.validateState({ v: 1, accounts: [{ id: 'a', name: 'A', group: 'current', link: 'javascript:x' }], snapshots: [] })).accounts[0].link, null);
 });
+
+test('fixed-term saving: grows at its AER from the start, holds at the end until a later balance', () => {
+    const term = { start: '2025-01-01', end: '2027-01-01', rate: 5, amount: 10000 };
+    assert.equal(E.termValue(term, '2024-12-31'), null);
+    assert.equal(E.termValue(term, '2025-01-01'), 10000);
+    assert.ok(Math.abs(E.termValue(term, '2026-01-01') - 10500) < 1);    // one year at 5% AER
+    assert.ok(Math.abs(E.termValue(term, '2028-06-01') - 11025) < 2);    // held at the end value
+    const state = plain(E.validateState({ v: 1, accounts: [{ id: 'fb', name: 'Fixed bond', group: 'savings', term }], snapshots: [
+        { date: '2025-06-20', values: { fb: 1 } },          // typed while the term runs: ignored
+        { date: '2027-03-20', partial: true, values: { fb: 11100 } },   // entered after the end: used
+    ] }));
+    const s = plain(E.buildSeries(state));
+    assert.ok(Math.abs(s[0].total - E.termValue(term, '2025-06-20')) < 0.01);
+    assert.equal(s[1].total, 11100);
+    // Only savings accounts keep a term.
+    assert.equal(plain(E.validateState({ v: 1, accounts: [{ id: 'c', name: 'C', group: 'current', term }], snapshots: [] })).accounts[0].term, null);
+});
