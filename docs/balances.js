@@ -55,6 +55,8 @@ function inMetric(a, metric) { return metric === 'cash' ? cardId(a) === 'cash' :
 //                        the purchase is worked out from these points.
 //              loan:     { rate (%/yr), start, end ('YYYY-MM-DD'), payment (£/month) } for a repayment mortgage; null = none.
 //                        After each balance you enter, the amount owed is worked down month by month from these terms.
+//              term:     { start, end ('YYYY-MM-DD'), rate (% AER), amount (£) } for a fixed-term saving: from the start
+//                        the amount grows at the rate until the end, then holds until you enter a balance after it.
 //              liquid:   true/false to count (or not) toward Liquid; null = the group's default.
 //              appLinks: keys of the Investments-tab values this account follows (their sum); [] = typed in by hand.
 //              link:     where to check the balance: a https:// website, or an app address such as
@@ -176,6 +178,26 @@ function loanOwed(l, d) {
     return l.balance;
 }
 
+// Fixed-term saving (Fergus): start and end dates, the rate (% AER) and the amount paid in.
+function validTerm(t) {
+    if (!t || typeof t !== 'object') return null;
+    var num = function (v) { return typeof v === 'number' && isFinite(v) ? v : null; };
+    var out = { start: ISO_DATE.test(t.start || '') ? t.start : null, end: ISO_DATE.test(t.end || '') ? t.end : null,
+                rate: num(t.rate), amount: num(t.amount) == null ? null : Math.abs(t.amount) };
+    return out.start || out.end || out.rate != null || out.amount != null ? out : null;
+}
+function termReady(t) { return !!(t && t.start && t.end && t.end > t.start && t.rate != null && t.amount != null); }
+// Whether the term works out the balance on date `d`: from its start, until a balance is entered after its end.
+// `asOf` = the date the balance was last entered.
+function termRuns(t, d, asOf) { return termReady(t) && d >= t.start && !(d > t.end && asOf && asOf > t.end); }
+// An account's fixed term, if it has one: savings typed in by hand (one linked to Investments follows that instead).
+function termOf(a) { return a.group === 'savings' && !(a.appLinks && a.appLinks.length) && termReady(a.term) ? a.term : null; }
+// Value on date `d`: the amount grown at the AER from the start, held at the end. null before the start.
+function termValue(t, d) {
+    if (!termReady(t) || d < t.start) return null;
+    return grow(t.amount, t.rate, t.start, d < t.end ? d : t.end);
+}
+
 // legacyRate: the account's old single growth rate, used as the purchase rate for data saved before rates per point.
 function validAsset(x, legacyRate) {
     if (!x || typeof x !== 'object') return null;
@@ -233,6 +255,7 @@ function validateState(s) {
             liquid: typeof a.liquid === 'boolean' ? a.liquid : null,
             growth: (typeof a.growth === 'number' && isFinite(a.growth)) ? a.growth : null,
             loan: fixLoanRate(validLoan(a.loan), a.rate),
+            term: a.group === 'savings' ? validTerm(a.term) : null,
             asset: validAsset(a.asset, a.growth),
             appLinks: linksOf(a),
             link: validLink(a.link),
@@ -435,6 +458,13 @@ function withGrowth(r, accounts) {
             if (r.date < a.asset.bought) return;
             out = out || Object.assign({}, r.values);
             out[a.id] = assetValue(a.asset, r.date);
+            return;
+        }
+        // Fixed-term saving: worked out from the amount paid in, from its start until a balance is entered after its end.
+        if (termOf(a)) {
+            if (!termRuns(a.term, r.date, r.asOf[a.id])) return;
+            out = out || Object.assign({}, r.values);
+            out[a.id] = termValue(a.term, r.date);
             return;
         }
         // Mortgage with its current deal's starting balance: worked out from its points from the first one on.
@@ -1370,7 +1400,7 @@ function GroupCard(props) {
                 'vs ' + monthLabel(prev.month)),
             (function () {
             // Tags sit in their own column just before the change, so LIVE / FORMULA line up down the card (Fergus asked).
-            function tagOf(a) { return a.closed ? null : a.appLinks.length ? 'LIVE' : (a.growth != null || loanReady(a.loan) || assetReady(a.asset)) ? 'FORMULA' : null; }
+            function tagOf(a) { return a.closed ? null : a.appLinks.length ? 'LIVE' : (a.growth != null || loanReady(a.loan) || assetReady(a.asset) || termOf(a)) ? 'FORMULA' : null; }
             var anyTag = rows.some(tagOf);
             return rows.map(function (a) {
                 var v = latest.values[a.id] || 0, pv = prev ? (prev.values[a.id] || 0) : null;
@@ -1581,6 +1611,38 @@ function LoanFields(props) {
                   cell('Ends on', input(f.end, function (v) { set('end', v); }, { type: 'date' }))])]));
 }
 
+// Fixed-term saving (Fergus): when it started and ends, the rate and the amount paid in. The balance grows at the
+// rate until the end date, then holds there until a balance is entered after it.
+function TermFields(props) {
+    var ui = useUI();
+    var t = props.a.term || {};
+    var str = function (v) { return v != null ? String(v) : ''; };
+    var st = React.useState(function () { return { start: t.start || '', end: t.end || '', rate: str(t.rate), amount: str(t.amount) }; });
+    var f = st[0];
+    var num = function (x) { var n = Number(String(x).replace(/[£,%\s]/g, '')); return x === '' || isNaN(n) ? null : n; };
+    var toTerm = function (d) { return validTerm({ start: d.start, end: d.end, rate: num(d.rate), amount: num(d.amount) }); };
+    function set(k, v) { var n = Object.assign({}, f); n[k] = v; st[1](n); props.onChange(toTerm(n)); }
+    var open = React.useState(!!props.a.term), term = toTerm(f), ready = termReady(term), today = todayISO();
+    var lab = function (x) { return E('span', { style: { fontFamily: ui.sys, fontSize: 10, color: ui.C.zinc600, letterSpacing: '0.04em' } }, x); };
+    var cell = function (x, el) { return E('label', { style: { display: 'block', minWidth: 0 } }, lab(x), el); };
+    var input = function (value, onChange, extra) { return fieldInput(ui, value, onChange, extra); };
+    if (!open[0]) return E('button', { type: 'button', onClick: function () { open[1](true); },
+        style: { display: 'block', marginTop: 6, background: 'none', border: 'none', padding: 0, color: ui.C.zinc700, fontFamily: ui.sys, fontSize: 11, cursor: 'pointer' } }, '+ Fixed term');
+    var blur = props.privacy ? 'blur(6px)' : 'none';
+    var status = !ready ? 'Add all four to work the balance out from the term:'
+        : today < term.start ? 'Starts ' + dayLabel(term.start)
+        : !termRuns(term, today, props.asOf) ? 'Ended ' + dayLabel(term.end) + '; using the balance you entered since'
+        : E('span', null, today < term.end ? 'Today ' : 'Matured ' + dayLabel(term.end) + ' at ', E('span', { style: { filter: blur } }, fmtGBP(termValue(term, today))),
+            ', ' + term.rate + '% a year' + (today < term.end ? ' until ' + dayLabel(term.end) : '; enter a balance once it is paid out'));
+    return E('div', { style: { marginTop: 6 } },
+        E('div', { style: { fontFamily: ui.sys, fontSize: 11, color: ready ? ui.C.blue : ui.C.zinc700, marginBottom: 4 } }, status),
+        E('div', { style: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', columnGap: 10, rowGap: 8 } },
+            cell('Started on', input(f.start, function (v) { set('start', v); }, { type: 'date' })),
+            cell('Ends on', input(f.end, function (v) { set('end', v); }, { type: 'date' })),
+            cell('Interest rate % (AER)', input(f.rate, function (v) { set('rate', v); }, { inputMode: 'decimal', placeholder: '4.5' })),
+            cell('Amount paid in £', input(f.amount, function (v) { set('amount', v); }, { inputMode: 'decimal', placeholder: '0' }))));
+}
+
 function UpdateView(props) {
     var ui = useUI();
     var state = props.state;
@@ -1642,6 +1704,7 @@ function UpdateView(props) {
                 return;
             }
             if (assetReady(a.asset) || loanFormula(a.loan)) return;   // worked out from its purchase / loan points
+            if (termOf(a) && termRuns(a.term, date, current.asOf[a.id])) return;   // worked out from its fixed term
             var t = amounts[a.id];
             if (t === initial[a.id]) return;                    // left as it was
             if (t == null || String(t).trim() === '') { values[a.id] = 0; return; }
@@ -1679,6 +1742,7 @@ function UpdateView(props) {
                         var choosing = chooser[0] === a.id;
                         var hint = hints[hintName(a.name)], showHint = hintOpen[0] === a.id;
                         var link = validLink(a.link);
+                        var termNow = !!termOf(a) && termRuns(a.term, date, current.asOf[a.id]);   // balance worked out from its fixed term
                         return E('div', { key: a.id, style: { padding: '8px 0', borderTop: i ? '1px solid ' + ui.C.border : 'none' } },
                             E('div', { style: { display: 'flex', alignItems: 'center', gap: 10 } },
                                 manage[0]
@@ -1691,7 +1755,7 @@ function UpdateView(props) {
                                             style: { marginLeft: 8, background: 'none', border: '1px solid ' + ui.C.border, borderRadius: 6, padding: '1px 6px', fontFamily: ui.sys, fontSize: 11, color: showHint ? ui.C.amber : ui.C.zinc600, cursor: 'pointer', verticalAlign: 1 } }, 'Hint'),
                                         a.debt && g.id === 'property' ? E('span', { style: { color: ui.C.zinc700, fontSize: 11 } }, ' · owed') : null,
                                         assetReady(a.asset) ? E('div', { style: { fontSize: 11, color: ui.C.zinc700, marginTop: 1 } }, 'From its purchase and valuations')
-                                        : loanFormula(a.loan) ? E('div', { style: { fontSize: 11, color: ui.C.zinc700, marginTop: 1 } }, 'Worked out below')
+                                        : loanFormula(a.loan) || termNow ? E('div', { style: { fontSize: 11, color: ui.C.zinc700, marginTop: 1 } }, 'Worked out below')
                                         : current.asOf[a.id] && E('div', { style: { fontSize: 11, color: amounts[a.id] !== initial[a.id] ? ui.C.amber : ui.C.zinc700, marginTop: 1 } },
                                             amounts[a.id] !== initial[a.id] ? 'Will update' : 'Updated ' + dayLabel(current.asOf[a.id]))),
                                 manage[0]
@@ -1710,6 +1774,9 @@ function UpdateView(props) {
                                             : loanFormula(a.loan)
                                             // Mortgage with its current deal's balance: worked out from the loan details, so not typed in.
                                             ? E('div', { style: { width: 116, textAlign: 'right', fontFamily: ui.rounded, fontSize: 15, color: ui.C.blue, padding: '9px 0', fontVariantNumeric: 'tabular-nums', filter: props.privacy ? 'blur(6px)' : 'none' } }, Math.round(loanOwed(a.loan, date) || 0).toLocaleString('en-GB'))
+                                            : termNow
+                                            // Fixed-term saving: worked out from the amount paid in and its rate, so not typed in.
+                                            ? E('div', { style: { width: 116, textAlign: 'right', fontFamily: ui.rounded, fontSize: 15, color: ui.C.blue, padding: '9px 0', fontVariantNumeric: 'tabular-nums', filter: props.privacy ? 'blur(6px)' : 'none' } }, Math.round(termValue(a.term, date) || 0).toLocaleString('en-GB'))
                                             : linked
                                             // Linked: the value comes from the Investments tab and keeps updating, so it isn't typed in.
                                             ? E('div', { style: { width: 116, textAlign: 'right', fontFamily: ui.rounded, fontSize: 15, color: ui.C.blue, padding: '9px 0', fontVariantNumeric: 'tabular-nums', filter: props.privacy ? 'blur(6px)' : 'none' } }, Math.abs(linked.value).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 }))
@@ -1727,6 +1794,9 @@ function UpdateView(props) {
                             // House and car: the purchase and any later valuations, each with its yearly rise or fall.
                             !manage[0] && g.id === 'property' && !a.debt && E(AssetFields, { a: a, privacy: props.privacy,
                                 onChange: function (patch) { patchAccount(a.id, patch); } }),
+                            // Fixed-term saving: start, end, rate and amount paid in.
+                            !manage[0] && g.id === 'savings' && !a.appLinks.length && E(TermFields, { a: a, asOf: current.asOf[a.id], privacy: props.privacy,
+                                onChange: function (term) { patchAccount(a.id, { term: term }); } }),
                             // Mortgage: its terms, so the amount owed works itself down between the balances you enter.
                             !manage[0] && g.id === 'property' && a.debt && E(LoanFields, { a: a, privacy: props.privacy, onChange: function (loan) { patchAccount(a.id, { loan: loan }); } }),
                             !manage[0] && linkable(a) && E('button', {
@@ -1995,6 +2065,6 @@ window.BalancesStore = BalancesStore;
 window.BalancesIcon = WalletIcon;
 // For tests only: the pure parts, no UI.
 window.__balancesInternals = { applyLinked: applyLinked, parseJsonBackup: parseJsonBackup, buildJson: buildJson, parseImport: parseImport, importToState: importToState, runChecks: runChecks, buildSeries: buildSeries, parseAmount: parseAmount, buildCsv: buildCsv,
-    resolveTimeline: resolveTimeline, paydayOf: paydayOf, validLink: validLink, hintName: hintName, monthTicks: monthTicks, niceStep: niceStep, axisLabel: axisLabel, totalsFor: totalsFor, indexAccounts: indexAccounts, withPartial: withPartial, liveLinked: liveLinked,
+    resolveTimeline: resolveTimeline, paydayOf: paydayOf, validLink: validLink, hintName: hintName, termValue: termValue, termRuns: termRuns, monthTicks: monthTicks, niceStep: niceStep, axisLabel: axisLabel, totalsFor: totalsFor, indexAccounts: indexAccounts, withPartial: withPartial, liveLinked: liveLinked,
     grow: grow, payDown: payDown, loanOwed: loanOwed, assetValue: assetValue, validateState: validateState, breakdown: breakdown, groupValue: groupValue };
 })();
