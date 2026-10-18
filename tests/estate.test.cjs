@@ -197,3 +197,14 @@ test('fixed-term saving: grows at its AER from the start, holds at the end until
     // Only savings accounts keep a term.
     assert.equal(plain(E.validateState({ v: 1, accounts: [{ id: 'c', name: 'C', group: 'current', term }], snapshots: [] })).accounts[0].term, null);
 });
+
+test('Monzo links keep a current account in its group and follow the Monzo balance', () => {
+    const state = plain(E.validateState({ v: 1, accounts: [
+        { id: 'm', name: 'Monzo', group: 'current', appLinks: ['monzo:acc_1'] },
+        { id: 'p', name: 'Monzo Holiday pot', group: 'savings', appLinks: ['monzo:pot_1'] },
+        { id: 'i', name: 'ISA', group: 'savings', appLinks: ['acct:ISA'] },
+    ], snapshots: [] }));
+    assert.deepEqual(state.accounts.map(a => a.group), ['current', 'savings', 'investments']);
+    const next = plain(E.applyLinked(state, [{ key: 'monzo:acc_1', value: 812.5 }, { key: 'monzo:pot_1', value: 300 }], '2026-10-18'));
+    assert.deepEqual(next.snapshots.at(-1), { date: '2026-10-18', partial: true, values: { m: 812.5, p: 300 } });
+});
