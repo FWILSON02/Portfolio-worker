@@ -169,3 +169,14 @@ test('chart x-axis: a few round months', () => {
     assert.deepEqual(labels(mi(2022, 10), mi(2025, 10)), ['2023', '2024', '2025']);
     assert.ok(labels(mi(2015, 1), mi(2025, 10)).length <= 5);
 });
+
+test('validLink: websites and app addresses only', () => {
+    assert.equal(E.validLink(' https://www.hsbc.co.uk/ '), 'https://www.hsbc.co.uk/');
+    assert.equal(E.validLink('shortcuts://run-shortcut?name=HSBC'), 'shortcuts://run-shortcut?name=HSBC');
+    assert.equal(E.validLink('javascript://%0aalert(1)'), null);
+    assert.equal(E.validLink('JavaScript:alert(1)'), null);
+    assert.equal(E.validLink('data://text/html,x'), null);
+    assert.equal(E.validLink('http://example.com'), null);   // not secure
+    assert.equal(E.validLink('www.hsbc.co.uk'), null);
+    assert.equal(plain(E.validateState({ v: 1, accounts: [{ id: 'a', name: 'A', group: 'current', link: 'javascript:x' }], snapshots: [] })).accounts[0].link, null);
+});

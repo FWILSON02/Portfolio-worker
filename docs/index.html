@@ -204,7 +204,7 @@ window.XCircle=_li([{t:'c',cx:12,cy:12,r:10},'M15 9l-6 6','M9 9l6 6']);
 window.MinusCircle=_li([{t:'c',cx:12,cy:12,r:10},'M8 12h8']);
 window.HelpCircle=_li([{t:'c',cx:12,cy:12,r:10},'M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3',{t:'l',x1:12,y1:17,x2:12.01,y2:17}]);</script>
 <!-- Balances screen lives in its own file. Bump ?v= whenever balances.js changes so the Home Screen app never mixes versions. -->
-<script src="balances.js?v=39"></script>
+<script src="balances.js?v=40"></script>
 <script>
 try{"use strict";
 // ─── Lightweight SVG chart components (replaces Recharts) ──────────────────
@@ -1761,7 +1761,7 @@ function setGyApiKey(k)    { try { localStorage.setItem(GY_APIKEY_STORAGE, Strin
 function getGyPortfolio()  { try { return (localStorage.getItem(GY_PORTFOLIO_STORAGE) || '').trim() || 'Ferg'; } catch { return 'Ferg'; } }
 function setGyPortfolio(p) { try { localStorage.setItem(GY_PORTFOLIO_STORAGE, String(p || '').trim()); } catch {} }
 
-// ── API key import (Settings → Data → Import API Keys) ───────────────────────────────────────────────────────────
+// ── Secrets file import (Settings → Data → Import Secrets File): API keys, backup token and passphrase, login hints ───────────────────────────────────────────────────────────
 // A small CSV — setting,value — filled in once, privately, and loaded in one go instead of pasting each key into its field.
 // The file is read in the browser and applied through the very same setters the fields use. No key value is ever shown,
 // logged or kept: the file is not stored, and the messages below name only WHICH settings were set, never what they were set to.
@@ -1798,11 +1798,13 @@ function _akCheck(entry, v) {
     } else if (!/^[A-Za-z0-9 _.-]{1,60}$/.test(v)) return 'has characters a portfolio name should not';
     return null;
 }
-// text → { updates:[{id,label,short,value}], blank:[short], unknown:[row numbers], invalid:[{short,reason}], error }.
+// text → { updates:[{id,label,short,value}], hints:[{account,hint}], blank:[short], unknown:[row numbers], invalid:[{short,reason}], error }.
+// A row named "hint: <Estate account name>" carries a login hint for that account (never the password itself); a blank
+// hint removes the one saved.
 // Layout: one setting per row, name in the first column, value in the second; a header row (setting,value) is optional and
 // any further columns (notes) are ignored. Names are matched without regard to case, spaces or underscores.
 function parseApiKeyCsv(text) {
-    const res = { updates: [], blank: [], unknown: [], invalid: [], error: null };
+    const res = { updates: [], hints: [], blank: [], unknown: [], invalid: [], error: null };
     const rows = _gyCsvRows(text);
     if (!rows.length) { res.error = 'The file is empty.'; return res; }
     const byName = {};
@@ -1816,7 +1818,10 @@ function parseApiKeyCsv(text) {
         iV = hV >= 0 ? hV : hN + 1;
     }
     const latest = new Map();                       // a setting listed twice: the later row wins
+    const hints = new Map();
     for (let r = start; r < rows.length; r++) {
+        const hm = /^\s*(?:login[\s_-]*)?hint\s*[:\-–]\s*(\S.*?)\s*$/i.exec(String(rows[r][iN] == null ? '' : rows[r][iN]));
+        if (hm) { hints.set(_akNorm(hm[1]), { account: hm[1], hint: String(rows[r][iV] == null ? '' : rows[r][iV]).trim().slice(0, 300) }); continue; }
         const entry = byName[_akNorm(rows[r][iN])];
         if (!entry) { res.unknown.push(r + 1); continue; }                  // reported by row number: a stray key must never be echoed
         latest.set(entry.id, { entry, value: String(rows[r][iV] == null ? '' : rows[r][iV]).trim() });
@@ -1827,7 +1832,26 @@ function parseApiKeyCsv(text) {
         if (why) res.invalid.push({ short: entry.short, reason: why });
         else res.updates.push({ id: entry.id, label: entry.label, short: entry.short, value });
     }
+    res.hints = [...hints.values()];
     return res;
+}
+// Saves login hints for the Estate tab's Update balances screen (balances.js reads LOGIN_HINTS_KEY). They stay in this
+// browser's storage only. Returns the account names saved or cleared, and those no Estate account is called.
+const LOGIN_HINTS_KEY = 'estate_login_hints';
+function applyLoginHints(hints) {
+    const out = { saved: [], cleared: [], unmatched: [], failed: false };
+    if (!hints || !hints.length) return out;
+    let map = {};
+    try { map = JSON.parse(localStorage.getItem(LOGIN_HINTS_KEY) || '{}') || {}; } catch {}
+    const accounts = (window.BalancesStore && window.BalancesStore.get().accounts) || [];
+    const names = new Set(accounts.map(a => _akNorm(a.name)));
+    for (const h of hints) {
+        const k = _akNorm(h.account);
+        if (h.hint) { map[k] = h.hint; out.saved.push(h.account); } else if (map[k]) { delete map[k]; out.cleared.push(h.account); }
+        if (h.hint && !names.has(k)) out.unmatched.push(h.account);
+    }
+    try { localStorage.setItem(LOGIN_HINTS_KEY, JSON.stringify(map)); out.failed = localStorage.getItem(LOGIN_HINTS_KEY) !== JSON.stringify(map); } catch { out.failed = true; }
+    return out;
 }
 // Writes each value, then READS IT BACK. The setters swallow storage errors (private browsing, storage full), so without the
 // read-back an import could claim success for a key that was never saved. Returns the updates that really stuck and the
@@ -1849,14 +1873,22 @@ function describeApiKeyImport(res) {
     if (res.error) return { tone: 'warn', text: res.error };
     const parts = [];
     if (res.updates.length) parts.push('Imported ' + res.updates.map(u => u.short).join(', ') + '.');
+    const lh = res.loginHints;
+    if (lh && lh.failed) parts.push('Could not save the login hints — this browser is blocking storage.');
+    else if (lh) {
+        if (lh.saved.length) parts.push('Login hints for ' + lh.saved.length + (lh.saved.length === 1 ? ' account.' : ' accounts.'));
+        if (lh.cleared.length) parts.push('Removed the hint for ' + lh.cleared.join(', ') + '.');
+        if (lh.unmatched.length) parts.push('No Estate account called ' + lh.unmatched.join(', ') + ' (check the spelling).');
+    }
     if (res.failed && res.failed.length) parts.push('Could not save ' + res.failed.join(', ') + ' — this browser is blocking storage (private browsing?).');
     if (res.invalid.length) parts.push('Not imported: ' + res.invalid.map(x => x.short + ' (' + x.reason + ')').join('; ') + '.');
     if (res.unknown.length) parts.push('Row' + (res.unknown.length > 1 ? 's ' : ' ') + res.unknown.join(', ') + ' not recognised — expected a setting name in the first column.');
     if (res.blank.length) parts.push('Left as they were (blank in the file): ' + res.blank.join(', ') + '.');
     const bad = (res.failed || []).length;
-    if (!res.updates.length && !bad && !res.invalid.length && !res.unknown.length && !res.blank.length) parts.push('No settings found in the file.');
-    else if (!res.updates.length && !bad && !res.invalid.length) parts.unshift('Nothing was imported.');
-    return { tone: (bad || res.invalid.length || res.unknown.length || !res.updates.length) ? 'warn' : 'ok', text: parts.join(' ') };
+    const hintsDone = !!(lh && !lh.failed && (lh.saved.length || lh.cleared.length));
+    if (!res.updates.length && !hintsDone && !bad && !res.invalid.length && !res.unknown.length && !res.blank.length) parts.push('No settings found in the file.');
+    else if (!res.updates.length && !hintsDone && !bad && !res.invalid.length) parts.unshift('Nothing was imported.');
+    return { tone: (bad || res.invalid.length || res.unknown.length || (lh && (lh.failed || lh.unmatched.length)) || (!res.updates.length && !hintsDone)) ? 'warn' : 'ok', text: parts.join(' ') };
 }
 
 function _gyDow(iso) { return new Date(iso + 'T12:00:00Z').getUTCDay(); }
@@ -7404,7 +7436,7 @@ function Row({ icon: Icon, iconColor, iconBg, label, sub, right, onClick, isLabe
 
 // The pull request that last changed the app. Bump it in every PR so Settings → App shows which change the phone is
 // running (Fergus asked; the Estate ?v= number only moved when balances.js changed, so it looked stuck).
-const APP_BUILD = 59;
+const APP_BUILD = 60;
 
 // Settings → App: pulls the newest index.html and balances.js past the browser's cache, then reloads. A Home Screen web app
 // on iOS keeps serving cached files for a while after a deploy, and closing it from the app switcher doesn't clear that.
@@ -9291,9 +9323,9 @@ function MoreTab(props) {
                 ? (wb => XLSX.utils.sheet_to_csv(wb.Sheets[wb.SheetNames[0]]))(XLSX.read(await file.arrayBuffer(), { type: 'array' }))
                 : await (file.text ? file.text() : new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(String(r.result || '')); r.onerror = no; r.readAsText(file); }));
             res = parseApiKeyCsv(text);
-            if (!res.error) { const w = applyApiKeyUpdates(res.updates); res.updates = w.saved; res.failed = w.failed; }
+            if (!res.error) { const w = applyApiKeyUpdates(res.updates); res.updates = w.saved; res.failed = w.failed; res.loginHints = applyLoginHints(res.hints); }
         } catch (e) {
-            res = { updates: [], blank: [], unknown: [], invalid: [], error: (e && e.message === 'big') ? 'That file is too big to be an API key list.' : 'Could not read that file.' };
+            res = { updates: [], blank: [], unknown: [], invalid: [], error: (e && e.message === 'big') ? 'That file is too big to be a secrets file.' : 'Could not read that file.' };
         }
         setTdKeyInput(getTdApiKey()); setAvKeyInput(getAvApiKey()); setMsKeyInput(getMsApiKey()); setGyKeyInput(getGyApiKey());
         setGyPortInput(getGyPortfolio()); setWorkerInput(getWorkerUrl() || '');
@@ -9774,11 +9806,14 @@ function MoreTab(props) {
                         isLabel: true,
                         inputProps: { type: 'file', accept: '.csv,text/csv,text/plain', onChange: e => { handleCompConfigCSV(e.target.files[0]); e.target.value = ''; } },
                     }),
-                    // API keys from a CSV (setting,value) — replaces pasting each key into its field in System below
+                    // The secrets file (setting,value): API keys, cloud backup token and passphrase, and Estate login hints.
                     React.createElement(Row, {
                         icon: Key, iconColor: '#fbbf24',
-                        label: 'Import API Keys',
-                        sub: `${[tdKeyInput, avKeyInput, msKeyInput, gyKeyInput].filter(Boolean).length} of 4 keys set · CSV or Excel`,
+                        label: 'Import Secrets File',
+                        sub: (() => {
+                            let n = 0; try { n = Object.keys(JSON.parse(localStorage.getItem(LOGIN_HINTS_KEY) || '{}') || {}).length; } catch {}
+                            return `${[tdKeyInput, avKeyInput, msKeyInput, gyKeyInput].filter(Boolean).length} of 4 keys set` + (n ? ` · ${n} login hint${n === 1 ? '' : 's'}` : '') + ' · CSV or Excel';
+                        })(),
                         isLabel: true,
                         inputProps: { type: 'file', accept: '.csv,text/csv,text/plain,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', onChange: e => { handleApiKeyCSV(e.target.files[0]); e.target.value = ''; } },
                     }),
