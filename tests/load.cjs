@@ -1,6 +1,6 @@
 // Loads the app's own files into a sandbox so tests call the real functions, not copies of them.
-// docs/index.html's main <script> defines its helpers as top-level functions; docs/balances.js exposes its pure parts
-// on window.__balancesInternals. Browser APIs are stubbed just enough for the files to load: nothing renders.
+// docs/index.html's main <script> defines its helpers as top-level functions; docs/balances.js and docs/lifeadmin.js
+// expose their pure parts on window.__balancesInternals and window.__lifeAdminInternals. Browser APIs are stubbed just enough for the files to load: nothing renders.
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
@@ -43,12 +43,13 @@ function loadApp() {
     const inline = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
     const main = inline.reduce((a, b) => (b.length > a.length ? b : a));   // the app itself; the others are boot helpers
     vm.runInContext(fs.readFileSync(path.join(DOCS, 'balances.js'), 'utf8'), ctx, { filename: 'balances.js' });
+    vm.runInContext(fs.readFileSync(path.join(DOCS, 'lifeadmin.js'), 'utf8'), ctx, { filename: 'lifeadmin.js' });
     // The app's script is one try { } block, so its consts and async functions live in that block. A lookup added at the
     // top of the block reaches them for the tests.
     if (!/^\s*try\{/.test(main)) throw new Error('index.html main script no longer starts with try{; update tests/load.cjs');
     vm.runInContext(main.replace(/^\s*try\{/, 'try{ globalThis.__lookup = n => eval(n);'), ctx, { filename: 'index.html' });
     const app = new Proxy(ctx, { get: (t, name) => (name in t || typeof name !== 'string' ? t[name] : t.__lookup(name)) });
-    return { app, estate: ctx.__balancesInternals };
+    return { app, estate: ctx.__balancesInternals, lifeAdmin: ctx.__lifeAdminInternals, ctx };
 }
 
 module.exports = { loadApp };

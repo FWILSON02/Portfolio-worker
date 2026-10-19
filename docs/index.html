@@ -208,7 +208,9 @@ window.XCircle=_li([{t:'c',cx:12,cy:12,r:10},'M15 9l-6 6','M9 9l6 6']);
 window.MinusCircle=_li([{t:'c',cx:12,cy:12,r:10},'M8 12h8']);
 window.HelpCircle=_li([{t:'c',cx:12,cy:12,r:10},'M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3',{t:'l',x1:12,y1:17,x2:12.01,y2:17}]);</script>
 <!-- Balances screen lives in its own file. Bump ?v= whenever balances.js changes so the Home Screen app never mixes versions. -->
-<script src="balances.js?v=47"></script>
+<script src="balances.js?v=48"></script>
+<!-- Life Admin (bills) lives in its own file too, loaded after balances.js (it uses the Estate mortgage and alert banner). Bump ?v= on change. -->
+<script src="lifeadmin.js?v=1"></script>
 <script>
 try{"use strict";
 // ─── Lightweight SVG chart components (replaces Recharts) ──────────────────
@@ -1849,6 +1851,9 @@ function applyLoginHints(hints) {
     try { map = JSON.parse(localStorage.getItem(LOGIN_HINTS_KEY) || '{}') || {}; } catch {}
     const accounts = (window.BalancesStore && window.BalancesStore.get().accounts) || [];
     const names = new Set(accounts.map(a => _akNorm(a.name)));
+    // Life Admin (lifeadmin.js) finds a bill's hint by its provider or its name.
+    const bills = (window.LifeAdminStore && window.LifeAdminStore.get().bills) || [];
+    bills.forEach(b => { names.add(_akNorm(b.name)); if (b.provider) names.add(_akNorm(b.provider)); });
     for (const h of hints) {
         const k = _akNorm(h.account);
         if (h.hint) { map[k] = h.hint; out.saved.push(h.account); } else if (map[k]) { delete map[k]; out.cleared.push(h.account); }
@@ -1882,7 +1887,7 @@ function describeApiKeyImport(res) {
     else if (lh) {
         if (lh.saved.length) parts.push('Login hints for ' + lh.saved.length + (lh.saved.length === 1 ? ' account.' : ' accounts.'));
         if (lh.cleared.length) parts.push('Removed the hint for ' + lh.cleared.join(', ') + '.');
-        if (lh.unmatched.length) parts.push('No Estate account called ' + lh.unmatched.join(', ') + ' (check the spelling).');
+        if (lh.unmatched.length) parts.push('No Estate account or bill called ' + lh.unmatched.join(', ') + ' (check the spelling).');
     }
     if (res.failed && res.failed.length) parts.push('Could not save ' + res.failed.join(', ') + ' — this browser is blocking storage (private browsing?).');
     if (res.invalid.length) parts.push('Not imported: ' + res.invalid.map(x => x.short + ' (' + x.reason + ')').join('; ') + '.');
@@ -4385,11 +4390,11 @@ async function cloudBackupFetch(method, path, body) {
 }
 // How much a JSON backup holds, to spot one that has lost data (see runCloudBackup).
 function cloudBackupCounts(payload) {
-    const p = payload || {}, b = p.balances || {};
+    const p = payload || {}, b = p.balances || {}, la = p.lifeAdmin || {};
     const n = v => Array.isArray(v) ? v.length : 0;
-    return { trades: n(p.transactions), plans: n(p.compConfigs), accounts: n(b.accounts), entries: n(b.snapshots) };
+    return { trades: n(p.transactions), plans: n(p.compConfigs), accounts: n(b.accounts), entries: n(b.snapshots), bills: n(la.bills) };
 }
-const CLOUD_BACKUP_COUNT_LABELS = { trades: 'trades', plans: 'equity plans', accounts: 'Estate accounts', entries: 'Estate entries' };
+const CLOUD_BACKUP_COUNT_LABELS = { trades: 'trades', plans: 'equity plans', accounts: 'Estate accounts', entries: 'Estate entries', bills: 'Life Admin bills' };
 // What `now` has fewer of than `before`, e.g. "3 trades (the last backup had 120)". null = nothing lost.
 function cloudBackupShrink(before, now) {
     if (!before) return null;
@@ -4409,7 +4414,9 @@ async function runCloudBackup(jsonString, force) {
     try {
         const p = (JSON.parse(jsonString) || {}).payload || {};
         const bal = p.balances ? Object.assign({}, p.balances, { lastExportAt: null, updatedAt: null }) : p.balances;
-        const hash = await cbSha256Hex(JSON.stringify([p.transactions, p.compConfigs, p.externalHoldings, bal, p.loadSource]));
+        const la = p.lifeAdmin ? Object.assign({}, p.lifeAdmin, { updatedAt: null }) : null;
+        // Life Admin goes last and only when it has bills, so backups made before it existed hash the same as before.
+        const hash = await cbSha256Hex(JSON.stringify([p.transactions, p.compConfigs, p.externalHoldings, bal, p.loadSource].concat(la ? [la] : [])));
         const counts = cloudBackupCounts(p);
         const since = st.at ? Date.now() - st.at : Infinity;
         if (!force && st.hash === hash && since < CLOUD_BACKUP_MAX_AGE) {
@@ -7498,9 +7505,9 @@ function Row({ icon: Icon, iconColor, iconBg, label, sub, right, onClick, isLabe
 
 // The pull request that last changed the app. Bump it in every PR so Settings → App shows which change the phone is
 // running (Fergus asked; the Estate ?v= number only moved when balances.js changed, so it looked stuck).
-const APP_BUILD = 67;
+const APP_BUILD = 68;
 
-// Settings → App: pulls the newest index.html and balances.js past the browser's cache, then reloads. A Home Screen web app
+// Settings → App: pulls the newest index.html, balances.js and lifeadmin.js past the browser's cache, then reloads. A Home Screen web app
 // on iOS keeps serving cached files for a while after a deploy, and closing it from the app switcher doesn't clear that.
 // The reload comes back to Settings on the same tab (RELOAD_RETURN_KEY) so the new PR number shows (Fergus asked). When the
 // server still has this PR, nothing reloads: the merge just hasn't finished deploying yet.
@@ -7529,8 +7536,9 @@ function useReloadLatest() {
                 setMsg('Already on PR #' + APP_BUILD + '. If you just merged, the new version isn\u2019t live yet; try again in a minute.');
                 return;
             }
-            const m = html.match(/src="(balances\.js[^"]*)"/);
-            if (m) { const r2 = await fetch(new URL(m[1], base).href, { cache: 'reload' }); if (!r2.ok) throw new Error('HTTP ' + r2.status); }
+            for (const m of html.matchAll(/src="((?:balances|lifeadmin)\.js[^"]*)"/g)) {
+                const r2 = await fetch(new URL(m[1], base).href, { cache: 'reload' }); if (!r2.ok) throw new Error('HTTP ' + r2.status);
+            }
             setMsg(next ? 'Updating to PR #' + next + '…' : 'Reloading…');
             try { sessionStorage.setItem(RELOAD_RETURN_KEY, JSON.stringify({ from: APP_BUILD, tab: reloadReturnTab })); } catch (e) {}
             location.reload();
@@ -7601,6 +7609,23 @@ function EstateDeleteGroup() {
     const has = store.get().accounts.length > 0;
     return React.createElement(Group, { title: 'Balances' },
         React.createElement(Row, { icon: Trash2, iconColor: '#ef4444', label: del ? 'Tap again to delete all balances' : 'Delete All Balances', disabled: !has, last: true, right: null,
+            onClick: () => {
+                if (!del) { setDel(true); setTimeout(() => setDel(false), 4000); return; }
+                store.deleteAll().catch(() => {}); setDel(false);
+            } })
+    );
+}
+
+// Settings → Life Admin: wipes every bill on this phone (tap twice). Password hints stay: they belong to the secrets file.
+function LifeAdminDeleteGroup() {
+    const store = window.LifeAdminStore;
+    const [, tick] = React.useState(0);
+    const [del, setDel] = React.useState(false);
+    React.useEffect(() => store ? store.subscribe(() => tick(n => n + 1)) : undefined, [store]);
+    if (!store || !store.deleteAll) return null;
+    const has = store.get().bills.length > 0;
+    return React.createElement(Group, { title: 'Bills' },
+        React.createElement(Row, { icon: Trash2, iconColor: '#ef4444', label: del ? 'Tap again to delete all bills' : 'Delete All Bills', disabled: !has, last: true, right: null,
             onClick: () => {
                 if (!del) { setDel(true); setTimeout(() => setDel(false), 4000); return; }
                 store.deleteAll().catch(() => {}); setDel(false);
@@ -10136,6 +10161,11 @@ function MoreTab(props) {
                 React.createElement(SettingsSection, { id: 'estate', icon: Wallet, color: '#a78bfa', title: 'Estate', summary: estateSummary.text, attention: estateSummary.attention, open: openSection === 'estate', onToggle: toggleSection },
                     React.createElement(EstateDeleteGroup)
                 ),
+                window.LifeAdminStore && React.createElement(SettingsSection, { id: 'lifeadmin', icon: window.LifeAdminIcon, color: window.LifeAdminColor, title: 'Life Admin',
+                    summary: (n => n ? n + (n === 1 ? ' bill' : ' bills') : 'No bills yet')(window.LifeAdminStore.get().bills.length), attention: false,
+                    open: openSection === 'lifeadmin', onToggle: toggleSection },
+                    React.createElement(LifeAdminDeleteGroup)
+                ),
                 React.createElement(SettingsSection, { id: 'alerts', icon: Bell, color: '#fb923c', title: 'Alerts', summary: 'Days before and after each alert', attention: false, open: openSection === 'alerts', onToggle: toggleSection },
                     React.createElement(AlertsGroup)
                 ),
@@ -10145,7 +10175,7 @@ function MoreTab(props) {
                         React.createElement(Row, {
                             icon: Download, iconColor: '#a78bfa',
                             label: 'Export JSON Backup',
-                            sub: 'Everything: trades, prices, plans and Estate · SHA-256 signed',
+                            sub: 'Everything: trades, prices, plans, Estate and Life Admin · SHA-256 signed',
                             onClick: exportPricesJson,
                         }),
                         React.createElement(Row, {
@@ -16658,7 +16688,8 @@ function PortfolioApp() {
                     && compConfigs.length === 0 && externalHoldings.length === 0
                     && !hasMarketOverviewRows) {
                     // The cloud backup still goes when Estate holds balances: they live in the same backup.
-                    var hasBalances = !!(window.BalancesStore && window.BalancesStore.get && window.BalancesStore.get().accounts.length);
+                    var hasBalances = !!(window.BalancesStore && window.BalancesStore.get && window.BalancesStore.get().accounts.length)
+                        || !!(window.LifeAdminStore && window.LifeAdminStore.get().bills.length);
                     if (toFn && !hasBalances) return null;
                     if (!toFn) {
                         setUploadError('No workspace data to export — upload transactions or prices first.');
@@ -16741,6 +16772,8 @@ function PortfolioApp() {
                     giltPriceHistory: { v: 1, snaps: loadGyCache().snaps },
                     // Balances screen data (balances.js); null when it holds nothing or the file did not load.
                     balances: window.BalancesStore ? window.BalancesStore.backupSnapshot() : null,
+                    // Life Admin bills (lifeadmin.js); null when there are none. Password hints are never in here.
+                    lifeAdmin: window.LifeAdminStore ? window.LifeAdminStore.backupSnapshot() : null,
                     marketOverview: sanitizedMktRows.length > 0 ? {
                         schemaVersion: 2,
                         exportedAt:    exportTimestamp,
@@ -16915,6 +16948,8 @@ function PortfolioApp() {
                         entries:  Array.isArray(bal.snapshots) ? bal.snapshots.length : 0,
                         latest:   (Array.isArray(bal.snapshots) ? bal.snapshots : []).reduce(function(m, x) { return x && x.date > m ? x.date : m; }, ''),
                     } : null;
+                    var la = parsed.payload && parsed.payload.lifeAdmin;
+                    var lifeAdmin = la && Array.isArray(la.bills) && la.bills.length ? { bills: la.bills.length } : null;
                     setJsonImportPending({ parsed: parsed, data: data, txList: txList,
                         pnlSessionDate: importPnlDate,
                         summary: {
@@ -16925,6 +16960,7 @@ function PortfolioApp() {
                         custodyPositions: incomingCustody,
                         hasPnlSnapshot:  !!(data.todayPnlSnapshot),
                         estate:          estate,
+                        lifeAdmin:       lifeAdmin,
                         marketRows:      (data.marketOverview && data.marketOverview.rows) ? data.marketOverview.rows.length : 0,
                         hasMarketOverview: !!(data.marketOverview && data.marketOverview.rows && data.marketOverview.rows.length > 0),
                         giltTickers:     data.giltPriceHistory ? data.giltPriceHistory.tickers : 0,
@@ -16974,6 +17010,9 @@ function PortfolioApp() {
             // backup never wipes balances entered since.
             if (jsonImportMode === 'both' && parsed.payload && parsed.payload.balances && window.BalancesStore) {
                 window.BalancesStore.restore(parsed.payload.balances);
+            }
+            if (jsonImportMode === 'both' && parsed.payload && parsed.payload.lifeAdmin && window.LifeAdminStore) {
+                window.LifeAdminStore.restore(parsed.payload.lifeAdmin);
             }
             if (shouldRestorePrices) {
                 var restoredPrices = data.prices   || {};
@@ -17264,16 +17303,18 @@ function PortfolioApp() {
         const [sheetSort, setSheetSort] = React.useState('value'); // 'value'|'today'|'total'
         // After Settings → Reload Latest Version, come back on Settings and the same tab (see useReloadLatest).
         const [showSettings, setShowSettings] = React.useState(() => !!readReloadReturn());
-        // Top tab bar: 'markets' | 'investments' | 'estate'. Markets is read-only and does not feed portfolio valuation;
-        // Estate (balances.js) tracks account balances month by month, separate from the portfolio valuation.
+        // Top tab bar: 'markets' | 'investments' | 'estate' | 'lifeadmin'. Markets is read-only and does not feed portfolio
+        // valuation; Estate (balances.js) tracks account balances month by month, separate from the portfolio valuation;
+        // Life Admin (lifeadmin.js) lists the monthly bills.
         const [activeTab, setActiveTab] = React.useState(() => {
             const t = (readReloadReturn() || {}).tab;
-            return t === 'markets' || t === 'estate' ? t : 'investments';
+            return t === 'markets' || t === 'estate' || t === 'lifeadmin' ? t : 'investments';
         });
         React.useEffect(() => { reloadReturnTab = activeTab; }, [activeTab]);
         // Swipe left or right to move between the tabs (Fergus asked). See swipeAllowed for where a swipe may start.
         const tabOrderRef = React.useRef([]);
-        tabOrderRef.current = ['markets', 'investments'].concat(typeof window.BalancesScreen === 'function' ? ['estate'] : []);
+        tabOrderRef.current = ['markets', 'investments'].concat(typeof window.BalancesScreen === 'function' ? ['estate'] : [],
+                                                                typeof window.LifeAdminScreen === 'function' ? ['lifeadmin'] : []);
         // A swiped- or tapped-to screen slides in from the side it came from (Fergus: an instant switch felt too abrupt).
         const swipeDirRef = React.useRef(0);
         // Tapping a tab: another tab slides in like a swipe; the tab already open scrolls smoothly back to its top.
@@ -17323,6 +17364,8 @@ function PortfolioApp() {
         const hasBalances = typeof window.BalancesScreen === 'function';
         const showMarketOverview = activeTab === 'markets';
         const showBalances = activeTab === 'estate' && hasBalances;
+        const hasLifeAdmin = typeof window.LifeAdminScreen === 'function';
+        const showLifeAdmin = activeTab === 'lifeadmin' && hasLifeAdmin;
         // The tab bar's height, published as --topbar-h so the Markets and Estate screens open below it.
         const topBarRef = React.useRef(null);
         React.useLayoutEffect(() => {
@@ -17890,8 +17933,10 @@ function PortfolioApp() {
                 seen = now;
                 schedule(5000);
             }) : null;
+            // And when a bill is added, changed or deleted on the Life Admin tab.
+            const unsubBills = window.LifeAdminStore ? window.LifeAdminStore.subscribe(() => schedule(5000)) : null;
             const iv = setInterval(() => schedule(1000), 30 * 60 * 1000);
-            return () => { clearTimeout(timer); clearInterval(iv); document.removeEventListener('visibilitychange', onVis); if (unsub) unsub(); };
+            return () => { clearTimeout(timer); clearInterval(iv); document.removeEventListener('visibilitychange', onVis); if (unsub) unsub(); if (unsubBills) unsubBills(); };
         }, [cloudBackupNow]);
         React.useEffect(() => { cloudScheduleRef.current(5000); }, [transactions, compConfigs, externalHoldings]);
         // Settings → Cloud Backup → Restore: the decrypted backup goes through the same check and confirm as a file restore.
@@ -18103,6 +18148,9 @@ function PortfolioApp() {
                     React.createElement('span', { style: { color: C.zinc500 } }, 'Estate: '),
                     React.createElement('span', { style: { color: C.violet } }, `${jsonImportPending.summary.estate.accounts} accounts \u00b7 ${jsonImportPending.summary.estate.entries} entries` +
                         (jsonImportPending.summary.estate.latest ? ` \u00b7 latest ${new Date(jsonImportPending.summary.estate.latest + 'T12:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}` : ''))),
+                jsonImportPending.summary.lifeAdmin && React.createElement('div', null,
+                    React.createElement('span', { style: { color: C.zinc500 } }, 'Life Admin: '),
+                    React.createElement('span', { style: { color: C.violet } }, `${jsonImportPending.summary.lifeAdmin.bills} bills`)),
                 jsonImportPending.summary.custodyPositions > 0 && React.createElement('div', null,
                     React.createElement('span', { style: { color: C.zinc500 } }, 'Custody: '),
                     React.createElement('span', { style: { color: C.blue } }, `${jsonImportPending.summary.custodyPositions} positions`)),
@@ -18132,6 +18180,7 @@ function PortfolioApp() {
                             if (jsonImportPending.summary.equityPlans > 0) parts.push('equity plans');
                             if (jsonImportPending.summary.custodyPositions > 0) parts.push('custody positions');
                             if (jsonImportPending.summary.estate) parts.push('Estate');
+                            if (jsonImportPending.summary.lifeAdmin) parts.push('Life Admin');
                             return 'Full restore: ' + parts.join(', ');
                         })())
                     )
@@ -18198,6 +18247,13 @@ function PortfolioApp() {
             onClose:     () => setActiveTab('investments'),
             privacyMode,
             appValues:   balancesAppValues,
+            ui:          { C, sys, rounded },
+        }),
+
+        // ── Life Admin screen (lifeadmin.js): bills and outgoings.
+        showLifeAdmin && React.createElement(window.LifeAdminScreen, {
+            onClose:     () => setActiveTab('investments'),
+            privacyMode,
             ui:          { C, sys, rounded },
         }),
 
@@ -18297,14 +18353,19 @@ function PortfolioApp() {
                           icon: React.createElement(TrendingUp, { style: { width: 13, height: 13, flexShrink: 0 }, strokeWidth: 2 }) },
                         hasBalances && { id: 'estate', label: 'Estate', color: C.violet,
                           icon: window.BalancesIcon ? React.createElement(window.BalancesIcon, { style: { width: 13, height: 13, flexShrink: 0 }, strokeWidth: 2 }) : null },
-                    ].filter(Boolean).map(t => {
+                        hasLifeAdmin && { id: 'lifeadmin', label: 'Life Admin', color: window.LifeAdminColor || C.emerald,
+                          icon: window.LifeAdminIcon ? React.createElement(window.LifeAdminIcon, { style: { width: 13, height: 13, flexShrink: 0 }, strokeWidth: 2 }) : null },
+                    ].filter(Boolean).map((t, i, all) => {
                         const on = activeTab === t.id;
+                        // Four tabs with icons don't fit an iPhone's width, so then only the open tab keeps its icon, and
+                        // Markets keeps its green one while its data is ready.
+                        const showIcon = all.length < 4 || on || (t.id === 'markets' && marketReady);
                         return React.createElement('button', {
                             key: t.id, role: 'tab', 'aria-selected': on, 'aria-label': t.label,
                             onClick: () => tapTab(t.id),
                             style: {
                                 display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, minWidth: 0, flex: '1 1 auto',
-                                height: 36, padding: '0 7px', marginBottom: -1,
+                                height: 36, padding: all.length < 4 ? '0 7px' : '0 4px', marginBottom: -1,
                                 // The active tab takes the page colour and drops its bottom edge, so it joins the screen below.
                                 background: on ? C.bg : 'transparent',
                                 border: '1px solid ' + (on ? C.border : 'transparent'), borderBottomColor: on ? C.bg : 'transparent',
@@ -18312,7 +18373,7 @@ function PortfolioApp() {
                                 color: on ? t.color : C.zinc600, fontFamily: sys, fontSize: 12.5, fontWeight: on ? 650 : 500,
                                 letterSpacing: '0.01em', whiteSpace: 'nowrap', overflow: 'hidden',
                             }
-                        }, t.icon, React.createElement('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis' } }, t.label));
+                        }, showIcon && t.icon, React.createElement('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis' } }, t.label));
                     })
                 ),
                 React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 0, flexShrink: 0, marginRight: -7, height: 36 } },
