@@ -94,3 +94,26 @@ test('after the date: past tense, and cleared once dealt with', () => {
     const v = plain(E.investmentAlerts([{ ticker: 'T', name: 'x', nominal: 100, maturity: '2026-10-18' }], [], null, TODAY));
     assert.equal(v[0].title, 'Gilt matured yesterday');
 });
+
+test('Settings → Alerts windows change when an alert starts and how long it stays after', () => {
+    const w = { gilt: { before: 30, after: 5 }, vest: { before: 3 } };
+    assert.equal(E.alertStage('gilt', 31, w), null);
+    assert.equal(E.alertStage('gilt', 30, w), 'amber');
+    assert.equal(E.alertStage('gilt', -5, w), 'red');
+    assert.equal(E.alertStage('gilt', -6, w), null);
+    assert.equal(E.alertStage('vest', 3, w), 'red');            // red never starts before the alert does
+    assert.equal(E.alertStage('mortgage', 90, w), 'amber');     // kinds not set keep their defaults
+    assert.deepEqual(plain(E.alertWindows(w)).vest, { before: 3, after: 90, red: 3 });
+    // Only whole, non-negative days are kept, capped at two years; junk is dropped.
+    assert.deepEqual(plain(E.validWindows({ gilt: { before: 12.6, after: -1 }, saver: { before: 5000 }, nope: { before: 1 } })),
+        { gilt: { before: 13 }, saver: { before: 730 } });
+    assert.equal(E.validWindows({ gilt: { before: 'x' } }), null);
+    // Saved with the balances, so the Estate export and backups carry them.
+    const st = E.validateState({ accounts: [{ id: 'a', name: 'A', group: 'current' }], snapshots: [], alertWindows: w });
+    assert.deepEqual(plain(st.alertWindows), w);
+    assert.deepEqual(JSON.parse(E.buildJson(st)).data.alertWindows, w);
+    assert.equal('alertWindows' in E.validateState({ accounts: [], snapshots: [] }), false);
+    // A state built with them uses them.
+    const s2 = Object.assign({}, st, { accounts: [{ id: 'm', name: 'Mortgage', debt: true, loan: { end: '2027-01-01' } }], alertWindows: { mortgage: { before: 30 } } });
+    assert.equal(E.estateAlerts(s2, TODAY).length, 0);   // 74 days off, window now 30
+});
