@@ -73,6 +73,11 @@ EVERY.forEach(function (f) { EVERY_BY_ID[f.id] = f; });
 //          end:      'YYYY-MM-DD' when the contract or policy ends or renews; null = rolling.
 //          estate:   id of an Estate mortgage this bill follows: its monthly payment and deal end come from the Estate
 //                    tab (Fergus asked), so the two can't disagree. amount, every and end are then ignored.
+//          costFrom: 'last12' | 'forecast' | null: an energy bill's yearly cost follows its usage page (the last 12 months
+//                    or the 12-month forecast) instead of the amount typed in (Fergus asked). amount stays as the
+//                    fallback until the usage has the figure.
+var COST_FROM = [{ id: 'last12', label: 'Last 12 months of usage' }, { id: 'forecast', label: '12-month forecast' }];
+var COST_FROM_BY_ID = { last12: COST_FROM[0], forecast: COST_FROM[1] };
 var DB_NAME = 'portfolio-lifeadmin';
 var DB_STORE = 'kv';
 var DB_KEY = 'state';
@@ -141,6 +146,7 @@ function validBill(b) {
         notes: text(b.notes, 500),
         estate: text(b.estate, 60) || null,
         usage: validUsage(b.usage),
+        costFrom: COST_FROM_BY_ID[b.costFrom] ? b.costFrom : null,
     };
 }
 // Returns a cleaned copy of a stored or restored state, or null when it is not a Life Admin state at all.
@@ -234,6 +240,11 @@ function resolveBill(b, estate) {
             if (!out.provider) out.provider = a.name;
             if (!out.link && a.link) out.link = a.link;
         } else out.missing = true;
+    }
+    out.formula = null;
+    if (b.costFrom && b.usage) {
+        var st = usageStats(b.usage), v = b.costFrom === 'last12' ? st.annual : st.forecast && st.forecast.cost;
+        if (v != null) { out.amount = Math.round(v * 100) / 100; out.every = 'year'; out.formula = b.costFrom; }
     }
     var per = (EVERY_BY_ID[out.every] || EVERY_BY_ID.month).per;
     out.annual = out.amount == null ? null : Math.round(out.amount * per * 100) / 100;
@@ -879,7 +890,11 @@ function Details(props) {
         show[0] ? E('span', { style: { whiteSpace: 'normal' } }, hint) : E('span', { style: { letterSpacing: '0.15em', color: ui.C.zinc600 } }, '••••••'),
         E(Chip, { onClick: function () { show[1](!show[0]); } }, show[0] ? 'Hide' : 'Show')));
     rows.push(E(Field, { key: 'cost', label: 'Cost' },
-        E('span', { style: money(ui, 14, p, ui.C.white, 500) }, b.amount == null ? 'Not set' : fmtExact(b.amount) + ' ' + EVERY_BY_ID[b.every].unit)));
+        // From the usage page: blue, like an Estate balance worked out by a formula.
+        b.formula ? E('span', { style: { textAlign: 'right' } },
+                E('span', { style: money(ui, 14, p, ui.C.blue, 500) }, fmtExact(b.amount) + ' a year'),
+                E('div', { style: { fontFamily: ui.sys, fontSize: 11, color: ui.C.zinc700, marginTop: 1 } }, COST_FROM_BY_ID[b.formula].label))
+          : E('span', { style: money(ui, 14, p, ui.C.white, 500) }, b.amount == null ? 'Not set' : fmtExact(b.amount) + ' ' + EVERY_BY_ID[b.every].unit)));
     if (b.end) rows.push(E(Field, { key: 'end', label: b.fromEstate ? 'Deal ends' : 'Contract ends' }, longDay(b.end)));
     rows.push(E(Field, { key: 'cat', label: 'Category' }, categoryOf(b.category).label));
     if (b.notes) rows.push(E('div', { key: 'notes', style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc400, padding: '10px 0', borderBottom: '1px solid ' + ui.C.border, whiteSpace: 'pre-wrap', lineHeight: 1.45 } }, b.notes));
@@ -909,7 +924,7 @@ function BillRow(props) {
                 E('div', { style: { fontFamily: ui.sys, fontSize: 15, fontWeight: 600, color: ui.C.white, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, b.name),
                 E('div', { style: { fontFamily: ui.sys, fontSize: 12.5, color: sub.soon ? ui.C.amber : ui.C.zinc600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 1 } }, sub.text)),
             E('div', { style: { textAlign: 'right', flexShrink: 0 } },
-                E('div', { style: money(ui, 15, p, ui.C.white, 600) }, b.monthly == null ? '—' : fmtGBP(b.monthly)),
+                E('div', { style: money(ui, 15, p, b.formula ? ui.C.blue : ui.C.white, 600) }, b.monthly == null ? '—' : fmtGBP(b.monthly)),
                 E('div', { style: money(ui, 12.5, p, ui.C.zinc700, 500) }, b.annual == null ? 'no cost' : fmtGBP(b.annual) + '/yr'))),
         props.open && E(Details, { bill: b, hints: props.hints, privacy: p, onEdit: props.onEdit, onUsage: props.onUsage }));
 }
@@ -970,7 +985,7 @@ function EditView(props) {
         var b = existing || {};
         return { name: b.name || '', provider: b.provider || '', category: b.category || '', amount: b.amount == null ? '' : String(b.amount),
                  every: b.every || 'month', account: b.account || '', username: b.username || '', link: b.link || '', end: b.end || '',
-                 notes: b.notes || '', estate: b.estate || '' };
+                 notes: b.notes || '', estate: b.estate || '', costFrom: b.costFrom || '' };
     });
     var form = f[0], err = React.useState(null), del = React.useState(false);
     function set(k, v) { var n = Object.assign({}, form); n[k] = v; f[1](n); }
@@ -980,7 +995,8 @@ function EditView(props) {
         if (form.link.trim() && !validLink(form.link)) return err[1]('The website should start with https:// (or be an app address).');
         var bill = validBill({ id: existing ? existing.id : null, name: form.name, provider: form.provider, category: form.category || guessCategory(form.name),
                                amount: amount, every: form.every, account: form.account, username: form.username, link: form.link, end: form.end,
-                               notes: form.notes, estate: form.estate || null, usage: existing ? existing.usage : null });
+                               notes: form.notes, estate: form.estate || null, usage: existing ? existing.usage : null,
+                               costFrom: form.costFrom || null });
         if (!bill) return err[1]('Give the bill a name.');
         var bills = existing ? props.state.bills.map(function (b) { return b.id === bill.id ? bill : b; }) : props.state.bills.concat([bill]);
         saveState(Object.assign({}, props.state, { bills: bills })).catch(function () {});
@@ -999,13 +1015,26 @@ function EditView(props) {
             options.map(function (o) { return E('option', { key: o.id, value: o.id }, o.label); }));
     };
     var fromEstate = !!form.estate;
+    // An energy bill with usage can take its cost from the usage page instead of a typed amount.
+    var usage = existing && existing.usage, canFormula = !fromEstate && !!(usage && usage.months.length) && isEnergyBill(existing);
+    var formula = canFormula && form.costFrom ? form.costFrom : null;
+    var formulaValue = null;
+    if (formula) { var st = usageStats(usage); formulaValue = formula === 'last12' ? st.annual : st.forecast && st.forecast.cost; }
     return E('div', { style: { padding: '16px 16px 0' } },
         E(Label, { text: 'Bill' }, input('name', { placeholder: 'Energy', autoCapitalize: 'words' })),
         E(Label, { text: 'Provider' }, input('provider', { placeholder: 'Who it’s with', autoCapitalize: 'words' })),
         E(Label, { text: 'Category' }, select('category', [{ id: '', label: 'Pick from the name' }].concat(CATEGORIES))),
         mortgages.length > 0 && E(Label, { text: 'Cost and end date' },
             select('estate', [{ id: '', label: 'Entered here' }].concat(mortgages.map(function (a) { return { id: a.id, label: 'From Estate: ' + a.name }; })))),
-        !fromEstate && E('div', { style: { display: 'flex', gap: 10 } },
+        canFormula && E(Label, { text: 'Cost from' }, select('costFrom', [{ id: '', label: 'Amount typed in' }].concat(COST_FROM.map(function (c) { return { id: c.id, label: 'Formula: ' + c.label }; })))),
+        // Formula: shown like an Estate balance worked out by a formula (blue, not typed in).
+        formula && E(Label, { text: 'Cost a year (£)' },
+            E('div', { style: inputStyle(ui, { display: 'flex', alignItems: 'center', justifyContent: 'flex-end', color: ui.C.blue, fontFamily: ui.rounded, fontVariantNumeric: 'tabular-nums' }) },
+                formulaValue == null ? '—' : Math.round(formulaValue).toLocaleString('en-GB')),
+            E('div', { style: { fontFamily: ui.sys, fontSize: 11, color: ui.C.zinc700, marginTop: 4 } },
+                formulaValue == null ? (formula === 'last12' ? 'Needs 12 months of readings; until then the amount typed in is used.' : 'Needs unit rates to price it; until then the amount typed in is used.')
+                                     : 'Worked out from the usage page; it updates as you add months.')),
+        !fromEstate && !formula && E('div', { style: { display: 'flex', gap: 10 } },
             E(Label, { text: 'Cost (£)', flex: 1 }, input('amount', { inputMode: 'decimal', placeholder: '0' })),
             E(Label, { text: 'How often', flex: 1 }, select('every', EVERY))),
         !fromEstate && E(Label, { text: 'Contract ends or renews' }, input('end', { type: 'date' })),
@@ -1218,7 +1247,7 @@ function UsageView(props) {
     var st = React.useMemo(function () { return usageStats(usage); }, [b.usage]);
     var fuel = React.useState(_usageFuel), all = React.useState(_usageAll), copied = React.useState(null);
     var setFuel = function (v) { _usageFuel = v; fuel[1](v); };
-    var billYear = b.annual;
+    var billYear = b.formula ? null : b.annual;   // a bill that follows this page would only compare with itself
     if (!st.months.length) {
         return E('div', { style: { padding: '16px' } },
             E('div', { style: cardStyle(ui, { padding: '22px 18px', textAlign: 'center' }) },
