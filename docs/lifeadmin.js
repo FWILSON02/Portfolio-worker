@@ -423,7 +423,10 @@ function mergeBills(existing, incoming) {
 // Month by month electricity and gas use, as in Fergus's usage sheet, kept on the bill (so backups carry it):
 //   bill.usage = { months: [Month], meters: { mpan, mprn, elecSerial, gasSerial } }
 //   Month = { month: 'YYYY-MM', elec: Fuel, gas: Fuel, support }
-//   Fuel  = { kwh, standing (£ a day), unit (£ a kWh), cost (£ for the month) }; any of them may be null.
+//   Fuel  = { kwh, standing (£ a day), unit (£ a kWh), cost (£ for the month), m3, cv }; any of them may be null.
+//   m3, cv: gas meters read in cubic metres; with the calorific value (MJ/m³, on the bill) kWh = m³ × 1.02264 × cv ÷ 3.6,
+//   the regulated conversion UK suppliers bill by.
+//   tariff (optional) = { elec: { unit, standing }, gas: {...} }: rates for the forecast; else the latest month's.
 //   support: government support credited that month (£), taken off the month's cost.
 // A month's cost for a fuel is the one entered, else kWh × unit rate + standing charge × days in the month.
 // "Annual cost" is the sheet's rolling figure: the last 12 months of electricity + gas − support.
@@ -434,11 +437,29 @@ var METER_FIELDS = [
 ];
 function num(v) { return typeof v === 'number' && isFinite(v) ? v : null; }
 var DEFAULT_WEIGHT = 2 / 3;
+var DEFAULT_CV = 39.5, VOLUME_CORRECTION = 1.02264;
+function m3ToKwh(m3, cv) { return m3 * VOLUME_CORRECTION * (cv || DEFAULT_CV) / 3.6; }
 function validFuel(f) {
     if (!f || typeof f !== 'object') return null;
     var o = { kwh: num(f.kwh), standing: num(f.standing), unit: num(f.unit), cost: num(f.cost) };
     ['kwh', 'standing', 'unit', 'cost'].forEach(function (k) { if (o[k] != null) o[k] = Math.round(Math.abs(o[k]) * 1e5) / 1e5; });
+    if (num(f.m3) != null) {
+        o.m3 = Math.round(Math.abs(f.m3) * 1000) / 1000;
+        if (num(f.cv) != null && f.cv >= 30 && f.cv <= 50) o.cv = Math.round(f.cv * 100) / 100;
+        if (o.kwh == null) o.kwh = Math.round(m3ToKwh(o.m3, o.cv) * 10) / 10;
+    }
     return o.kwh == null && o.standing == null && o.unit == null && o.cost == null ? null : o;
+}
+function validTariff(t) {
+    if (!t || typeof t !== 'object') return null;
+    var out = {}, any = false;
+    ['elec', 'gas'].forEach(function (k) {
+        var x = t[k], unit = x && num(x.unit), standing = x && num(x.standing);
+        if (unit == null && standing == null) return;
+        out[k] = { unit: unit == null ? null : Math.round(Math.abs(unit) * 1e5) / 1e5, standing: standing == null ? null : Math.round(Math.abs(standing) * 1e5) / 1e5 };
+        any = true;
+    });
+    return any ? out : null;
 }
 function validUsage(u) {
     if (!u || typeof u !== 'object') return null;
@@ -453,7 +474,9 @@ function validUsage(u) {
     var months = Object.keys(by).sort().map(function (k) { return by[k]; });
     var out = { months: months, meters: meters };
     if (num(u.weight) != null && u.weight >= 0 && u.weight <= 1) out.weight = Math.round(u.weight * 100) / 100;
-    return months.length || any ? out : null;
+    var tariff = validTariff(u.tariff);
+    if (tariff) out.tariff = tariff;
+    return months.length || any || tariff ? out : null;
 }
 function monthNo(mk) { return Number(mk.slice(0, 4)) * 12 + Number(mk.slice(5, 7)) - 1; }
 function monthOf(n) { return Math.floor(n / 12) + '-' + pad2(n % 12 + 1); }
@@ -478,6 +501,17 @@ function latestRates(months) {
     var out = { elec: null, gas: null };
     months.forEach(function (m) {
         ['elec', 'gas'].forEach(function (k) { var f = m[k]; if (f && f.unit != null) out[k] = { unit: f.unit, standing: f.standing || 0, from: m.month }; });
+    });
+    return out;
+}
+// Rates the forecast uses: the tariff Fergus entered, filling any gap from the latest month's.
+function forecastRates(usage) {
+    var latest = latestRates((usage && usage.months) || []), t = (usage && usage.tariff) || {}, out = {};
+    ['elec', 'gas'].forEach(function (k) {
+        var x = t[k] || {}, l = latest[k];
+        var unit = x.unit != null ? x.unit : l ? l.unit : null;
+        out[k] = unit == null ? null : { unit: unit, standing: x.standing != null ? x.standing : l ? l.standing : 0,
+                                         from: x.unit != null ? 'tariff' : l.from };
     });
     return out;
 }
@@ -525,11 +559,12 @@ function usageStats(usage, today) {
     // with only one of the two takes that one. Priced at the latest unit rates and standing charges.
     var weight = usage && num(usage.weight) != null ? Math.min(1, Math.max(0, usage.weight)) : DEFAULT_WEIGHT;
     var recentStart = latest ? monthNo(latest) - 11 : 0;
-    var rates = latestRates(months), forecast = null;
+    var rates = forecastRates(usage), forecast = null;
     if (latest) {
-        var plan = [], total = 0, priced = true, kwhTotal = { elec: 0, gas: 0 };
+        var plan = [], total = 0, priced = true, kwhTotal = { elec: 0, gas: 0 }, days = 0;
         for (var i = 1; i <= 12; i++) {
             var mk = monthOf(monthNo(latest) + i), c = +mk.slice(5, 7) - 1, row = { month: mk, cost: 0 };
+            days += daysIn(mk);
             ['elec', 'gas'].forEach(function (k) {
                 var recent = null, older = [];
                 done.forEach(function (m) {
@@ -546,7 +581,13 @@ function usageStats(usage, today) {
             total += row.cost;
             plan.push(row);
         }
-        forecast = { months: plan, kwh: kwhTotal, cost: priced && (rates.elec || rates.gas) ? total : null, weight: weight };
+        // The sum shown under the forecast: kWh × unit rate + days × standing charge, per fuel.
+        var parts = {};
+        ['elec', 'gas'].forEach(function (k) {
+            if (rates[k]) parts[k] = { kwh: kwhTotal[k], unit: rates[k].unit, standing: rates[k].standing, days: days,
+                                       energy: kwhTotal[k] * rates[k].unit, standingCost: rates[k].standing * days };
+        });
+        forecast = { months: plan, kwh: kwhTotal, cost: priced && (rates.elec || rates.gas) ? total : null, weight: weight, parts: parts, days: days };
     }
     // Use by calendar month, one series per year (the year-on-year bars).
     var years = {};
@@ -591,11 +632,14 @@ function usageColumns(heads) {
             else if (/unit/.test(t)) unit.push(i);
             else if (/electric/.test(t) && /usage|kwh|use/.test(t) && !/average/.test(t)) cols.ek = i;
             else if (/electric/.test(t) && /cost|£/.test(t)) cols.ec = i;
+            else if (/calorific|\bcv\b/.test(t)) cols.gcv = i;
+            else if (/gas/.test(t) && /m3|m³|cubic/.test(t) && !/average/.test(t)) cols.gm = i;
             else if (/gas/.test(t) && /usage|kwh|use/.test(t) && !/average/.test(t)) cols.gk = i;
             else if (/gas/.test(t) && /cost|£/.test(t)) cols.gc = i;
         });
     });
-    if (cols.ek == null || cols.gk == null) return USAGE_DEFAULT;
+    if (cols.ek == null || (cols.gk == null && cols.gm == null)) return USAGE_DEFAULT;
+    if (cols.gk == null) cols.gk = cols.gm;
     var pick = function (list, lo, hi) { return list.filter(function (i) { return i > lo && i < hi; })[0]; };
     cols.es = pick(standing, cols.ek, cols.gk); cols.eu = pick(unit, cols.ek, cols.gk);
     cols.gs = pick(standing, cols.gk, 1e9); cols.gu = pick(unit, cols.gk, 1e9);
@@ -623,7 +667,7 @@ function parseUsagePaste(textIn) {
         var kwh = function (k) { var v = String(cell(k) || '').replace(/[,\s]/g, ''); return /^\d+(\.\d+)?$/.test(v) ? Number(v) : null; };
         var m = validUsage({ months: [{ month: mk,
             elec: { kwh: kwh('ek'), standing: parseMoney(cell('es')), unit: parseMoney(cell('eu')), cost: parseMoney(cell('ec')) },
-            gas:  { kwh: kwh('gk'), standing: parseMoney(cell('gs')), unit: parseMoney(cell('gu')), cost: parseMoney(cell('gc')) },
+            gas:  { kwh: cols.gk === cols.gm ? null : kwh('gk'), m3: kwh('gm'), cv: kwh('gcv'), standing: parseMoney(cell('gs')), unit: parseMoney(cell('gu')), cost: parseMoney(cell('gc')) },
             support: parseMoney(cell('sup')) }] });
         if (m && m.months.length) out.months.push(m.months[0]); else out.skipped++;
     });
@@ -634,7 +678,7 @@ function mergeUsage(usage, pasted) {
     var by = {};
     ((usage && usage.months) || []).forEach(function (m) { by[m.month] = m; });
     pasted.months.forEach(function (m) { by[m.month] = m; });
-    return validUsage({ months: Object.keys(by).map(function (k) { return by[k]; }), weight: usage && usage.weight,
+    return validUsage({ months: Object.keys(by).map(function (k) { return by[k]; }), weight: usage && usage.weight, tariff: usage && usage.tariff,
                         meters: Object.assign({}, (usage && usage.meters) || {}, pasted.meters) });
 }
 function isEnergyBill(b) { return !!(b && (b.usage || /energy|electric|gas\b|power/i.test(b.name || ''))); }
@@ -999,6 +1043,7 @@ var FUELS = [{ id: 'elec', label: 'Electricity', color: '#60a5fa' }, { id: 'gas'
 var FUEL_BY_ID = { elec: FUELS[0], gas: FUELS[1] };
 var FC_COLOR = '#fbbf24';
 var MONTH_INITIALS = ['J', 'F', 'M', 'A', 'M', 'J', 'J', 'A', 'S', 'O', 'N', 'D'];
+var GAS_UNITS = [{ id: 'kwh', label: 'kWh' }, { id: 'm3', label: 'm³' }];
 var WEIGHTS = [{ id: 0.5, label: '50%' }, { id: 2 / 3, label: '67%' }, { id: 0.8, label: '80%' }, { id: 1, label: '100%' }];
 function monthLabel(mk) { return MONTHS[+mk.slice(5, 7) - 1] + ' ' + mk.slice(0, 4); }
 function fmtKwh(v) { return v == null ? '—' : Math.round(v).toLocaleString('en-GB') + ' kWh'; }
@@ -1121,6 +1166,24 @@ function StatLine(props) {
 }
 
 var _usageFuel = 'elec', _usageAll = false;
+var COL_W = 70;
+// One fuel's share of the forecast: kWh × unit rate, plus days × standing charge.
+function ForecastSum(props) {
+    var ui = useUI(), f = props.fuel, x = props.part, p = props.privacy;
+    var row = function (l, v) {
+        return E('div', { style: { display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12.5, color: ui.C.zinc600, marginTop: 2 } },
+            E('span', null, l), E('span', { style: { filter: p ? 'blur(6px)' : 'none' } }, v));
+    };
+    return E('div', { style: { padding: '8px 0', fontFamily: ui.sys, fontVariantNumeric: 'tabular-nums' } },
+        E('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between' } },
+            E('span', { style: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, color: ui.C.white } },
+                E('span', { style: { width: 8, height: 8, borderRadius: 2, background: f.color } }), f.label),
+            E('span', { style: money(ui, 14, p, ui.C.white, 600) }, x ? fmtGBP(x.energy + x.standingCost) : '—')),
+        x ? [row(fmtKwh(props.kwh) + ' × ' + fmtRate(x.unit) + ' per kWh', fmtGBP(x.energy)),
+             row(x.days + ' days × ' + fmtRate(x.standing) + ' a day', fmtGBP(x.standingCost))].map(function (r, i) { return E(React.Fragment, { key: i }, r); })
+          : row(fmtKwh(props.kwh) + ', no unit rate yet', ''));
+}
+
 function UsageView(props) {
     var ui = useUI(), b = props.bill, p = props.privacy;
     var usage = b.usage || { months: [], meters: {} };
@@ -1141,9 +1204,8 @@ function UsageView(props) {
     var range = st.latest ? monthLabel(monthOf(monthNo(st.latest) - 11)) + ' – ' + monthLabel(st.latest) : '';
     var diff = st.annual != null && billYear ? st.annual - billYear : null;
     var fc = st.forecast, fcDiff = fc && fc.cost != null && billYear ? fc.cost - billYear : null;
-    var rateText = ['elec', 'gas'].filter(function (k) { return st.rates[k]; }).map(function (k) {
-        return FUEL_BY_ID[k].label + ' ' + fmtRate(st.rates[k].unit) + '/kWh + ' + fmtRate(st.rates[k].standing) + '/day';
-    }).join(' · ');
+    var fromTariff = ['elec', 'gas'].some(function (k) { return st.rates[k] && st.rates[k].from === 'tariff'; });
+    var rateFrom = ['elec', 'gas'].map(function (k) { return st.rates[k] && st.rates[k].from !== 'tariff' ? st.rates[k].from : null; }).filter(Boolean).sort().pop();
     var list = st.months.slice().reverse(), shown = all[0] ? list : list.slice(0, 12);
     var meters = METER_FIELDS.filter(function (f) { return usage.meters && usage.meters[f.id]; });
     function copy(id, v) { copyText(v).then(function (ok) { copied[1](ok ? id : null); if (ok) setTimeout(function () { copied[1](null); }, 1500); }); }
@@ -1173,9 +1235,13 @@ function UsageView(props) {
                 E('span', { style: money(ui, 28, p) }, fc.cost == null ? '—' : fmtGBP(fc.cost)),
                 E('span', { style: { fontFamily: ui.sys, fontSize: 14, color: ui.C.zinc600 } }, fc.cost == null ? 'add unit rates to price it' : 'forecast · ' + fmtGBP(fc.cost / 12) + ' a month')),
             fcDiff != null && E('div', { style: { fontFamily: ui.sys, fontSize: 13, marginTop: 4 } }, vsBill(fcDiff)),
-            E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc400, marginTop: 10 } },
-                FUELS.map(function (f) { return f.label + ' ' + fmtKwh(fc.kwh[f.id]); }).join(' · ')),
-            rateText && E('div', { style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.zinc600, marginTop: 4, lineHeight: 1.4 } }, 'At ' + rateText),
+            // How the figure is worked out, fuel by fuel.
+            E('div', { style: { borderTop: '1px solid ' + ui.C.border, marginTop: 14, paddingTop: 4 } },
+                FUELS.map(function (f) { return E(ForecastSum, { key: f.id, fuel: f, kwh: fc.kwh[f.id], part: fc.parts[f.id], days: fc.days, privacy: p }); })),
+            E('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginTop: 6 } },
+                E('span', { style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.zinc600, lineHeight: 1.4 } },
+                    fromTariff ? 'Rates: your tariff' + (rateFrom ? ', gaps from ' + monthLabel(rateFrom) : '') : rateFrom ? 'Rates: from ' + monthLabel(rateFrom) : 'No rates yet'),
+                E(Chip, { onClick: props.onTariff }, fromTariff ? 'Edit rates' : 'Set rates')),
             E('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginTop: 14 } },
                 E('span', { style: { fontFamily: ui.sys, fontSize: 12.5, color: ui.C.zinc400 } }, 'Weight on last 12 months'),
                 E(Segmented, { options: WEIGHTS, value: WEIGHTS.filter(function (w) { return Math.abs(w.id - fc.weight) < 0.01; }).map(function (w) { return w.id; })[0],
@@ -1191,19 +1257,23 @@ function UsageView(props) {
             E('div', { style: Object.assign(capsLabel(ui), { margin: '18px 0 10px' }) }, 'Each year'),
             E(YearBars, { stats: st, fuel: fuel[0] })),
         // Months.
-        E('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', margin: '22px 4px 8px' } },
-            E('span', { style: capsLabel(ui) }, 'Months'),
-            E('span', { style: { fontFamily: ui.sys, fontSize: 11.5, color: ui.C.zinc600 } }, 'Electricity · Gas · Cost')),
+        E('div', { style: Object.assign(capsLabel(ui), { margin: '22px 4px 8px' }) }, 'Months'),
         E('div', { style: cardStyle(ui, { overflow: 'hidden' }) },
+            // Column heads, laid out like the rows so each sits over its column.
+            E('div', { style: { display: 'flex', alignItems: 'flex-end', gap: 8, padding: '10px 14px 8px', borderBottom: '1px solid ' + ui.C.border, fontFamily: ui.sys, fontSize: 12, fontWeight: 600, color: ui.C.zinc600, lineHeight: 1.25 } },
+                E('span', { style: { flex: 1 } }, 'Month'),
+                E('span', { style: { width: COL_W, textAlign: 'right', color: FUELS[0].color } }, 'Electricity', E('br'), 'kWh'),
+                E('span', { style: { width: COL_W, textAlign: 'right', color: FUELS[1].color } }, 'Gas', E('br'), 'kWh'),
+                E('span', { style: { width: COL_W, textAlign: 'right' } }, 'Cost')),
             shown.map(function (m, i) {
                 var c = monthCost(m), partial = !hasReading(m);
                 return E('button', { key: m.month, onClick: function () { props.onMonth(m.month); },
                     style: { display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '11px 14px', background: 'none', border: 'none', borderTop: i ? '1px solid ' + ui.C.border : 'none',
                              textAlign: 'left', cursor: 'pointer', fontFamily: ui.sys, fontVariantNumeric: 'tabular-nums' } },
                     E('span', { style: { flex: 1, fontSize: 14, color: ui.C.white } }, monthLabel(m.month), partial && E('span', { style: { color: ui.C.zinc600, fontSize: 12 } }, ' · so far')),
-                    E('span', { style: { width: 62, textAlign: 'right', fontSize: 13, color: FUELS[0].color } }, m.elec && m.elec.kwh != null ? Math.round(m.elec.kwh).toLocaleString('en-GB') : '—'),
-                    E('span', { style: { width: 62, textAlign: 'right', fontSize: 13, color: FUELS[1].color } }, m.gas && m.gas.kwh != null ? Math.round(m.gas.kwh).toLocaleString('en-GB') : '—'),
-                    E('span', { style: Object.assign(money(ui, 13.5, p, ui.C.white, 600), { width: 58, textAlign: 'right' }) }, c == null ? '—' : fmtGBP(c)));
+                    E('span', { style: { width: COL_W, textAlign: 'right', fontSize: 13, color: FUELS[0].color } }, m.elec && m.elec.kwh != null ? Math.round(m.elec.kwh).toLocaleString('en-GB') : '—'),
+                    E('span', { style: { width: COL_W, textAlign: 'right', fontSize: 13, color: FUELS[1].color } }, m.gas && m.gas.kwh != null ? Math.round(m.gas.kwh).toLocaleString('en-GB') : '—'),
+                    E('span', { style: Object.assign(money(ui, 13.5, p, ui.C.white, 600), { width: COL_W, textAlign: 'right' }) }, c == null ? '—' : fmtGBP(c)));
             }),
             list.length > 12 && E('button', { onClick: function () { _usageAll = !all[0]; all[1](!all[0]); },
                 style: { display: 'block', width: '100%', padding: '11px', background: 'none', border: 'none', borderTop: '1px solid ' + ui.C.border, color: TEAL, fontFamily: ui.sys, fontSize: 13.5, fontWeight: 600, cursor: 'pointer' } },
@@ -1232,23 +1302,35 @@ function UsageMonthView(props) {
     var rates = latestRates(usage.months);
     var lastKey = usage.months.length ? usage.months[usage.months.length - 1].month : todayISO().slice(0, 7);
     var str = function (v) { return v == null ? '' : String(v); };
+    // Gas in m³ (what the meter shows) or kWh (what the bill charges); a new month follows the last one that had gas.
+    var lastGas = usage.months.filter(function (m) { return m.gas && m.gas.kwh != null; }).pop();
     var f = React.useState(function () {
         var m = existing || {};
         var fuel = function (k) {
             var x = m[k] || {}, r = rates[k] || {};
-            return { kwh: str(x.kwh), standing: str(existing ? x.standing : r.standing), unit: str(existing ? x.unit : r.unit), cost: str(x.cost) };
+            return { kwh: str(x.kwh), standing: str(existing ? x.standing : r.standing), unit: str(existing ? x.unit : r.unit), cost: str(x.cost),
+                     m3: str(x.m3), cv: str(x.cv != null ? x.cv : lastGas && lastGas.gas.cv) };
         };
-        return { month: existing ? existing.month : (usage.months.length ? monthOf(monthNo(lastKey) + 1) : lastKey), elec: fuel('elec'), gas: fuel('gas'), support: str(m.support) };
+        var gasUnit = existing ? (existing.gas && existing.gas.m3 != null ? 'm3' : 'kwh') : (lastGas && lastGas.gas.m3 != null ? 'm3' : 'kwh');
+        return { month: existing ? existing.month : (usage.months.length ? monthOf(monthNo(lastKey) + 1) : lastKey), elec: fuel('elec'), gas: fuel('gas'), support: str(m.support), gasUnit: gasUnit };
     });
     var form = f[0], err = React.useState(null), del = React.useState(false);
     function set(k, sub, v) { var n = JSON.parse(JSON.stringify(form)); if (sub) n[k][sub] = v; else n[k] = v; f[1](n); }
     var toNum = function (v) { var t = String(v).replace(/[£,\s]/g, ''); return t === '' ? null : /^\d+(\.\d+)?$/.test(t) ? Number(t) : NaN; };
-    var fuelOut = function (k) { var x = form[k]; return { kwh: toNum(x.kwh), standing: toNum(x.standing), unit: toNum(x.unit), cost: toNum(x.cost) }; };
+    var fuelOut = function (k) {
+        var x = form[k], o = { kwh: toNum(x.kwh), standing: toNum(x.standing), unit: toNum(x.unit), cost: toNum(x.cost) };
+        if (k === 'gas' && form.gasUnit === 'm3') {
+            o.m3 = toNum(x.m3); o.cv = toNum(x.cv);
+            o.kwh = o.m3 == null || isNaN(o.m3) || isNaN(o.cv) ? o.m3 : Math.round(m3ToKwh(o.m3, o.cv) * 10) / 10;
+        }
+        return o;
+    };
     function save() {
         if (!MONTH_KEY.test(form.month)) return err[1]('Pick the month.');
         var m = { month: form.month, elec: fuelOut('elec'), gas: fuelOut('gas'), support: toNum(form.support) };
         var bad = [m.elec, m.gas].some(function (x) { return Object.keys(x).some(function (k) { return isNaN(x[k]) && x[k] !== null; }); }) || (m.support !== null && isNaN(m.support));
-        if (bad) return err[1]('Use plain numbers: kWh, and £ for rates and costs (0.24 for 24p).');
+        if (bad) return err[1]('Use plain numbers: kWh or m³, and £ for rates and costs (0.245 for 24.5p).');
+        if (m.gas.cv != null && (m.gas.cv < 30 || m.gas.cv > 50)) return err[1]('The calorific value is usually 37 to 43 MJ/m³; it’s on your bill.');
         var months = usage.months.filter(function (x) { return x.month !== m.month && (!existing || x.month !== existing.month); }).concat([m]);
         saveUsage(props.state, b.id, Object.assign({}, usage, { months: months }));
         props.onDone();
@@ -1263,23 +1345,33 @@ function UsageMonthView(props) {
                             onChange: function (e) { set(k, sub, e.target.value); }, style: inputStyle(ui) });
     };
     var fuelBlock = function (fu) {
+        var gasM3 = fu.id === 'gas' ? form.gasUnit === 'm3' : null;
         var x = fuelOut(fu.id), est = !isNaN(x.kwh) && !isNaN(x.unit) && x.kwh != null && x.unit != null && MONTH_KEY.test(form.month)
             ? x.kwh * x.unit + (isNaN(x.standing) ? 0 : x.standing || 0) * daysIn(form.month) : null;
         return E('div', { key: fu.id, style: cardStyle(ui, { padding: '14px 14px 2px', marginBottom: 12 }) },
-            E('div', { style: { fontFamily: ui.sys, fontSize: 14, fontWeight: 600, color: fu.color, marginBottom: 10 } }, fu.label),
+            E('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 } },
+                E('span', { style: { fontFamily: ui.sys, fontSize: 14, fontWeight: 600, color: fu.color } }, fu.label),
+                gasM3 != null && E(Segmented, { options: GAS_UNITS, value: form.gasUnit, onChange: function (v) { set('gasUnit', null, v); } })),
+            gasM3 ? E('div', { style: { display: 'flex', gap: 10 } },
+                E(Label, { text: 'Used (m³)', flex: 1 }, box(fu.id, 'm3')),
+                E(Label, { text: 'Calorific value (MJ/m³)', flex: 1 }, box(fu.id, 'cv', String(DEFAULT_CV)))) : null,
             E('div', { style: { display: 'flex', gap: 10 } },
-                E(Label, { text: 'Used (kWh)', flex: 1 }, box(fu.id, 'kwh')),
+                gasM3 ? E(Label, { text: 'Used (kWh)', flex: 1 },
+                        E('div', { style: inputStyle(ui, { display: 'flex', alignItems: 'center', color: ui.C.zinc400 }) }, x.kwh != null && !isNaN(x.kwh) ? Math.round(x.kwh).toLocaleString('en-GB') : '—'))
+                      : E(Label, { text: 'Used (kWh)', flex: 1 }, box(fu.id, 'kwh')),
                 E(Label, { text: 'Cost (£)', flex: 1 }, box(fu.id, 'cost', est != null ? est.toFixed(2) : ''))),
             E('div', { style: { display: 'flex', gap: 10 } },
-                E(Label, { text: 'Unit rate (£/kWh)', flex: 1 }, box(fu.id, 'unit', '0.24')),
-                E(Label, { text: 'Standing (£/day)', flex: 1 }, box(fu.id, 'standing', '0.50'))));
+                E(Label, { text: 'Unit rate (£ per kWh)', flex: 1 }, box(fu.id, 'unit', '0.245')),
+                E(Label, { text: 'Standing (£ a day)', flex: 1 }, box(fu.id, 'standing', '0.50'))),
+            gasM3 ? E('div', { style: { fontFamily: ui.sys, fontSize: 11.5, color: ui.C.zinc600, lineHeight: 1.4, marginBottom: 12, marginTop: -2 } },
+                'kWh = m³ × 1.02264 × calorific value ÷ 3.6, the way your supplier converts it. Leave the calorific value blank to use ' + DEFAULT_CV + '.') : null);
     };
     return E('div', { style: { padding: '16px 16px 0' } },
         E(Label, { text: 'Month' }, E('input', { type: 'month', value: form.month, onChange: function (e) { set('month', null, e.target.value); }, style: inputStyle(ui) })),
         FUELS.map(fuelBlock),
         E(Label, { text: 'Government support (£, taken off the cost)' }, box('support', null)),
         E('div', { style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.zinc600, lineHeight: 1.45, marginBottom: 14 } },
-            'Leave Cost blank to work it out: kWh × unit rate + standing charge × days in the month. Rates start as last month’s.'),
+            'Leave Cost blank to work it out: kWh × unit rate + standing charge × days in the month. Rates are in pounds (0.245 is 24.5p) and start as last month’s.'),
         err[0] && E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.rose, marginBottom: 10 } }, err[0]),
         E('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
             E('button', { style: buttonStyle(ui, 'primary'), onClick: save }, existing ? 'Save' : 'Add month'),
@@ -1300,7 +1392,7 @@ function UsagePasteView(props) {
     var first = parsed.months[0], last = parsed.months[parsed.months.length - 1];
     return E('div', { style: { padding: '16px 16px 0' } },
         E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc400, lineHeight: 1.5, marginBottom: 12 } },
-            'Copy your usage sheet, header rows included, and paste it below. A row per month (‘April 2021’): electricity kWh, standing charge, unit rate and cost, the same for gas, then government support. Pasted months replace the same months already here.'),
+            'Copy your usage sheet, header rows included, and paste it below. A row per month (‘April 2021’): electricity kWh, standing charge, unit rate and cost, the same for gas (kWh, or m³ with a calorific value column), then government support. Rates and costs in pounds. Pasted months replace the same months already here.'),
         E('textarea', { value: txt[0], rows: 6, placeholder: 'Paste here', onChange: function (e) { txt[1](e.target.value); done[1](null); },
                         autoCapitalize: 'none', autoCorrect: 'off', spellCheck: false,
                         style: inputStyle(ui, { height: 'auto', padding: '10px', fontSize: 13, fontFamily: 'ui-monospace, Menlo, monospace', resize: 'vertical', whiteSpace: 'pre', overflowX: 'auto' }) }),
@@ -1314,6 +1406,57 @@ function UsagePasteView(props) {
             E('button', { style: Object.assign(buttonStyle(ui, 'primary'), { width: '100%', marginTop: 12 }), onClick: add }, 'Save ' + parsed.months.length + ' months')),
         txt[0].trim() && !parsed.months.length && E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.amber, marginTop: 12 } },
             'No months found. Each row should start with the month, like ‘April 2021’.'));
+}
+
+// The rates the forecast uses: Fergus's current tariff. Blank fields fall back to the latest month's.
+function TariffView(props) {
+    var ui = useUI(), b = props.bill, usage = b.usage || { months: [], meters: {} };
+    var latest = latestRates(usage.months), t = usage.tariff || {};
+    var str = function (v) { return v == null ? '' : String(v); };
+    var f = React.useState(function () {
+        var o = {};
+        FUELS.forEach(function (fu) { var x = t[fu.id] || {}; o[fu.id] = { unit: str(x.unit), standing: str(x.standing) }; });
+        return o;
+    });
+    var err = React.useState(null);
+    var toNum = function (v) { var s2 = String(v).replace(/[£,\s]/g, ''); return s2 === '' ? null : /^\d+(\.\d+)?$/.test(s2) ? Number(s2) : NaN; };
+    function set(k, sub, v) { var n = JSON.parse(JSON.stringify(f[0])); n[k][sub] = v; f[1](n); }
+    function save() {
+        var out = {}, bad = false;
+        FUELS.forEach(function (fu) {
+            var u = toNum(f[0][fu.id].unit), sd = toNum(f[0][fu.id].standing);
+            if (isNaN(u) || isNaN(sd)) bad = true;
+            out[fu.id] = { unit: u, standing: sd };
+        });
+        if (bad) return err[1]('Use plain numbers in pounds: 0.245 for 24.5p.');
+        saveUsage(props.state, b.id, Object.assign({}, usage, { tariff: out }));
+        props.onDone();
+    }
+    var hint = function (k, sub) {
+        var v = toNum(f[0][k][sub]);
+        return v != null && !isNaN(v) ? '= ' + fmtRate(v) + (sub === 'unit' ? ' per kWh' : ' a day') : '';
+    };
+    return E('div', { style: { padding: '16px 16px 0' } },
+        E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc400, lineHeight: 1.5, marginBottom: 14 } },
+            'Your current tariff, from your supplier’s app or bill. The forecast prices each fuel at these. Leave a box blank to use the latest month’s rate.'),
+        FUELS.map(function (fu) {
+            var l = latest[fu.id];
+            var box = function (sub) {
+                return E('input', { value: f[0][fu.id][sub], inputMode: 'decimal', placeholder: l ? String(sub === 'unit' ? l.unit : l.standing) : '',
+                                    onChange: function (e) { set(fu.id, sub, e.target.value); }, style: inputStyle(ui) });
+            };
+            return E('div', { key: fu.id, style: cardStyle(ui, { padding: '14px 14px 2px', marginBottom: 12 }) },
+                E('div', { style: { fontFamily: ui.sys, fontSize: 14, fontWeight: 600, color: fu.color, marginBottom: 10 } }, fu.label),
+                E('div', { style: { display: 'flex', gap: 10 } },
+                    E(Label, { text: 'Unit rate (£ per kWh)', flex: 1 }, box('unit'),
+                        E('div', { style: { fontFamily: ui.sys, fontSize: 11.5, color: ui.C.zinc600, minHeight: 16, marginTop: 4 } }, hint(fu.id, 'unit'))),
+                    E(Label, { text: 'Standing (£ a day)', flex: 1 }, box('standing'),
+                        E('div', { style: { fontFamily: ui.sys, fontSize: 11.5, color: ui.C.zinc600, minHeight: 16, marginTop: 4 } }, hint(fu.id, 'standing')))),
+                l && E('div', { style: { fontFamily: ui.sys, fontSize: 11.5, color: ui.C.zinc700, marginBottom: 12 } },
+                    'Latest month (' + monthLabel(l.from) + '): ' + fmtRate(l.unit) + ' per kWh, ' + fmtRate(l.standing) + ' a day'));
+        }),
+        err[0] && E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.rose, marginBottom: 10 } }, err[0]),
+        E('button', { style: Object.assign(buttonStyle(ui, 'primary'), { width: '100%' }), onClick: save }, 'Save rates'));
 }
 
 function MetersView(props) {
@@ -1342,7 +1485,7 @@ function ScreenInner(props) {
     }, [view.name, _ready]);
     // The usage page's own forms go back to it; everything else goes back to the bills.
     var toUsage = function () { setView({ name: 'usage', id: view.id }); };
-    var inUsage = view.name === 'usageMonth' || view.name === 'usagePaste' || view.name === 'meters';
+    var inUsage = view.name === 'usageMonth' || view.name === 'usagePaste' || view.name === 'meters' || view.name === 'tariff';
     var back = view.name === 'main' ? null : inUsage ? toUsage : function () { setView({ name: 'main' }); };
     var bill = view.id ? bills.filter(function (b) { return b.id === view.id; })[0] : null;
     var body;
@@ -1351,7 +1494,9 @@ function ScreenInner(props) {
     else if (view.name === 'paste') body = E(PasteView, { state: state, estate: estate, privacy: props.privacyMode });
     else if (view.name === 'usage' && bill) body = E(UsageView, { bill: bill, state: state, privacy: props.privacyMode,
         onMonth: function (mk) { setView({ name: 'usageMonth', id: bill.id, month: mk }); },
-        onPaste: function () { setView({ name: 'usagePaste', id: bill.id }); }, onMeters: function () { setView({ name: 'meters', id: bill.id }); } });
+        onPaste: function () { setView({ name: 'usagePaste', id: bill.id }); }, onMeters: function () { setView({ name: 'meters', id: bill.id }); },
+        onTariff: function () { setView({ name: 'tariff', id: bill.id }); } });
+    else if (view.name === 'tariff' && bill) body = E(TariffView, { bill: bill, state: state, onDone: toUsage });
     else if (view.name === 'usageMonth' && bill) body = E(UsageMonthView, { bill: bill, month: view.month, state: state, onDone: toUsage });
     else if (view.name === 'usagePaste' && bill) body = E(UsagePasteView, { bill: bill, state: state });
     else if (view.name === 'meters' && bill) body = E(MetersView, { bill: bill, state: state, onDone: toUsage });
@@ -1359,7 +1504,7 @@ function ScreenInner(props) {
                               onEdit: function (id) { setView({ name: 'edit', id: id }); }, onUsage: function (id) { setView({ name: 'usage', id: id }); } });
     var title = view.name === 'paste' ? 'Paste bills' : view.name === 'usage' ? (bill ? bill.name : '') + ' usage'
         : view.name === 'usageMonth' ? (view.month ? monthLabel(view.month) : 'Add month') : view.name === 'usagePaste' ? 'Paste usage'
-        : view.name === 'meters' ? 'Meter numbers' : view.id ? 'Edit bill' : 'Add bill';
+        : view.name === 'meters' ? 'Meter numbers' : view.name === 'tariff' ? 'Forecast rates' : view.id ? 'Edit bill' : 'Add bill';
     return E('div', {
         'data-swipe-tabs': view.name === 'main' ? '' : null, 'data-tab-screen': 'lifeadmin',
         style: { position: 'fixed', top: 'var(--topbar-h, 0px)', left: 0, right: 0, bottom: 0, zIndex: 9995, background: ui.C.bg, display: 'flex', flexDirection: 'column', WebkitTapHighlightColor: 'transparent' }
@@ -1401,5 +1546,5 @@ window.LifeAdminColor = TEAL;
 window.__lifeAdminInternals = { validateState: validateState, validBill: validBill, validLink: validLink, parsePaste: parsePaste, parseDate: parseDate,
     parseMoney: parseMoney, costFrom: costFrom, mergeBills: mergeBills, resolveBill: resolveBill, resolveAll: resolveAll, totals: totals,
     sortBills: sortBills, renewalAlerts: renewalAlerts, hintFor: hintFor, guessCategory: guessCategory, subLine: subLine,
-    validUsage: validUsage, parseUsagePaste: parseUsagePaste, mergeUsage: mergeUsage, usageStats: usageStats, monthCost: monthCost, fuelCost: fuelCost, isEnergyBill: isEnergyBill };
+    validUsage: validUsage, parseUsagePaste: parseUsagePaste, mergeUsage: mergeUsage, usageStats: usageStats, monthCost: monthCost, fuelCost: fuelCost, isEnergyBill: isEnergyBill, m3ToKwh: m3ToKwh };
 })();
