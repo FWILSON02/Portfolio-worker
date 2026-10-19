@@ -276,3 +276,19 @@ test('Mortgage and Childcare: guessed from the name, and older bills move over',
                                         { name: 'Nursery', category: 'services' }, { name: 'Council Tax', category: 'home' }] });
     assert.deepEqual(plain(s.bills.map(b => b.category)), ['mortgage', 'mortgage', 'childcare', 'home']);
 });
+
+test('an energy bill can take its cost from the usage page', () => {
+    const u = L.mergeUsage(null, L.parseUsagePaste(usageSheet()));
+    const st = L.usageStats(u);
+    const base = { name: 'Energy', amount: 150, every: 'month', usage: u };
+    const last = L.resolveBill(L.validBill(Object.assign({ costFrom: 'last12' }, base)), null);
+    assert.equal(last.formula, 'last12');
+    assert.equal(last.annual, Math.round(st.annual * 100) / 100);
+    const fc = L.resolveBill(L.validBill(Object.assign({ costFrom: 'forecast' }, base)), null);
+    assert.equal(fc.annual, Math.round(st.forecast.cost * 100) / 100);
+    // Not enough usage yet: the typed amount stands.
+    const thin = L.resolveBill(L.validBill({ name: 'Energy', amount: 150, every: 'month', costFrom: 'last12', usage: { months: u.months.slice(0, 3) } }), null);
+    assert.equal(thin.formula, null);
+    assert.equal(thin.annual, 1800);
+    assert.equal(L.validBill({ name: 'Energy', costFrom: 'nonsense' }).costFrom, null);
+});
