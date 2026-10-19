@@ -20,6 +20,8 @@ var E = React.createElement;
 
 // ── Categories and how often a bill is paid ──────────────────────────────────
 var CATEGORIES = [
+    { id: 'mortgage',  label: 'Mortgage',  color: '#f472b6' },
+    { id: 'childcare', label: 'Childcare', color: '#4ade80' },
     { id: 'home',      label: 'Home',      color: '#2dd4bf' },
     { id: 'utilities', label: 'Utilities', color: '#60a5fa' },
     { id: 'insurance', label: 'Insurance', color: '#a78bfa' },
@@ -29,13 +31,23 @@ var CATEGORIES = [
 var CATEGORY_BY_ID = {};
 CATEGORIES.forEach(function (c) { CATEGORY_BY_ID[c.id] = c; });
 function categoryOf(id) { return CATEGORY_BY_ID[id] || CATEGORY_BY_ID.other; }
+var CHILDCARE = /nursery|childcare|child care|nanny|creche|crèche|childminder|after.?school|preschool|pre-school/;
+// Mortgage and Childcare came later (Fergus): a bill saved under the old guess moves to them.
+function migrateCategory(cat, name, estate) {
+    var n = String(name || '').toLowerCase();
+    if (cat === 'home' && (estate || /mortgage/.test(n))) return 'mortgage';
+    if ((cat === 'services' || cat === 'other') && CHILDCARE.test(n)) return 'childcare';
+    return cat;
+}
 // A pasted bill's category from its name.
 function guessCategory(name) {
     var n = String(name || '').toLowerCase();
     if (/insur|cover|warranty|protect/.test(n)) return 'insurance';
-    if (/mortgage|rent|council|service charge|ground rent/.test(n)) return 'home';
+    if (/mortgage/.test(n)) return 'mortgage';
+    if (CHILDCARE.test(n)) return 'childcare';
+    if (/rent|council|service charge|ground rent/.test(n)) return 'home';
     if (/energy|gas|electric|water|internet|broadband|wifi|fibre|tv|licen[cs]e|phone|mobile|sim/.test(n)) return 'utilities';
-    if (/clean|gardener|gym|subscription|netflix|spotify|nanny|childcare|window/.test(n)) return 'services';
+    if (/clean|gardener|gym|subscription|netflix|spotify|window/.test(n)) return 'services';
     return 'other';
 }
 
@@ -119,7 +131,7 @@ function validBill(b) {
         id: text(b.id, 40) || newId(),
         name: name,
         provider: text(b.provider, 80),
-        category: CATEGORY_BY_ID[b.category] ? b.category : guessCategory(name),
+        category: CATEGORY_BY_ID[b.category] ? migrateCategory(b.category, name, b.estate) : guessCategory(name),
         amount: amount,
         every: EVERY_BY_ID[b.every] ? b.every : 'month',
         account: text(b.account, 80),
@@ -481,6 +493,10 @@ function validUsage(u) {
     var months = Object.keys(by).sort().map(function (k) { return by[k]; });
     var out = { months: months, meters: meters };
     if (num(u.weight) != null && u.weight >= 0 && u.weight <= 1) out.weight = Math.round(u.weight * 100) / 100;
+    // Forecast adjustment per fuel (Fergus): −0.1 takes 10% off, for a year that won't repeat (who's home changes).
+    var adjust = {};
+    ['elec', 'gas'].forEach(function (k) { var v = u.adjust && num(u.adjust[k]); if (v != null && v !== 0 && v >= -0.5 && v <= 0.5) adjust[k] = Math.round(v * 100) / 100; });
+    if (Object.keys(adjust).length) out.adjust = adjust;
     var tariff = validTariff(u.tariff);
     if (tariff) out.tariff = tariff;
     return months.length || any || tariff ? out : null;
@@ -566,6 +582,7 @@ function usageStats(usage, today) {
     // with only one of the two takes that one. Priced at the latest unit rates and standing charges.
     var weight = usage && num(usage.weight) != null ? Math.min(1, Math.max(0, usage.weight)) : DEFAULT_WEIGHT;
     var recentStart = latest ? monthNo(latest) - 11 : 0;
+    var adjust = (usage && usage.adjust) || {};
     var rates = forecastRates(usage), forecast = null;
     if (latest) {
         var plan = [], total = 0, priced = true, kwhTotal = { elec: 0, gas: 0 }, days = 0;
@@ -580,6 +597,7 @@ function usageStats(usage, today) {
                 });
                 var old = older.length ? older.reduce(function (a, b) { return a + b; }, 0) / older.length : null;
                 var kwh = recent != null && old != null ? weight * recent + (1 - weight) * old : recent != null ? recent : old;
+                if (kwh != null && adjust[k]) kwh *= 1 + adjust[k];
                 row[k] = kwh;
                 if (kwh != null) kwhTotal[k] += kwh;
                 if (kwh != null && rates[k]) row.cost += kwh * rates[k].unit + rates[k].standing * daysIn(mk);
@@ -594,7 +612,7 @@ function usageStats(usage, today) {
             if (rates[k]) parts[k] = { kwh: kwhTotal[k], unit: rates[k].unit, standing: rates[k].standing, days: days,
                                        energy: kwhTotal[k] * rates[k].unit, standingCost: rates[k].standing * days };
         });
-        forecast = { months: plan, kwh: kwhTotal, cost: priced && (rates.elec || rates.gas) ? total : null, weight: weight, parts: parts, days: days };
+        forecast = { months: plan, kwh: kwhTotal, cost: priced && (rates.elec || rates.gas) ? total : null, weight: weight, parts: parts, days: days, adjust: { elec: adjust.elec || 0, gas: adjust.gas || 0 } };
     }
     // Use by calendar month, one series per year (the year-on-year bars).
     var years = {};
@@ -685,7 +703,7 @@ function mergeUsage(usage, pasted) {
     var by = {};
     ((usage && usage.months) || []).forEach(function (m) { by[m.month] = m; });
     pasted.months.forEach(function (m) { by[m.month] = m; });
-    return validUsage({ months: Object.keys(by).map(function (k) { return by[k]; }), weight: usage && usage.weight, tariff: usage && usage.tariff,
+    return validUsage({ months: Object.keys(by).map(function (k) { return by[k]; }), weight: usage && usage.weight, tariff: usage && usage.tariff, adjust: usage && usage.adjust,
                         meters: Object.assign({}, (usage && usage.meters) || {}, pasted.meters) });
 }
 function isEnergyBill(b) { return !!(b && (b.usage || /energy|electric|gas\b|power/i.test(b.name || ''))); }
@@ -750,7 +768,9 @@ var BILL_ICONS = {
     car: icon(['M5 17h14', 'M3 17v-4l2-5h14l2 5v4', { t: 'c', cx: 7.5, cy: 17, r: 1.8 }, { t: 'c', cx: 16.5, cy: 17, r: 1.8 }]),
     services: icon(['M12 3l1.8 4.2L18 9l-4.2 1.8L12 15l-1.8-4.2L6 9l4.2-1.8z', 'M19 15l.8 1.7 1.7.8-1.7.8L19 20l-.8-1.7-1.7-.8 1.7-.8z']),
     other: icon([{ t: 'r', x: 4, y: 3, w: 16, h: 18, rx: 2 }, 'M8 8h8', 'M8 12h8', 'M8 16h5']),
+    childcare: icon([{ t: 'c', cx: 12, cy: 12, r: 9 }, 'M9 14.5a4 4 0 0 0 6 0', { t: 'c', cx: 9, cy: 10, r: 0.8 }, { t: 'c', cx: 15, cy: 10, r: 0.8 }]),
 };
+BILL_ICONS.mortgage = BILL_ICONS.home;
 function billIcon(b) {
     var n = (b.name || '').toLowerCase();
     if (/council/.test(n)) return BILL_ICONS.council;
@@ -1051,6 +1071,7 @@ var FUEL_BY_ID = { elec: FUELS[0], gas: FUELS[1] };
 var FC_COLOR = '#fbbf24';
 var MONTH_INITIALS = ['J', 'F', 'M', 'A', 'M', 'J', 'J', 'A', 'S', 'O', 'N', 'D'];
 var GAS_UNITS = [{ id: 'kwh', label: 'kWh' }, { id: 'm3', label: 'm³' }];
+var ADJUSTS = [{ id: -0.2, label: '−20%' }, { id: -0.1, label: '−10%' }, { id: -0.05, label: '−5%' }, { id: 0, label: '0' }, { id: 0.1, label: '+10%' }];
 var WEIGHTS = [{ id: 0.5, label: '50%' }, { id: 2 / 3, label: '67%' }, { id: 0.8, label: '80%' }, { id: 1, label: '100%' }];
 function monthLabel(mk) { return MONTHS[+mk.slice(5, 7) - 1] + ' ' + mk.slice(0, 4); }
 function fmtKwh(v) { return v == null ? '—' : Math.round(v).toLocaleString('en-GB') + ' kWh'; }
@@ -1067,7 +1088,7 @@ function Segmented(props) {
         props.options.map(function (o) {
             var on = o.id === props.value;
             return E('button', { key: String(o.id), onClick: function () { props.onChange(o.id); },
-                style: { flex: props.fill ? 1 : 'none', border: 'none', borderRadius: 7, padding: '5px 10px', fontFamily: ui.sys, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                style: { flex: props.fill ? 1 : 'none', border: 'none', borderRadius: 7, padding: props.tight ? '5px 2px' : '5px 10px', fontFamily: ui.sys, fontSize: 12, fontWeight: 600, cursor: 'pointer',
                          background: on ? 'rgba(255,255,255,0.10)' : 'transparent', color: on ? ui.C.white : ui.C.zinc600 } }, o.label);
         }));
 }
@@ -1186,7 +1207,7 @@ function ForecastSum(props) {
             E('span', { style: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, color: ui.C.white } },
                 E('span', { style: { width: 8, height: 8, borderRadius: 2, background: f.color } }), f.label),
             E('span', { style: money(ui, 14, p, ui.C.white, 600) }, x ? fmtGBP(x.energy + x.standingCost) : '—')),
-        x ? [row(fmtKwh(props.kwh) + ' × ' + fmtRate(x.unit) + ' per kWh', fmtGBP(x.energy)),
+        x ? [row(fmtKwh(props.kwh) + (props.adjust ? ' (' + fmtPctSigned(props.adjust) + ')' : '') + ' × ' + fmtRate(x.unit) + ' per kWh', fmtGBP(x.energy)),
              row(x.days + ' days × ' + fmtRate(x.standing) + ' a day', fmtGBP(x.standingCost))].map(function (r, i) { return E(React.Fragment, { key: i }, r); })
           : row(fmtKwh(props.kwh) + ', no unit rate yet', ''));
 }
@@ -1244,7 +1265,7 @@ function UsageView(props) {
             fcDiff != null && E('div', { style: { fontFamily: ui.sys, fontSize: 13, marginTop: 4 } }, vsBill(fcDiff)),
             // How the figure is worked out, fuel by fuel.
             E('div', { style: { borderTop: '1px solid ' + ui.C.border, marginTop: 14, paddingTop: 4 } },
-                FUELS.map(function (f) { return E(ForecastSum, { key: f.id, fuel: f, kwh: fc.kwh[f.id], part: fc.parts[f.id], days: fc.days, privacy: p }); })),
+                FUELS.map(function (f) { return E(ForecastSum, { key: f.id, fuel: f, kwh: fc.kwh[f.id], part: fc.parts[f.id], days: fc.days, adjust: fc.adjust[f.id], privacy: p }); })),
             E('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginTop: 6 } },
                 E('span', { style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.zinc600, lineHeight: 1.4 } },
                     fromTariff ? 'Rates: your tariff' + (rateFrom ? ', gaps from ' + monthLabel(rateFrom) : '') : rateFrom ? 'Rates: from ' + monthLabel(rateFrom) : 'No rates yet'),
@@ -1254,7 +1275,18 @@ function UsageView(props) {
                 E(Segmented, { options: WEIGHTS, value: WEIGHTS.filter(function (w) { return Math.abs(w.id - fc.weight) < 0.01; }).map(function (w) { return w.id; })[0],
                     onChange: function (v) { saveUsage(props.state, b.id, Object.assign({}, usage, { weight: v })); } })),
             E('div', { style: { fontFamily: ui.sys, fontSize: 11.5, color: ui.C.zinc700, marginTop: 8, lineHeight: 1.4 } },
-                'Each month blends last year’s use with the average of earlier years. 67% counts last year twice as much; 100% repeats last year.')),
+                'Each month blends last year’s use with the average of earlier years. 67% counts last year twice as much; 100% repeats last year.'),
+            // Tone down (or up) a fuel when the next year won't look like the last one.
+            E('div', { style: { fontFamily: ui.sys, fontSize: 12.5, color: ui.C.zinc400, marginTop: 16 } }, 'Adjust for changes at home'),
+            FUELS.map(function (f) {
+                return E('div', { key: f.id, style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginTop: 8 } },
+                    E('span', { style: { display: 'flex', alignItems: 'center', gap: 6, width: 92, flexShrink: 0, fontFamily: ui.sys, fontSize: 12.5, color: ui.C.zinc400 } },
+                        E('span', { style: { width: 8, height: 8, borderRadius: 2, background: f.color } }), f.label),
+                    E('div', { style: { flex: 1, minWidth: 0 } }, E(Segmented, { fill: true, tight: true, options: ADJUSTS, value: ADJUSTS.filter(function (a) { return Math.abs(a.id - fc.adjust[f.id]) < 0.001; }).map(function (a) { return a.id; })[0],
+                        onChange: function (v) { var a = Object.assign({}, usage.adjust || {}); a[f.id] = v; saveUsage(props.state, b.id, Object.assign({}, usage, { adjust: a })); } })));
+            }),
+            E('div', { style: { fontFamily: ui.sys, fontSize: 11.5, color: ui.C.zinc700, marginTop: 8, lineHeight: 1.4 } },
+                'Scales that fuel’s forecast use, for a year that won’t repeat: fewer people home in the day, a new appliance.')),
         // Charts.
         E('div', { style: cardStyle(ui, { padding: '16px 16px 14px', marginTop: 12 }) },
             E('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 } },
