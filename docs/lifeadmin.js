@@ -901,8 +901,9 @@ function Details(props) {
     if (hint) rows.push(E(Field, { key: 'hint', label: 'Password hint' },
         show[0] ? E('span', { style: { whiteSpace: 'normal' } }, hint) : E('span', { style: { letterSpacing: '0.15em', color: ui.C.zinc600 } }, '••••••'),
         E(Chip, { onClick: function () { show[1](!show[0]); } }, show[0] ? 'Hide' : 'Show')));
-    rows.push(E(Field, { key: 'cost', label: 'Cost' },
-        // From the usage page: blue, like an Estate balance worked out by a formula.
+    // From the usage page: a FORMULA tag beside Cost and a blue value, like an Estate balance worked out by a formula.
+    var costLabel = b.formula ? E('span', null, 'Cost', E('span', { style: { fontSize: 10, color: ui.C.blue, letterSpacing: '0.02em', marginLeft: 8 } }, 'FORMULA')) : 'Cost';
+    rows.push(E(Field, { key: 'cost', label: costLabel },
         b.formula ? E('span', { style: { textAlign: 'right' } },
                 E('span', { style: money(ui, 14, p, ui.C.blue, 500) }, fmtExact(b.amount) + ' a year'),
                 E('div', { style: { fontFamily: ui.sys, fontSize: 11, color: ui.C.zinc700, marginTop: 1 } }, COST_FROM_BY_ID[b.formula].label))
@@ -936,7 +937,7 @@ function BillRow(props) {
                 E('div', { style: { fontFamily: ui.sys, fontSize: 15, fontWeight: 600, color: ui.C.white, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, b.name),
                 E('div', { style: { fontFamily: ui.sys, fontSize: 12.5, color: sub.soon ? ui.C.amber : ui.C.zinc600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 1 } }, sub.text)),
             E('div', { style: { textAlign: 'right', flexShrink: 0 } },
-                E('div', { style: money(ui, 15, p, b.formula ? ui.C.blue : ui.C.white, 600) }, b.monthly == null ? '—' : fmtGBP(b.monthly)),
+                E('div', { style: money(ui, 15, p, ui.C.white, 600) }, b.monthly == null ? '—' : fmtGBP(b.monthly)),
                 E('div', { style: money(ui, 12.5, p, ui.C.zinc700, 500) }, b.annual == null ? 'no cost' : fmtGBP(b.annual) + '/yr'))),
         props.open && E(Details, { bill: b, hints: props.hints, privacy: p, onEdit: props.onEdit, onUsage: props.onUsage }));
 }
