@@ -218,3 +218,32 @@ test('cloud backup counts energy usage months', () => {
     const c = app.cloudBackupCounts({ lifeAdmin: { bills: [{ usage: { months: [{}, {}, {}] } }, {}] } });
     assert.equal(c.usage, 3);
 });
+
+test('gas in m³ converts to kWh the way suppliers bill it: m³ × 1.02264 × CV ÷ 3.6', () => {
+    assert.ok(Math.abs(L.m3ToKwh(247, 39.6) - 247 * 1.02264 * 39.6 / 3.6) < 1e-9);
+    const u = L.validUsage({ months: [{ month: '2026-09', gas: { m3: 100, cv: 39.2 } }, { month: '2026-10', gas: { m3: 100 } }] });
+    assert.equal(u.months[0].gas.kwh, Math.round(100 * 1.02264 * 39.2 / 3.6 * 10) / 10);
+    assert.equal(u.months[0].gas.m3, 100);
+    assert.equal(u.months[1].gas.kwh, Math.round(100 * 1.02264 * 39.5 / 3.6 * 10) / 10);   // no CV: the typical 39.5
+    // A sheet with a gas m³ column instead of kWh.
+    const p = L.parseUsagePaste('Month\tElectricity usage kWh\tElectricity cost\tGas usage m3\tCalorific value\tGas cost\nMarch 2026\t250\t£70\t120\t39.1\t£60');
+    assert.equal(p.months[0].gas.m3, 120);
+    assert.equal(p.months[0].gas.cv, 39.1);
+    assert.ok(Math.abs(p.months[0].gas.kwh - 120 * 1.02264 * 39.1 / 3.6) < 0.1);
+});
+
+test('forecast rates: the tariff entered wins, gaps fall back to the latest month, and the sum is shown', () => {
+    const u = L.mergeUsage(null, L.parseUsagePaste(usageSheet()));
+    const withTariff = L.validUsage(Object.assign({}, u, { tariff: { elec: { unit: 0.30, standing: 0.60 }, gas: { unit: null, standing: null } } }));
+    assert.deepEqual(plain(withTariff.tariff), { elec: { unit: 0.3, standing: 0.6 } });
+    const st = L.usageStats(withTariff), fc = st.forecast;
+    assert.equal(st.rates.elec.from, 'tariff');
+    assert.equal(st.rates.gas.unit, 0.06);                                 // the latest month's
+    assert.equal(fc.days, 365);
+    const e = fc.parts.elec, g = fc.parts.gas;
+    assert.ok(Math.abs(e.energy - fc.kwh.elec * 0.3) < 1e-9);
+    assert.ok(Math.abs(e.standingCost - 365 * 0.6) < 1e-9);
+    assert.ok(Math.abs(fc.cost - (e.energy + e.standingCost + g.energy + g.standingCost)) < 1e-6);
+    // Pasting more months keeps the tariff.
+    assert.deepEqual(plain(L.mergeUsage(withTariff, { months: [], meters: {} }).tariff), { elec: { unit: 0.3, standing: 0.6 } });
+});
