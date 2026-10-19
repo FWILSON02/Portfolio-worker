@@ -42,3 +42,38 @@ test('the API key file can carry login hints by Estate account name', () => {
     assert.equal(res.updates.length, 1);
     assert.equal(res.unknown.length, 0);
 });
+
+// What each automatic run sends: the Worker writes KV twice per upload, and the free tier allows 1,000 writes a day.
+function backupRuns() {
+    const { app } = loadApp();
+    app.localStorage.setItem('cloud_backup_token', 'tok');
+    app.localStorage.setItem('cloud_backup_passphrase', 'correct horse battery staple');
+    const puts = [];
+    app.fetch = async (url, init) => { puts.push(init.method); return { ok: true, json: async () => ({ ok: true }) }; };
+    const json = (balances, tx) => JSON.stringify({ payload: { transactions: tx || [{ value: 1 }], balances } });
+    return { app, puts, json };
+}
+
+test('marking the Estate data as exported does not count as a change', async () => {
+    const { app, puts, json } = backupRuns();
+    const bal = { v: 1, accounts: [{ id: 'a' }], snapshots: [], lastExportAt: 1, updatedAt: 1 };
+    await app.runCloudBackup(json(bal));
+    const r = await app.runCloudBackup(json(Object.assign({}, bal, { lastExportAt: 2, updatedAt: 2 })));
+    assert.equal(r.skipped, 'unchanged');
+    assert.equal(puts.length, 1);
+});
+
+test('a real change waits for the minimum gap, then goes; Back up now never waits', async () => {
+    const { app, puts, json } = backupRuns();
+    await app.runCloudBackup(json(null, [{ value: 1 }]));
+    const r = await app.runCloudBackup(json(null, [{ value: 2 }]));
+    assert.equal(r.skipped, 'too soon');
+    assert.ok(r.retryIn > 0 && r.retryIn <= app.CLOUD_BACKUP_MIN_GAP);
+    assert.equal(puts.length, 1);
+    await app.runCloudBackup(json(null, [{ value: 2 }]), true);
+    assert.equal(puts.length, 2);
+    const st = JSON.parse(app.localStorage.getItem('cloud_backup_state'));
+    app.localStorage.setItem('cloud_backup_state', JSON.stringify(Object.assign(st, { at: st.at - app.CLOUD_BACKUP_MIN_GAP })));
+    await app.runCloudBackup(json(null, [{ value: 3 }]));
+    assert.equal(puts.length, 3);
+});

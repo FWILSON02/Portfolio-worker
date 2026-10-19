@@ -4304,6 +4304,9 @@ const CLOUD_BACKUP_PASS_KEY  = 'cloud_backup_passphrase';
 const CLOUD_BACKUP_STATE_KEY = 'cloud_backup_state';    // { at, hash, bytes, error, errorAt }
 const CLOUD_BACKUP_ITERATIONS = 600000;
 const CLOUD_BACKUP_MAX_AGE = 24 * 3600 * 1000;           // unchanged data is still backed up once a day
+// Changed data goes at most this often on its own. Each upload is two KV writes on the Worker, and Cloudflare's free tier
+// allows 1,000 a day; live prices move linked Estate accounts every 15 seconds while a market is open.
+const CLOUD_BACKUP_MIN_GAP = 10 * 60 * 1000;
 function getCloudBackupToken()  { try { return (localStorage.getItem(CLOUD_BACKUP_TOKEN_KEY) || '').trim(); } catch { return ''; } }
 function setCloudBackupToken(v) { try { localStorage.setItem(CLOUD_BACKUP_TOKEN_KEY, String(v || '').trim()); } catch {} }
 function getCloudBackupPass()   { try { return localStorage.getItem(CLOUD_BACKUP_PASS_KEY) || ''; } catch { return ''; } }
@@ -4418,14 +4421,19 @@ async function cloudBackupFetch(method, path, body) {
     return res;
 }
 // Backs up `jsonString` (the full JSON backup) when its data differs from the last one sent, or that was over a day
-// ago, or `force`. Only the data is compared: live prices and the export time change all the time.
+// ago, or `force`. Only the data is compared: live prices and the export time change all the time, and so do the Estate
+// data's lastExportAt and updatedAt, which every backup itself sets. Without `force`, a change sent less than
+// CLOUD_BACKUP_MIN_GAP after the last upload waits: `retryIn` says how long.
 async function runCloudBackup(jsonString, force) {
     if (!cloudBackupReady()) return { skipped: 'not set up' };
     const st = loadCloudBackupState();
     try {
         const p = (JSON.parse(jsonString) || {}).payload || {};
-        const hash = await cbSha256Hex(JSON.stringify([p.transactions, p.compConfigs, p.externalHoldings, p.balances, p.loadSource]));
-        if (!force && st.hash === hash && st.at && Date.now() - st.at < CLOUD_BACKUP_MAX_AGE) return { skipped: 'unchanged' };
+        const bal = p.balances ? Object.assign({}, p.balances, { lastExportAt: null, updatedAt: null }) : p.balances;
+        const hash = await cbSha256Hex(JSON.stringify([p.transactions, p.compConfigs, p.externalHoldings, bal, p.loadSource]));
+        const since = st.at ? Date.now() - st.at : Infinity;
+        if (!force && st.hash === hash && since < CLOUD_BACKUP_MAX_AGE) return { skipped: 'unchanged' };
+        if (!force && since < CLOUD_BACKUP_MIN_GAP) return { skipped: 'too soon', retryIn: CLOUD_BACKUP_MIN_GAP - since };
         const body = JSON.stringify(await encryptBackup(jsonString, getCloudBackupPass()));
         await cloudBackupFetch('PUT', '/backup', body);
         const next = { at: Date.now(), hash, bytes: body.length, error: null, errorAt: null };
@@ -7481,7 +7489,7 @@ function Row({ icon: Icon, iconColor, iconBg, label, sub, right, onClick, isLabe
 
 // The pull request that last changed the app. Bump it in every PR so Settings → App shows which change the phone is
 // running (Fergus asked; the Estate ?v= number only moved when balances.js changed, so it looked stuck).
-const APP_BUILD = 62;
+const APP_BUILD = 63;
 
 // Settings → App: pulls the newest index.html and balances.js past the browser's cache, then reloads. A Home Screen web app
 // on iOS keeps serving cached files for a while after a deploy, and closing it from the app switcher doesn't clear that.
@@ -17724,7 +17732,8 @@ function PortfolioApp() {
         }, [balancesAppValues]);
 
         // Cloud backup (see runCloudBackup): shortly after the app opens or comes back to the screen, after the ledger or
-        // Estate changes, and every 30 minutes while open. Each run sends only when the data changed (or daily).
+        // Estate changes, and every 30 minutes while open. Each run sends only when the data changed (or daily), and at
+        // most every 10 minutes; a change held back is sent when the gap is up.
         const exportJsonRef = React.useRef(exportPricesJson);
         exportJsonRef.current = exportPricesJson;
         const cloudBackupNow = React.useCallback(function (force) {
@@ -17738,14 +17747,23 @@ function PortfolioApp() {
             const run = () => {
                 if (busy || document.visibilityState !== 'visible') return;
                 busy = true;
-                cloudBackupNow(false).catch(e => console.warn('Cloud backup failed:', e)).finally(() => { busy = false; });
+                cloudBackupNow(false).then(r => { if (r && r.retryIn) schedule(r.retryIn + 1000); })
+                    .catch(e => console.warn('Cloud backup failed:', e)).finally(() => { busy = false; });
             };
             const schedule = ms => { clearTimeout(timer); timer = setTimeout(run, ms); };
             cloudScheduleRef.current = schedule;
             schedule(20000);   // give the first price refresh a moment
             const onVis = () => { if (document.visibilityState === 'visible') schedule(20000); };
             document.addEventListener('visibilitychange', onVis);
-            const unsub = window.BalancesStore && window.BalancesStore.subscribe ? window.BalancesStore.subscribe(() => schedule(5000)) : null;
+            // Only when the Estate accounts or balances change: the backup itself saves lastExportAt, and reacting to that
+            // ran a backup every few seconds while the app was open.
+            let seen = window.BalancesStore && window.BalancesStore.get ? window.BalancesStore.get() : null;
+            const unsub = window.BalancesStore && window.BalancesStore.subscribe ? window.BalancesStore.subscribe(() => {
+                const now = window.BalancesStore.get();
+                if (seen && now.accounts === seen.accounts && now.snapshots === seen.snapshots) return;
+                seen = now;
+                schedule(5000);
+            }) : null;
             const iv = setInterval(() => schedule(1000), 30 * 60 * 1000);
             return () => { clearTimeout(timer); clearInterval(iv); document.removeEventListener('visibilitychange', onVis); if (unsub) unsub(); };
         }, [cloudBackupNow]);
