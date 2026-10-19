@@ -7,13 +7,15 @@ const { estate: E } = loadApp();
 const plain = x => JSON.parse(JSON.stringify(x));
 const TODAY = '2026-10-19';
 
-test('alertStage: amber from the lead time, red for the last days, nothing once passed', () => {
+test('alertStage: amber from the lead time, red for the last days and after, nothing once long gone', () => {
     assert.equal(E.alertStage('mortgage', 91), null);
     assert.equal(E.alertStage('mortgage', 90), 'amber');
     assert.equal(E.alertStage('mortgage', 15), 'amber');
     assert.equal(E.alertStage('mortgage', 14), 'red');
     assert.equal(E.alertStage('gilt', 0), 'red');
-    assert.equal(E.alertStage('gilt', -1), null);
+    assert.equal(E.alertStage('gilt', -1), 'red');      // stays until closed
+    assert.equal(E.alertStage('gilt', -90), 'red');
+    assert.equal(E.alertStage('gilt', -91), null);     // an old plan row never wakes up
     assert.equal(E.alertStage('vest', 31), null);
     assert.equal(E.alertStage('vest', 30), 'amber');
     assert.equal(E.alertStage('vest', 7), 'red');
@@ -75,4 +77,20 @@ test('closing an alert hides it for a week, or for good', () => {
     m = E.readSilence();
     assert.equal(E.silenced(m, 'mortgage:m:2027-01-01', '2026-12-31'), true);
     assert.equal(E.silenced(m, 'mortgage:m:2027-06-01', '2026-12-31'), false);   // a new deal end alerts again
+});
+
+test('after the date: past tense, and cleared once dealt with', () => {
+    const state = { accounts: [
+        { id: 'm', name: 'Mortgage', group: 'property', debt: true, loan: { end: '2026-10-01' } },
+        { id: 's', name: 'Fixed Saver', group: 'savings', term: { start: '2025-10-01', end: '2026-10-10', rate: 4, amount: 1000 } },
+        { id: 'd', name: 'Done Saver', group: 'savings', term: { start: '2025-10-01', end: '2026-10-10', rate: 4, amount: 1000 } },
+    ], snapshots: [{ date: '2026-09-20', values: { s: 1000, d: 1000 } }, { date: '2026-10-15', partial: true, values: { d: 1041 } }] };
+    const a = plain(E.estateAlerts(state, TODAY));
+    assert.deepEqual(a.map(x => [x.title, x.stage]), [
+        ['Mortgage deal ended 18 days ago', 'red'],
+        ['Fixed Saver matured 9 days ago', 'red'],
+    ]);   // Done Saver has a balance entered after its end, so it is dealt with
+    assert.deepEqual(a[0].parts, ['now on the lender’s variable rate']);
+    const v = plain(E.investmentAlerts([{ ticker: 'T', name: 'x', nominal: 100, maturity: '2026-10-18' }], [], null, TODAY));
+    assert.equal(v[0].title, 'Gilt matured yesterday');
 });

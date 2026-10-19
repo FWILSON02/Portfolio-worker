@@ -1441,22 +1441,25 @@ function Header(props) {
 // A banner at the top of Investments (gilts, Citi / HSBC vests and Sharesave) and Estate (mortgage deal, fixed-term
 // savings) once something is near its date, so there is time to act. Fergus's lead times: 3 months for the mortgage
 // and gilts, 1 month for vesting (fixed savers: 1 month). Amber from the start of that window, red for its last days.
-// Each alert shows until its date has passed. Closing one hides it for a week or for good; "for good" is that one
-// event only (the id carries its date), so the next vest or deal still alerts.
+// After its date an alert stays red until closed (Fergus), or until it is dealt with: the gilt no longer held, a
+// balance entered after the saver's end, a new deal end, the plan marked done. Dates more than OVERDUE_MAX days ago
+// are left out, so an old plan row never wakes up. Closing one hides it for a week or for good; "for good" is that
+// one event only (the id carries its date), so the next vest or deal still alerts.
 var ALERT_RULES = {
     gilt:     { lead: 90, red: 14 },
     mortgage: { lead: 90, red: 14 },
     vest:     { lead: 30, red: 7 },
     saver:    { lead: 30, red: 14 },
 };
+var OVERDUE_MAX = 90;
 var ALERT_SILENCE_KEY = 'maturity_alert_silence';   // { [alert id]: 'YYYY-MM-DD' (hidden until) | 'never' }
 var WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 function isoDays(date) { return Date.UTC(+date.slice(0, 4), +date.slice(5, 7) - 1, +date.slice(8, 10)) / 86400000; }
 function addDaysISO(date, n) { return new Date((isoDays(date) + n) * 86400000).toISOString().slice(0, 10); }
-// 'amber', 'red', or null when the date is outside the window or has passed.
+// 'amber', 'red' (also once passed), or null when the date is further off than the lead time or long gone.
 function alertStage(kind, days) {
     var r = ALERT_RULES[kind];
-    if (!r || days == null || days < 0 || days > r.lead) return null;
+    if (!r || days == null || days < -OVERDUE_MAX || days > r.lead) return null;
     return days <= r.red ? 'red' : 'amber';
 }
 // "Thu 22 Oct", with the year when it isn't this year's.
@@ -1464,30 +1467,32 @@ function alertDay(date, today) {
     return WEEKDAYS[new Date(isoDays(date) * 86400000).getUTCDay()] + ' ' + Number(date.slice(8, 10)) + ' ' + MONTHS[Number(date.slice(5, 7)) - 1] +
         (date.slice(0, 4) !== today.slice(0, 4) ? ' ' + date.slice(0, 4) : '');
 }
-function inDays(days) { return days === 0 ? 'today' : days === 1 ? 'tomorrow' : 'in ' + days + ' days'; }
-// Builds an alert, or null when it isn't due yet. o: { kind, key, date, title(inDays), parts }; parts is the line under
+function inDays(days) {
+    return days === 0 ? 'today' : days === 1 ? 'tomorrow' : days > 1 ? 'in ' + days + ' days' : days === -1 ? 'yesterday' : -days + ' days ago';
+}
+// Builds an alert, or null when it isn't due yet. o: { kind, key, date, title(when, past), parts }; parts is the line under
 // the date: text, and { gbp } amounts (blurred in privacy mode).
 function makeAlert(o, today) {
     if (!o.date || !ISO_DATE.test(o.date)) return null;
     var days = isoDays(o.date) - isoDays(today), stage = alertStage(o.kind, days);
     if (!stage) return null;
     return { id: o.kind + ':' + o.key + ':' + o.date, kind: o.kind, date: o.date, days: days, stage: stage,
-             title: o.title(inDays(days)), when: alertDay(o.date, today), parts: o.parts || [] };
+             title: o.title(inDays(days), days < 0), when: alertDay(o.date, today), parts: o.parts || [] };
 }
 function byDate(list) { return list.filter(Boolean).sort(function (a, b) { return a.days - b.days || (a.id < b.id ? -1 : 1); }); }
 
 // Estate: each open mortgage's current deal end, each fixed-term saving's end.
 function estateAlerts(state, today) {
-    var out = [];
+    var out = [], tl = resolveTimeline((state && state.snapshots) || []), asOf = tl.length ? tl[tl.length - 1].asOf : {};
     (state && state.accounts || []).forEach(function (a) {
         if (a.closed) return;
         if (a.debt && a.loan && a.loan.end) {
-            out.push(makeAlert({ kind: 'mortgage', key: a.id, date: a.loan.end, title: function (w) { return a.name + ' deal ends ' + w; },
-                parts: ['then the lender’s variable rate'] }, today));
+            out.push(makeAlert({ kind: 'mortgage', key: a.id, date: a.loan.end, title: function (w, past) { return a.name + ' deal ' + (past ? 'ended ' : 'ends ') + w; },
+                parts: [a.loan.end < today ? 'now on the lender’s variable rate' : 'then the lender’s variable rate'] }, today));
         }
         var t = termOf(a);
-        if (t) {
-            out.push(makeAlert({ kind: 'saver', key: a.id, date: t.end, title: function (w) { return a.name + ' matures ' + w; },
+        if (t && !(asOf[a.id] && asOf[a.id] > t.end)) {
+            out.push(makeAlert({ kind: 'saver', key: a.id, date: t.end, title: function (w, past) { return a.name + (past ? ' matured ' : ' matures ') + w; },
                 parts: ['about ', { gbp: termValue(t, t.end) }, ' at ' + t.rate + '% AER'] }, today));
         }
     });
@@ -1499,7 +1504,7 @@ function investmentAlerts(gilts, plans, values, today) {
     var out = [];
     (gilts || []).forEach(function (g) {
         if (!(g.nominal > 0)) return;
-        out.push(makeAlert({ kind: 'gilt', key: g.ticker, date: g.maturity, title: function (w) { return 'Gilt matures ' + w; },
+        out.push(makeAlert({ kind: 'gilt', key: g.ticker, date: g.maturity, title: function (w, past) { return 'Gilt ' + (past ? 'matured ' : 'matures ') + w; },
             parts: [{ gbp: g.nominal }, ' back as cash'] }, today));
     });
     // Vests on the same day from the same employer (tranches) are one alert.
@@ -1518,9 +1523,9 @@ function investmentAlerts(gilts, plans, values, today) {
     Object.keys(groups).forEach(function (k) {
         var g = groups[k], units = Math.round(g.units).toLocaleString('en-GB');
         out.push(g.cat === 'RSU'
-            ? makeAlert({ kind: 'vest', key: k, date: g.date, title: function (w) { return g.inst + ' shares vest ' + w; },
+            ? makeAlert({ kind: 'vest', key: k, date: g.date, title: function (w, past) { return g.inst + ' shares ' + (past ? 'vested ' : 'vest ') + w; },
                 parts: g.valued && g.value > 0 ? [units + ' shares, about ', { gbp: g.value }, ' before tax'] : [units + ' shares'] }, today)
-            : makeAlert({ kind: 'vest', key: k, date: g.date, title: function (w) { return g.inst + ' Sharesave matures ' + w; },
+            : makeAlert({ kind: 'vest', key: k, date: g.date, title: function (w, past) { return g.inst + ' Sharesave ' + (past ? 'matured ' : 'matures ') + w; },
                 parts: [units + ' options to exercise or let lapse'] }, today));
     });
     return byDate(out);
@@ -1534,7 +1539,7 @@ function silenceAlert(id, how, today) {
     var map = readSilence();
     map[id] = how === 'never' ? 'never' : addDaysISO(today, 7);
     // Forget entries for dates long gone so the list doesn't grow forever.
-    Object.keys(map).forEach(function (k) { var d = k.slice(-10); if (ISO_DATE.test(d) && d < addDaysISO(today, -30)) delete map[k]; });
+    Object.keys(map).forEach(function (k) { var d = k.slice(-10); if (ISO_DATE.test(d) && d < addDaysISO(today, -OVERDUE_MAX - 30)) delete map[k]; });
     try { localStorage.setItem(ALERT_SILENCE_KEY, JSON.stringify(map)); } catch (e) {}
 }
 
@@ -1600,7 +1605,7 @@ function MaturityBanner(props) {
                 lastBox && hidden > 0 && E('button', { onClick: function () { more[1](true); },
                     style: { display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', borderTop: '1px solid ' + t.div, marginTop: 10,
                              padding: '9px 0 0', color: t.title, fontFamily: ui.sys, fontSize: 13, fontWeight: 600, cursor: 'pointer' } },
-                    '+' + hidden + ' more · ' + shown.slice(rows.length).map(function (a) { return a.title.replace(/ (in \d+ days|today|tomorrow)$/, ''); }).join(', ') + ' ›'));
+                    '+' + hidden + ' more · ' + shown.slice(rows.length).map(function (a) { return a.title.replace(/ (in \d+ days|today|tomorrow|yesterday|\d+ days ago)$/, ''); }).join(', ') + ' ›'));
         }));
 }
 
