@@ -59,7 +59,7 @@ function inMetric(a, metric) { return metric === 'cash' ? cardId(a) === 'cash' :
 //              term:     { start, end ('YYYY-MM-DD'), rate (% AER), amount (£) } for a fixed-term saving: from the start
 //                        the amount grows at the rate until the end, then holds until you enter a balance after it.
 //              liquid:   true/false to count (or not) toward Liquid; null = the group's default.
-//              appLinks: keys of the Investments-tab values (or 'monzo:<id>' Monzo balances) this account follows (their sum); [] = typed in by hand.
+//              appLinks: keys of the Investments-tab values this account follows (their sum); [] = typed in by hand.
 //              link:     where to check the balance: a https:// website, or an app address such as
 //                        shortcuts://run-shortcut?name=HSBC (a Shortcut that opens the app); null = none.
 //              debt:  balance stored negative (cards, mortgage); the form takes the amount owed as a positive number.
@@ -127,18 +127,16 @@ function hintName(n) { return String(n == null ? '' : n).toLowerCase().replace(/
 function loginHints() {
     try { var o = JSON.parse(localStorage.getItem(LOGIN_HINTS_KEY) || '{}'); return o && typeof o === 'object' ? o : {}; } catch (e) { return {}; }
 }
+// Links to Monzo balances ('monzo:…') are dropped: Monzo was removed, so those accounts go back to being typed in.
 function linksOf(a) {
-    if (Array.isArray(a.appLinks)) return a.appLinks.filter(function (k) { return typeof k === 'string' && k; });
+    if (Array.isArray(a.appLinks)) return a.appLinks.filter(function (k) { return typeof k === 'string' && k && !/^monzo:/.test(k); });
     return typeof a.appLink === 'string' && a.appLink ? [a.appLink] : [];
 }
 
 // An open account that follows the Investments tab is shown under Investments, so that card adds up to the same
 // total as the Investments tab (Fergus asked). Applied to its whole history, so the chart stays consistent.
-// Links to Monzo (keys 'monzo:…', a current account or pot) keep the account in its own group.
-function isMonzoKey(k) { return /^monzo:/.test(k); }
 function linkedToInvestments(a) {
-    var toInvestments = a.appLinks.some(function (k) { return !isMonzoKey(k); });
-    return !a.closed && toInvestments && a.group !== 'investments' ? Object.assign({}, a, { group: 'investments', debt: false }) : a;
+    return !a.closed && a.appLinks.length && a.group !== 'investments' ? Object.assign({}, a, { group: 'investments', debt: false }) : a;
 }
 
 // The spreadsheet's rate column holds fractions (0.038 = 3.8%); loan rates are in %.
@@ -1939,22 +1937,10 @@ function UpdateView(props) {
         saveState(Object.assign({}, state, { accounts: accounts.map(function (a) { return linkedToInvestments(Object.assign({}, a, { link: validLink(a.link) })); }), snapshots: snaps })).then(props.onDone, function (e) { err[1]('Could not save: ' + (e && e.message)); });
     }
 
-    // What an account can follow: Investments-tab values for savings (e.g. a money market fund), investments, pensions
-    // and other; Monzo balances and pots (Settings → Monzo) for current and savings accounts.
-    var options = function (a) {
-        if (a.debt) return [];
-        return appValues.filter(function (o) {
-            // Monzo only on accounts called Monzo (or already linked to it), so other banks' rows stay uncluttered.
-            return isMonzoKey(o.key) ? /^(current|savings)$/.test(a.group) && (/monzo/i.test(a.name) || a.appLinks.some(isMonzoKey))
-                                     : /^(savings|investments|pensions|other)$/.test(a.group);
-        });
-    };
+    // What an account can follow: Investments-tab values, for savings (e.g. a money market fund), investments, pensions
+    // and other.
+    var options = function (a) { return a.debt || !/^(savings|investments|pensions|other)$/.test(a.group) ? [] : appValues; };
     var linkable = function (a) { return options(a).length > 0 || a.appLinks.length > 0; };
-    var sourceName = function (a) {
-        var keys = a.appLinks.length ? a.appLinks : options(a).map(function (o) { return o.key; });
-        var m = keys.some(isMonzoKey), i = keys.some(function (k) { return !isMonzoKey(k); });
-        return m && i ? 'Investments or Monzo' : m ? 'Monzo' : 'Investments';
-    };
     return E('div', { style: { padding: '12px 16px 0' } },
         E('div', { style: cardStyle(ui, { display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }) },
             E('div', { style: { flex: 1, fontFamily: ui.sys, fontSize: 14, color: ui.C.zinc400 } }, 'Balances as at'),
@@ -2034,9 +2020,9 @@ function UpdateView(props) {
                                 onClick: function () { chooser[1](choosing ? null : a.id); },
                                 style: { display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, width: '100%', background: 'none', border: 'none', padding: 0, cursor: 'pointer', textAlign: 'left' }
                             },
-                                E('span', { style: { fontFamily: ui.sys, fontSize: 11, color: linked ? ui.C.blue : ui.C.zinc700, flexShrink: 0 } }, (linked ? 'Live from ' : 'Link to ') + sourceName(a) + ':'),
+                                E('span', { style: { fontFamily: ui.sys, fontSize: 11, color: linked ? ui.C.blue : ui.C.zinc700, flexShrink: 0 } }, linked ? 'Live from Investments:' : 'Link to Investments:'),
                                 E('span', { style: { flex: 1, minWidth: 0, fontFamily: ui.sys, fontSize: 12, color: linked ? ui.C.blue : ui.C.zinc600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
-                                    a.appLinks.length ? a.appLinks.map(function (k) { return appByKey[k] ? appByKey[k].label : isMonzoKey(k) ? 'Monzo not read today' : 'not in Investments now'; }).join(' + ') : 'Not linked'),
+                                    a.appLinks.length ? a.appLinks.map(function (k) { return appByKey[k] ? appByKey[k].label : 'not in Investments now'; }).join(' + ') : 'Not linked'),
                                 E(ChevronIcon, { style: { width: 12, height: 12, color: ui.C.zinc700, flexShrink: 0, transform: choosing ? 'rotate(90deg)' : 'none' }, strokeWidth: 2 })),
                             // Tick every Investments value this account should add up (e.g. a share plan's account and its unvested shares).
                             !manage[0] && linkable(a) && choosing && E('div', { style: { marginTop: 4, paddingLeft: 2 } },
@@ -2049,7 +2035,7 @@ function UpdateView(props) {
                                         E('span', { style: { flex: 1, minWidth: 0 } }, o.label),
                                         !props.privacy && E('span', { style: { fontFamily: ui.rounded, fontSize: 12, color: ui.C.zinc600, fontVariantNumeric: 'tabular-nums' } }, fmtGBP(o.value)));
                                 }),
-                                a.group !== 'investments' && options(a).some(function (o) { return !isMonzoKey(o.key); }) && E('div', { style: { fontFamily: ui.sys, fontSize: 11, color: ui.C.zinc700, padding: '4px 0 2px' } }, 'Linked to Investments and saved, this account moves under Investments.'))
+                                a.group !== 'investments' && E('div', { style: { fontFamily: ui.sys, fontSize: 11, color: ui.C.zinc700, padding: '4px 0 2px' } }, 'Linked to Investments and saved, this account moves under Investments.'))
                         );
                     })
                 )
