@@ -204,7 +204,7 @@ window.XCircle=_li([{t:'c',cx:12,cy:12,r:10},'M15 9l-6 6','M9 9l6 6']);
 window.MinusCircle=_li([{t:'c',cx:12,cy:12,r:10},'M8 12h8']);
 window.HelpCircle=_li([{t:'c',cx:12,cy:12,r:10},'M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3',{t:'l',x1:12,y1:17,x2:12.01,y2:17}]);</script>
 <!-- Balances screen lives in its own file. Bump ?v= whenever balances.js changes so the Home Screen app never mixes versions. -->
-<script src="balances.js?v=42"></script>
+<script src="balances.js?v=43"></script>
 <script>
 try{"use strict";
 // ─── Lightweight SVG chart components (replaces Recharts) ──────────────────
@@ -7489,7 +7489,7 @@ function Row({ icon: Icon, iconColor, iconBg, label, sub, right, onClick, isLabe
 
 // The pull request that last changed the app. Bump it in every PR so Settings → App shows which change the phone is
 // running (Fergus asked; the Estate ?v= number only moved when balances.js changed, so it looked stuck).
-const APP_BUILD = 63;
+const APP_BUILD = 64;
 
 // Settings → App: pulls the newest index.html and balances.js past the browser's cache, then reloads. A Home Screen web app
 // on iOS keeps serving cached files for a while after a deploy, and closing it from the app switcher doesn't clear that.
@@ -14767,6 +14767,15 @@ function PortfolioApp() {
         const giltLadderState = useMemo(
             () => buildGiltLadderState(enriched, today, giltMarket, Date.now()),
             [enriched, today, giltMarket]);
+        // Maturity alerts for the banner above the hero (balances.js): gilts still held, Citi / HSBC vests and Sharesave.
+        const maturityAlerts = useMemo(() => {
+            if (!window.MaturityAlerts) return [];
+            const gl = giltLadderState ? [...giltLadderState.rungs, ...giltLadderState.unpriced] : [];
+            const gilts = gl.map(g => ({ ticker: g.ticker, name: g.name, nominal: g.nominal,
+                maturity: GILT_LADDER_REGISTRY[g.ticker] ? toISODate(GILT_LADDER_REGISTRY[g.ticker].maturityDate) : null }));
+            const last = restrictedTimeline.length ? restrictedTimeline[restrictedTimeline.length - 1] : null;
+            return window.MaturityAlerts.investmentAlerts(gilts, compConfigs, last ? last.planDetails : null, window.MaturityAlerts.today());
+        }, [giltLadderState, compConfigs, restrictedTimeline, today]);
         // The ONE benchmark series (S&P 500 in GBP, price only): read by the chart, the cards, the attribution and the
         // "same deposits in the S&P" comparison.
         const spxGbpSeries = useMemo(() => {
@@ -18203,6 +18212,8 @@ function PortfolioApp() {
                 className: 'ios-scroll', 'data-tab-screen': 'investments',
                 style: { flex: 1, padding: '12px 16px 32px' }
             },
+                // Maturity alerts (amber, then red near the date)
+                window.MaturityAlerts && React.createElement(window.MaturityAlerts.Banner, { alerts: maturityAlerts, privacy: privacyMode }),
                 // Hero Card
                 React.createElement('div', { style: { marginBottom: 12 } },
                     React.createElement(HeroCard, {
