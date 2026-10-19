@@ -254,3 +254,25 @@ test('pasted rates keep their decimals and read pence', () => {
     assert.deepEqual(plain(p.months[0].elec), { kwh: 300, standing: 0.43762, unit: 0.2245, cost: 80 });
     assert.equal(p.months[0].gas.unit, 0.05476);
 });
+
+test('forecast adjustment scales one fuel and survives a paste', () => {
+    const u = L.mergeUsage(null, L.parseUsagePaste(usageSheet()));
+    const base = L.usageStats(u).forecast;
+    const adj = L.validUsage(Object.assign({}, u, { adjust: { elec: -0.1, gas: 0 } }));
+    assert.deepEqual(plain(adj.adjust), { elec: -0.1 });
+    const fc = L.usageStats(adj).forecast;
+    assert.ok(Math.abs(fc.kwh.elec - base.kwh.elec * 0.9) < 1e-6);
+    assert.ok(Math.abs(fc.kwh.gas - base.kwh.gas) < 1e-6);
+    assert.ok(fc.cost < base.cost);
+    assert.deepEqual(plain(L.mergeUsage(adj, { months: [], meters: {} }).adjust), { elec: -0.1 });
+    assert.equal(L.validUsage(Object.assign({}, u, { adjust: { elec: 3 } })).adjust, undefined);
+});
+
+test('Mortgage and Childcare: guessed from the name, and older bills move over', () => {
+    assert.equal(L.guessCategory('Mortgage'), 'mortgage');
+    assert.equal(L.guessCategory('Nursery fees'), 'childcare');
+    assert.equal(L.guessCategory('Council Tax'), 'home');
+    const s = L.validateState({ bills: [{ name: 'Mortgage', category: 'home' }, { name: 'Home loan', category: 'home', estate: 'acc1' },
+                                        { name: 'Nursery', category: 'services' }, { name: 'Council Tax', category: 'home' }] });
+    assert.deepEqual(plain(s.bills.map(b => b.category)), ['mortgage', 'mortgage', 'childcare', 'home']);
+});
