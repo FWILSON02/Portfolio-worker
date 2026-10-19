@@ -329,6 +329,13 @@ function parseMoney(v) {
     if (!t || !/^-?\d+(\.\d+)?$/.test(t)) return null;
     return Math.round(Math.abs(Number(t)) * 100) / 100;
 }
+// A unit rate or standing charge: keeps its decimals (0.05476 is 5.476p), and reads pence ('22.45p') too.
+function parseRate(v) {
+    var t = String(v == null ? '' : v).replace(/[£,\s]|Â/g, ''), pence = /p$/i.test(t);
+    if (pence) t = t.slice(0, -1);
+    if (!t || !/^\d+(\.\d+)?$/.test(t)) return null;
+    return Math.round(Number(t) / (pence ? 100 : 1) * 1e5) / 1e5;
+}
 var MONTH_NAMES = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
 function pad2(n) { return (n < 10 ? '0' : '') + n; }
 function isoOf(y, m, d) {
@@ -666,8 +673,8 @@ function parseUsagePaste(textIn) {
         var cell = function (k) { return cols[k] == null ? '' : row[cols[k]]; };
         var kwh = function (k) { var v = String(cell(k) || '').replace(/[,\s]/g, ''); return /^\d+(\.\d+)?$/.test(v) ? Number(v) : null; };
         var m = validUsage({ months: [{ month: mk,
-            elec: { kwh: kwh('ek'), standing: parseMoney(cell('es')), unit: parseMoney(cell('eu')), cost: parseMoney(cell('ec')) },
-            gas:  { kwh: cols.gk === cols.gm ? null : kwh('gk'), m3: kwh('gm'), cv: kwh('gcv'), standing: parseMoney(cell('gs')), unit: parseMoney(cell('gu')), cost: parseMoney(cell('gc')) },
+            elec: { kwh: kwh('ek'), standing: parseRate(cell('es')), unit: parseRate(cell('eu')), cost: parseMoney(cell('ec')) },
+            gas:  { kwh: cols.gk === cols.gm ? null : kwh('gk'), m3: kwh('gm'), cv: kwh('gcv'), standing: parseRate(cell('gs')), unit: parseRate(cell('gu')), cost: parseMoney(cell('gc')) },
             support: parseMoney(cell('sup')) }] });
         if (m && m.months.length) out.months.push(m.months[0]); else out.skipped++;
     });
