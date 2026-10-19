@@ -210,7 +210,7 @@ window.HelpCircle=_li([{t:'c',cx:12,cy:12,r:10},'M9.09 9a3 3 0 0 1 5.83 1c0 2-3 
 <!-- Balances screen lives in its own file. Bump ?v= whenever balances.js changes so the Home Screen app never mixes versions. -->
 <script src="balances.js?v=48"></script>
 <!-- Life Admin (bills) lives in its own file too, loaded after balances.js (it uses the Estate mortgage and alert banner). Bump ?v= on change. -->
-<script src="lifeadmin.js?v=1"></script>
+<script src="lifeadmin.js?v=2"></script>
 <script>
 try{"use strict";
 // ─── Lightweight SVG chart components (replaces Recharts) ──────────────────
@@ -4392,9 +4392,10 @@ async function cloudBackupFetch(method, path, body) {
 function cloudBackupCounts(payload) {
     const p = payload || {}, b = p.balances || {}, la = p.lifeAdmin || {};
     const n = v => Array.isArray(v) ? v.length : 0;
-    return { trades: n(p.transactions), plans: n(p.compConfigs), accounts: n(b.accounts), entries: n(b.snapshots), bills: n(la.bills) };
+    const usage = (Array.isArray(la.bills) ? la.bills : []).reduce((s, x) => s + n(x && x.usage && x.usage.months), 0);
+    return { trades: n(p.transactions), plans: n(p.compConfigs), accounts: n(b.accounts), entries: n(b.snapshots), bills: n(la.bills), usage };
 }
-const CLOUD_BACKUP_COUNT_LABELS = { trades: 'trades', plans: 'equity plans', accounts: 'Estate accounts', entries: 'Estate entries', bills: 'Life Admin bills' };
+const CLOUD_BACKUP_COUNT_LABELS = { trades: 'trades', plans: 'equity plans', accounts: 'Estate accounts', entries: 'Estate entries', bills: 'Life Admin bills', usage: 'energy usage months' };
 // What `now` has fewer of than `before`, e.g. "3 trades (the last backup had 120)". null = nothing lost.
 function cloudBackupShrink(before, now) {
     if (!before) return null;
@@ -7505,7 +7506,7 @@ function Row({ icon: Icon, iconColor, iconBg, label, sub, right, onClick, isLabe
 
 // The pull request that last changed the app. Bump it in every PR so Settings → App shows which change the phone is
 // running (Fergus asked; the Estate ?v= number only moved when balances.js changed, so it looked stuck).
-const APP_BUILD = 68;
+const APP_BUILD = 69;
 
 // Settings → App: pulls the newest index.html, balances.js and lifeadmin.js past the browser's cache, then reloads. A Home Screen web app
 // on iOS keeps serving cached files for a while after a deploy, and closing it from the app switcher doesn't clear that.

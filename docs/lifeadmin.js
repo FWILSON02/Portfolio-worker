@@ -128,6 +128,7 @@ function validBill(b) {
         end: ISO_DATE.test(b.end || '') ? b.end : null,
         notes: text(b.notes, 500),
         estate: text(b.estate, 60) || null,
+        usage: validUsage(b.usage),
     };
 }
 // Returns a cleaned copy of a stored or restored state, or null when it is not a Life Admin state at all.
@@ -418,6 +419,226 @@ function mergeBills(existing, incoming) {
     return { bills: list, added: added, updated: updated };
 }
 
+// ── Energy usage (Energy bill → Usage) ──────────────────────────────────────
+// Month by month electricity and gas use, as in Fergus's usage sheet, kept on the bill (so backups carry it):
+//   bill.usage = { months: [Month], meters: { mpan, mprn, elecSerial, gasSerial } }
+//   Month = { month: 'YYYY-MM', elec: Fuel, gas: Fuel, support }
+//   Fuel  = { kwh, standing (£ a day), unit (£ a kWh), cost (£ for the month) }; any of them may be null.
+//   support: government support credited that month (£), taken off the month's cost.
+// A month's cost for a fuel is the one entered, else kWh × unit rate + standing charge × days in the month.
+// "Annual cost" is the sheet's rolling figure: the last 12 months of electricity + gas − support.
+var MONTH_KEY = /^\d{4}-(0[1-9]|1[0-2])$/;
+var METER_FIELDS = [
+    { id: 'mpan', label: 'Electricity MPAN' }, { id: 'elecSerial', label: 'Electricity meter serial' },
+    { id: 'mprn', label: 'Gas MPRN' }, { id: 'gasSerial', label: 'Gas meter serial' },
+];
+function num(v) { return typeof v === 'number' && isFinite(v) ? v : null; }
+var DEFAULT_WEIGHT = 2 / 3;
+function validFuel(f) {
+    if (!f || typeof f !== 'object') return null;
+    var o = { kwh: num(f.kwh), standing: num(f.standing), unit: num(f.unit), cost: num(f.cost) };
+    ['kwh', 'standing', 'unit', 'cost'].forEach(function (k) { if (o[k] != null) o[k] = Math.round(Math.abs(o[k]) * 1e5) / 1e5; });
+    return o.kwh == null && o.standing == null && o.unit == null && o.cost == null ? null : o;
+}
+function validUsage(u) {
+    if (!u || typeof u !== 'object') return null;
+    var by = {};
+    (Array.isArray(u.months) ? u.months : []).forEach(function (m) {
+        if (!m || !MONTH_KEY.test(m.month || '')) return;
+        var x = { month: m.month, elec: validFuel(m.elec), gas: validFuel(m.gas), support: num(m.support) == null ? null : Math.abs(m.support) };
+        if (x.elec || x.gas || x.support != null) by[m.month] = x;
+    });
+    var meters = {}, any = false;
+    METER_FIELDS.forEach(function (f) { var v = text(u.meters && u.meters[f.id], 40); if (v) { meters[f.id] = v; any = true; } });
+    var months = Object.keys(by).sort().map(function (k) { return by[k]; });
+    var out = { months: months, meters: meters };
+    if (num(u.weight) != null && u.weight >= 0 && u.weight <= 1) out.weight = Math.round(u.weight * 100) / 100;
+    return months.length || any ? out : null;
+}
+function monthNo(mk) { return Number(mk.slice(0, 4)) * 12 + Number(mk.slice(5, 7)) - 1; }
+function monthOf(n) { return Math.floor(n / 12) + '-' + pad2(n % 12 + 1); }
+function daysIn(mk) { return new Date(Date.UTC(+mk.slice(0, 4), +mk.slice(5, 7), 0)).getUTCDate(); }
+function fuelCost(f, mk) {
+    if (!f) return null;
+    if (f.cost != null) return f.cost;
+    if (f.kwh != null && f.unit != null) return f.kwh * f.unit + (f.standing || 0) * daysIn(mk);
+    return null;
+}
+// The month's cost: electricity + gas − support. null when neither fuel has a cost.
+function monthCost(m) {
+    var e = fuelCost(m.elec, m.month), g = fuelCost(m.gas, m.month);
+    if (e == null && g == null) return null;
+    return (e || 0) + (g || 0) - (m.support || 0);
+}
+// A month counts toward the averages and the rolling year once it has a reading (kWh) for either fuel. A month with
+// only rates or a part cost (the month in progress) is shown but left out.
+function hasReading(m) { return !!((m.elec && m.elec.kwh != null) || (m.gas && m.gas.kwh != null)); }
+// Rates in use: the latest month that has them.
+function latestRates(months) {
+    var out = { elec: null, gas: null };
+    months.forEach(function (m) {
+        ['elec', 'gas'].forEach(function (k) { var f = m[k]; if (f && f.unit != null) out[k] = { unit: f.unit, standing: f.standing || 0, from: m.month }; });
+    });
+    return out;
+}
+function sumKwh(list, k) {
+    var s = 0, n = 0;
+    list.forEach(function (m) { if (m[k] && m[k].kwh != null) { s += m[k].kwh; n++; } });
+    return n ? s : null;
+}
+function pctVs(a, b) { return a == null || !b ? null : a / b - 1; }
+// Everything the usage page shows. today: 'YYYY-MM-DD' (for the forecast's starting month).
+function usageStats(usage, today) {
+    var months = (usage && usage.months) || [];
+    var done = months.filter(hasReading);
+    var byKey = {};
+    months.forEach(function (m) { byKey[m.month] = m; });
+    // Average use in each calendar month (1-12), over every year with a reading for it.
+    var avg = { elec: [], gas: [] };
+    ['elec', 'gas'].forEach(function (k) {
+        for (var c = 0; c < 12; c++) {
+            var vals = done.filter(function (m) { return +m.month.slice(5, 7) - 1 === c && m[k] && m[k].kwh != null; }).map(function (m) { return m[k].kwh; });
+            avg[k][c] = vals.length ? vals.reduce(function (a, b) { return a + b; }, 0) / vals.length : null;
+        }
+    });
+    var avgYear = {};
+    ['elec', 'gas'].forEach(function (k) { avgYear[k] = avg[k].every(function (v) { return v == null; }) ? null : avg[k].reduce(function (a, v) { return a + (v || 0); }, 0); });
+    var latest = done.length ? done[done.length - 1].month : null;
+    var first = done.length ? done[0].month : null;
+    function window12(end) {
+        var out = [], e = monthNo(end);
+        for (var n = e - 11; n <= e; n++) if (byKey[monthOf(n)]) out.push(byKey[monthOf(n)]);
+        return out;
+    }
+    // The rolling year once there are 12 months behind it (as the sheet starts it).
+    var rolling = [];
+    if (first) for (var n = monthNo(first) + 11; n <= monthNo(latest); n++) {
+        var w = window12(monthOf(n)), cost = 0, any = false;
+        w.forEach(function (m) { var c = monthCost(m); if (c != null) { cost += c; any = true; } });
+        if (any && byKey[monthOf(n)] && hasReading(byKey[monthOf(n)])) rolling.push({ month: monthOf(n), cost: cost });
+    }
+    var year = latest ? window12(latest) : [], prev = latest ? window12(monthOf(monthNo(latest) - 12)) : [];
+    var running = { elec: sumKwh(year, 'elec'), gas: sumKwh(year, 'gas') };
+    var before = { elec: prev.length === 12 ? sumKwh(prev, 'elec') : null, gas: prev.length === 12 ? sumKwh(prev, 'gas') : null };
+    // Next 12 months (Fergus): each calendar month's use from the last 12 months, blended with the average of the
+    // same month in earlier years, the recent one counting `weight` (default 2/3, so twice the older average). A month
+    // with only one of the two takes that one. Priced at the latest unit rates and standing charges.
+    var weight = usage && num(usage.weight) != null ? Math.min(1, Math.max(0, usage.weight)) : DEFAULT_WEIGHT;
+    var recentStart = latest ? monthNo(latest) - 11 : 0;
+    var rates = latestRates(months), forecast = null;
+    if (latest) {
+        var plan = [], total = 0, priced = true, kwhTotal = { elec: 0, gas: 0 };
+        for (var i = 1; i <= 12; i++) {
+            var mk = monthOf(monthNo(latest) + i), c = +mk.slice(5, 7) - 1, row = { month: mk, cost: 0 };
+            ['elec', 'gas'].forEach(function (k) {
+                var recent = null, older = [];
+                done.forEach(function (m) {
+                    if (+m.month.slice(5, 7) - 1 !== c || !m[k] || m[k].kwh == null) return;
+                    if (monthNo(m.month) >= recentStart) recent = m[k].kwh; else older.push(m[k].kwh);
+                });
+                var old = older.length ? older.reduce(function (a, b) { return a + b; }, 0) / older.length : null;
+                var kwh = recent != null && old != null ? weight * recent + (1 - weight) * old : recent != null ? recent : old;
+                row[k] = kwh;
+                if (kwh != null) kwhTotal[k] += kwh;
+                if (kwh != null && rates[k]) row.cost += kwh * rates[k].unit + rates[k].standing * daysIn(mk);
+                else if (kwh != null) priced = false;
+            });
+            total += row.cost;
+            plan.push(row);
+        }
+        forecast = { months: plan, kwh: kwhTotal, cost: priced && (rates.elec || rates.gas) ? total : null, weight: weight };
+    }
+    // Use by calendar month, one series per year (the year-on-year bars).
+    var years = {};
+    done.forEach(function (m) {
+        var y = m.month.slice(0, 4);
+        if (!years[y]) years[y] = { elec: [], gas: [] };
+        years[y].elec[+m.month.slice(5, 7) - 1] = m.elec ? m.elec.kwh : null;
+        years[y].gas[+m.month.slice(5, 7) - 1] = m.gas ? m.gas.kwh : null;
+    });
+    return { months: months, done: done, latest: latest, avg: avg, avgYear: avgYear, rolling: rolling,
+             annual: rolling.length && rolling[rolling.length - 1].month === latest ? rolling[rolling.length - 1].cost : null,
+             running: running, vsAverage: { elec: pctVs(running.elec, avgYear.elec), gas: pctVs(running.gas, avgYear.gas) },
+             vsLastYear: { elec: pctVs(running.elec, before.elec), gas: pctVs(running.gas, before.gas) },
+             full: year.length === 12, rates: rates, forecast: forecast, years: years };
+}
+
+// Paste from the usage sheet: a row per month ('April 2021') with electricity kWh, standing charge, unit rate and
+// cost, then the same for gas, then government support. Header rows say which column is which; without them, that
+// order from the second column. Meter numbers anywhere in the paste ('MPAN' then its number) are picked up too.
+var MONTH_ROW = /^([a-z]{3,9})\.?[\s\-]+(\d{2}|\d{4})$/i;
+function monthKeyOf(cell) {
+    var t = String(cell || '').trim(), m;
+    if ((m = /^(\d{4})-(\d{1,2})$/.exec(t))) return +m[2] >= 1 && +m[2] <= 12 ? m[1] + '-' + pad2(+m[2]) : null;
+    if ((m = /^(\d{1,2})\/(\d{4})$/.exec(t))) return +m[1] >= 1 && +m[1] <= 12 ? m[2] + '-' + pad2(+m[1]) : null;
+    if ((m = MONTH_ROW.exec(t))) {
+        var mi = MONTH_NAMES.indexOf(m[1].slice(0, 3).toLowerCase()), y = +m[2];
+        if (mi < 0) return null;
+        if (y < 100) y += 2000;
+        return y + '-' + pad2(mi + 1);
+    }
+    return null;
+}
+var USAGE_DEFAULT = { ek: 1, es: 2, eu: 3, ec: 4, gk: 5, gs: 6, gu: 7, gc: 8, sup: 9 };
+function usageColumns(heads) {
+    var cols = {}, standing = [], unit = [];
+    heads.forEach(function (row) {
+        row.forEach(function (c, i) {
+            var t = String(c || '').toLowerCase();
+            if (!t) return;
+            if (/support|rebate|discount|credit/.test(t)) cols.sup = i;
+            else if (/standing/.test(t)) standing.push(i);
+            else if (/unit/.test(t)) unit.push(i);
+            else if (/electric/.test(t) && /usage|kwh|use/.test(t) && !/average/.test(t)) cols.ek = i;
+            else if (/electric/.test(t) && /cost|£/.test(t)) cols.ec = i;
+            else if (/gas/.test(t) && /usage|kwh|use/.test(t) && !/average/.test(t)) cols.gk = i;
+            else if (/gas/.test(t) && /cost|£/.test(t)) cols.gc = i;
+        });
+    });
+    if (cols.ek == null || cols.gk == null) return USAGE_DEFAULT;
+    var pick = function (list, lo, hi) { return list.filter(function (i) { return i > lo && i < hi; })[0]; };
+    cols.es = pick(standing, cols.ek, cols.gk); cols.eu = pick(unit, cols.ek, cols.gk);
+    cols.gs = pick(standing, cols.gk, 1e9); cols.gu = pick(unit, cols.gk, 1e9);
+    return cols;
+}
+function parseUsagePaste(textIn) {
+    var rows = splitRows(textIn), heads = [], out = { months: [], meters: {}, skipped: 0 };
+    var cols = null;
+    rows.forEach(function (row) {
+        // Meter numbers: a label cell, then its value in the next filled cell.
+        row.forEach(function (c, i) {
+            var t = String(c || '').toLowerCase(), id = null;
+            if (/^mpan\b/.test(t)) id = 'mpan';
+            else if (/^mprn\b/.test(t)) id = 'mprn';
+            else if (/electric.*serial/.test(t)) id = 'elecSerial';
+            else if (/gas.*serial/.test(t)) id = 'gasSerial';
+            if (!id) return;
+            var v = row.slice(i + 1).filter(function (x) { return x; })[0];
+            if (v) out.meters[id] = text(v, 40);
+        });
+        var mk = monthKeyOf(row[0]);
+        if (!mk) { if (!out.months.length) heads.push(row); return; }
+        if (!cols) cols = usageColumns(heads);
+        var cell = function (k) { return cols[k] == null ? '' : row[cols[k]]; };
+        var kwh = function (k) { var v = String(cell(k) || '').replace(/[,\s]/g, ''); return /^\d+(\.\d+)?$/.test(v) ? Number(v) : null; };
+        var m = validUsage({ months: [{ month: mk,
+            elec: { kwh: kwh('ek'), standing: parseMoney(cell('es')), unit: parseMoney(cell('eu')), cost: parseMoney(cell('ec')) },
+            gas:  { kwh: kwh('gk'), standing: parseMoney(cell('gs')), unit: parseMoney(cell('gu')), cost: parseMoney(cell('gc')) },
+            support: parseMoney(cell('sup')) }] });
+        if (m && m.months.length) out.months.push(m.months[0]); else out.skipped++;
+    });
+    return out;
+}
+// Pasted months replace the same months already saved; other saved months stay. Meter numbers fill in or replace.
+function mergeUsage(usage, pasted) {
+    var by = {};
+    ((usage && usage.months) || []).forEach(function (m) { by[m.month] = m; });
+    pasted.months.forEach(function (m) { by[m.month] = m; });
+    return validUsage({ months: Object.keys(by).map(function (k) { return by[k]; }), weight: usage && usage.weight,
+                        meters: Object.assign({}, (usage && usage.meters) || {}, pasted.meters) });
+}
+function isEnergyBill(b) { return !!(b && (b.usage || /energy|electric|gas\b|power/i.test(b.name || ''))); }
+
 // ── Formatting ───────────────────────────────────────────────────────────────
 function fmtGBP(n, dp) {
     if (n == null || !isFinite(n)) return '—';
@@ -539,7 +760,7 @@ function Hero(props) {
                 E('span', { style: { width: 8, height: 8, borderRadius: 2, background: c.color, marginRight: 8, flexShrink: 0 } }),
                 E('span', { style: { flex: 1 } }, c.label),
                 E('span', { style: money(ui, 13.5, p, ui.C.zinc400, 500) }, fmtGBP(c.monthly)),
-                E('span', { style: { width: 40, textAlign: 'right', color: ui.C.zinc700, fontVariantNumeric: 'tabular-nums' } }, Math.round(c.share * 100) + '%'));
+                E('span', { style: { minWidth: 48, marginLeft: 8, textAlign: 'right', color: ui.C.zinc700, fontVariantNumeric: 'tabular-nums' } }, Math.round(c.share * 100) + '%'));
         }));
 }
 
@@ -601,6 +822,8 @@ function Details(props) {
             style: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, marginTop: 12, background: 'rgba(45,212,191,0.12)', color: TEAL,
                      borderRadius: 12, padding: '11px', fontFamily: ui.sys, fontSize: 14, fontWeight: 600, textDecoration: 'none' } },
             E(OpenIcon, { style: { width: 15, height: 15 }, strokeWidth: 2 }), 'Open ' + (b.provider || b.name)),
+        isEnergyBill(b) && E('button', { onClick: props.onUsage, style: Object.assign(buttonStyle(ui), { width: '100%', marginTop: 10 }) },
+            'Usage and forecast' + (b.usage && b.usage.months.length ? ' · ' + b.usage.months.length + ' months' : '')),
         E('button', { onClick: props.onEdit, style: { display: 'block', width: '100%', background: 'none', border: 'none', color: ui.C.zinc600, fontFamily: ui.sys, fontSize: 13.5, marginTop: 10, padding: 6, cursor: 'pointer' } }, 'Edit'));
 }
 
@@ -617,7 +840,7 @@ function BillRow(props) {
             E('div', { style: { textAlign: 'right', flexShrink: 0 } },
                 E('div', { style: money(ui, 15, p, ui.C.white, 600) }, b.monthly == null ? '—' : fmtGBP(b.monthly)),
                 E('div', { style: money(ui, 12.5, p, ui.C.zinc700, 500) }, b.annual == null ? 'no cost' : fmtGBP(b.annual) + '/yr'))),
-        props.open && E(Details, { bill: b, hints: props.hints, privacy: p, onEdit: props.onEdit }));
+        props.open && E(Details, { bill: b, hints: props.hints, privacy: p, onEdit: props.onEdit, onUsage: props.onUsage }));
 }
 
 var _sort = 'cost';
@@ -651,7 +874,7 @@ function MainView(props) {
             list.map(function (b, i) {
                 return E(BillRow, { key: b.id, bill: b, first: i === 0, today: today, hints: hints, privacy: props.privacy, open: open[0] === b.id,
                     onToggle: function () { var v = open[0] === b.id ? null : b.id; _openId = v; open[1](v); },
-                    onEdit: function () { props.onEdit(b.id); } });
+                    onEdit: function () { props.onEdit(b.id); }, onUsage: function () { props.onUsage(b.id); } });
             })),
         E('div', { style: { display: 'flex', gap: 10, marginTop: 14 } },
             E('button', { style: Object.assign(buttonStyle(ui, 'primary'), { flex: 1 }), onClick: function () { props.onEdit(null); } }, '+ Add bill'),
@@ -686,7 +909,7 @@ function EditView(props) {
         if (form.link.trim() && !validLink(form.link)) return err[1]('The website should start with https:// (or be an app address).');
         var bill = validBill({ id: existing ? existing.id : null, name: form.name, provider: form.provider, category: form.category || guessCategory(form.name),
                                amount: amount, every: form.every, account: form.account, username: form.username, link: form.link, end: form.end,
-                               notes: form.notes, estate: form.estate || null });
+                               notes: form.notes, estate: form.estate || null, usage: existing ? existing.usage : null });
         if (!bill) return err[1]('Give the bill a name.');
         var bills = existing ? props.state.bills.map(function (b) { return b.id === bill.id ? bill : b; }) : props.state.bills.concat([bill]);
         saveState(Object.assign({}, props.state, { bills: bills })).catch(function () {});
@@ -771,6 +994,343 @@ function PasteView(props) {
             'No bills found. Copy the rows straight from the spreadsheet so the columns stay separate.'));
 }
 
+// ── Energy usage page ────────────────────────────────────────────────────────
+var FUELS = [{ id: 'elec', label: 'Electricity', color: '#60a5fa' }, { id: 'gas', label: 'Gas', color: '#34d399' }];
+var FUEL_BY_ID = { elec: FUELS[0], gas: FUELS[1] };
+var FC_COLOR = '#fbbf24';
+var MONTH_INITIALS = ['J', 'F', 'M', 'A', 'M', 'J', 'J', 'A', 'S', 'O', 'N', 'D'];
+var WEIGHTS = [{ id: 0.5, label: '50%' }, { id: 2 / 3, label: '67%' }, { id: 0.8, label: '80%' }, { id: 1, label: '100%' }];
+function monthLabel(mk) { return MONTHS[+mk.slice(5, 7) - 1] + ' ' + mk.slice(0, 4); }
+function fmtKwh(v) { return v == null ? '—' : Math.round(v).toLocaleString('en-GB') + ' kWh'; }
+function fmtPctSigned(v) { return v == null ? null : (v >= 0 ? '+' : '−') + Math.abs(Math.round(v * 100)) + '%'; }
+function fmtRate(v) { return v == null ? '—' : (Math.round(v * 10000) / 100).toLocaleString('en-GB', { maximumFractionDigits: 2 }) + 'p'; }
+function saveUsage(state, billId, usage) {
+    var bills = state.bills.map(function (b) { return b.id === billId ? Object.assign({}, b, { usage: validUsage(usage) }) : b; });
+    return saveState(Object.assign({}, state, { bills: bills })).catch(function () {});
+}
+
+function Segmented(props) {
+    var ui = useUI();
+    return E('div', { style: { display: 'flex', background: 'rgba(0,0,0,0.3)', borderRadius: 9, padding: 2, gap: 2 } },
+        props.options.map(function (o) {
+            var on = o.id === props.value;
+            return E('button', { key: String(o.id), onClick: function () { props.onChange(o.id); },
+                style: { flex: props.fill ? 1 : 'none', border: 'none', borderRadius: 7, padding: '5px 10px', fontFamily: ui.sys, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                         background: on ? 'rgba(255,255,255,0.10)' : 'transparent', color: on ? ui.C.white : ui.C.zinc600 } }, o.label);
+        }));
+}
+function niceMax(v) {
+    if (!(v > 0)) return 1;
+    var p = Math.pow(10, Math.floor(Math.log10(v))), n = v / p;
+    return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 5 ? 5 : 10) * p;
+}
+// Round steps from lo to hi; the line chart fits its data (no £0 floor: Fergus found one made the Estate scale silly).
+function niceRange(lo, hi, zero) {
+    if (zero) lo = 0;
+    if (!(hi > lo)) hi = lo + 1;
+    var step = niceMax((hi - lo) / 4);
+    var a = Math.floor(lo / step) * step, b = Math.ceil(hi / step) * step;
+    return { lo: a, hi: b === a ? a + step : b, step: step };
+}
+function axisText(v) { return v >= 1000 ? (v / 1000).toLocaleString('en-GB', { maximumFractionDigits: 1 }) + 'k' : String(Math.round(v)); }
+var CW = 340, CH = 150, PAD_L = 30, PAD_B = 18, PAD_T = 6;
+function Axes(props) {
+    var lines = [], r = props.range;
+    for (var v = r.lo, i = 0; v <= r.hi + r.step / 1e6; v += r.step, i++) {
+        var y = yOf(v, r);
+        lines.push(E('line', { key: 'g' + i, x1: PAD_L, x2: CW, y1: y, y2: y, stroke: 'rgba(255,255,255,0.07)' }));
+        lines.push(E('text', { key: 't' + i, x: PAD_L - 5, y: y + 3, textAnchor: 'end', fontSize: 9, fill: '#888894' }, axisText(v)));
+    }
+    var step = (CW - PAD_L) / 12;
+    MONTH_INITIALS.forEach(function (m, i) {
+        lines.push(E('text', { key: 'm' + i, x: PAD_L + step * (i + 0.5), y: CH - 5, textAnchor: 'middle', fontSize: 9, fill: '#888894' }, m));
+    });
+    return E('g', null, lines);
+}
+function yOf(v, r) { return PAD_T + (CH - PAD_T - PAD_B) * (1 - (v - r.lo) / (r.hi - r.lo)); }
+function xOf(i) { return PAD_L + (CW - PAD_L) / 12 * (i + 0.5); }
+function pathOf(vals, max) {
+    var d = '', pen = false;
+    vals.forEach(function (v, i) {
+        if (v == null) { pen = false; return; }
+        d += (pen ? 'L' : 'M') + xOf(i).toFixed(1) + ' ' + yOf(v, max).toFixed(1);
+        pen = true;
+    });
+    return d;
+}
+function Legend(props) {
+    var ui = useUI();
+    return E('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '4px 12px', marginTop: 8, fontFamily: ui.sys, fontSize: 11.5, color: ui.C.zinc600 } },
+        props.items.map(function (it) {
+            return E('span', { key: it.label, style: { display: 'inline-flex', alignItems: 'center', gap: 5 } },
+                E('span', { style: { width: it.bar ? 8 : 12, height: it.bar ? 8 : 0, borderRadius: it.bar ? 2 : 0, background: it.bar ? it.color : 'none',
+                                     borderTop: it.bar ? 'none' : '2px ' + (it.dashed ? 'dashed ' : 'solid ') + it.color } }), it.label);
+        }));
+}
+// Average use in each month (the sheet's top chart), the last 12 months, and the forecast.
+function SeasonChart(props) {
+    var st = props.stats, f = FUEL_BY_ID[props.fuel];
+    var recent = [], fc = [];
+    var start = st.latest ? monthNo(st.latest) - 11 : 0;
+    st.done.forEach(function (m) { if (monthNo(m.month) >= start && m[props.fuel] && m[props.fuel].kwh != null) recent[+m.month.slice(5, 7) - 1] = m[props.fuel].kwh; });
+    (st.forecast ? st.forecast.months : []).forEach(function (m) { fc[+m.month.slice(5, 7) - 1] = m[props.fuel]; });
+    for (var i = 0; i < 12; i++) { if (recent[i] === undefined) recent[i] = null; if (fc[i] === undefined) fc[i] = null; }
+    var vals = st.avg[props.fuel].concat(recent, fc).filter(function (v) { return v != null; });
+    var max = niceRange(Math.min.apply(null, vals.concat([Infinity])) * 0.95, Math.max.apply(null, vals.concat([1])) * 1.02);
+    return E('div', null,
+        E('svg', { viewBox: '0 0 ' + CW + ' ' + CH, width: '100%', style: { display: 'block' }, 'aria-label': f.label + ' use by month' },
+            E(Axes, { range: max }),
+            E('path', { d: pathOf(st.avg[props.fuel], max), fill: 'none', stroke: f.color, strokeWidth: 2.2, strokeLinejoin: 'round' }),
+            E('path', { d: pathOf(recent, max), fill: 'none', stroke: 'rgba(255,255,255,0.55)', strokeWidth: 1.2 }),
+            recent.map(function (v, i) { return v == null ? null : E('circle', { key: i, cx: xOf(i), cy: yOf(v, max), r: 2, fill: '#fff' }); }),
+            E('path', { d: pathOf(fc, max), fill: 'none', stroke: FC_COLOR, strokeWidth: 1.8, strokeDasharray: '4 3' })),
+        E(Legend, { items: [{ label: 'Average', color: f.color }, { label: 'Last 12 months', color: 'rgba(255,255,255,0.7)' }, { label: 'Forecast', color: FC_COLOR, dashed: true }] }));
+}
+// Each year's use by month (the sheet's bar charts): a bar per year, darker for older years.
+function YearBars(props) {
+    var st = props.stats, f = FUEL_BY_ID[props.fuel];
+    var ys = Object.keys(st.years).sort().slice(-5);
+    if (!ys.length) return null;
+    var all = [];
+    ys.forEach(function (y) { st.years[y][props.fuel].forEach(function (v) { if (v != null) all.push(v); }); });
+    var max = niceRange(0, Math.max.apply(null, all.concat([1])), true);
+    var step = (CW - PAD_L) / 12, bw = Math.max(2, (step - 4) / ys.length);
+    var shade = function (i) { return 0.18 + 0.82 * (ys.length === 1 ? 1 : i / (ys.length - 1)); };
+    var bars = [];
+    ys.forEach(function (y, yi) {
+        st.years[y][props.fuel].forEach(function (v, c) {
+            if (v == null) return;
+            var x = PAD_L + step * c + 2 + bw * yi, top = yOf(v, max);
+            bars.push(E('rect', { key: y + c, x: x, y: top, width: Math.max(1, bw - 0.6), height: Math.max(0, yOf(0, max) - top), fill: f.color, fillOpacity: shade(yi) }));
+        });
+    });
+    return E('div', null,
+        E('svg', { viewBox: '0 0 ' + CW + ' ' + CH, width: '100%', style: { display: 'block' }, 'aria-label': f.label + ' use by year' }, E(Axes, { range: max }), bars),
+        E(Legend, { items: ys.map(function (y, yi) { return { label: y, color: 'rgba(' + (props.fuel === 'gas' ? '52,211,153,' : '96,165,250,') + shade(yi) + ')', bar: true }; }) }));
+}
+
+function StatLine(props) {
+    var ui = useUI();
+    var bits = [fmtPctSigned(props.vsAvg) && fmtPctSigned(props.vsAvg) + ' vs average', fmtPctSigned(props.vsLy) && fmtPctSigned(props.vsLy) + ' vs year before'].filter(Boolean);
+    return E('div', { style: { padding: '6px 0', fontFamily: ui.sys } },
+        E('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+            E('span', { style: { width: 8, height: 8, borderRadius: 2, background: props.color, flexShrink: 0 } }),
+            E('span', { style: { fontSize: 14, color: ui.C.zinc400, flex: 1 } }, props.label),
+            E('span', { style: { fontSize: 14, color: ui.C.white, fontVariantNumeric: 'tabular-nums' } }, fmtKwh(props.kwh))),
+        bits.length > 0 && E('div', { style: { fontSize: 12, color: ui.C.zinc600, textAlign: 'right', marginTop: 2 } }, bits.join(' · ')));
+}
+
+var _usageFuel = 'elec', _usageAll = false;
+function UsageView(props) {
+    var ui = useUI(), b = props.bill, p = props.privacy;
+    var usage = b.usage || { months: [], meters: {} };
+    var st = React.useMemo(function () { return usageStats(usage); }, [b.usage]);
+    var fuel = React.useState(_usageFuel), all = React.useState(_usageAll), copied = React.useState(null);
+    var setFuel = function (v) { _usageFuel = v; fuel[1](v); };
+    var billYear = b.annual;
+    if (!st.months.length) {
+        return E('div', { style: { padding: '16px' } },
+            E('div', { style: cardStyle(ui, { padding: '22px 18px', textAlign: 'center' }) },
+                E('div', { style: { fontFamily: ui.sys, fontSize: 16, color: ui.C.white, fontWeight: 600, marginBottom: 6 } }, 'No usage yet'),
+                E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc600, lineHeight: 1.45, marginBottom: 16 } },
+                    'Paste your usage sheet (a row per month: electricity kWh, standing charge, unit rate, cost, then the same for gas) or add months one at a time.'),
+                E('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
+                    E('button', { style: buttonStyle(ui, 'primary'), onClick: props.onPaste }, 'Paste from spreadsheet'),
+                    E('button', { style: buttonStyle(ui), onClick: function () { props.onMonth(null); } }, '+ Add month'))));
+    }
+    var range = st.latest ? monthLabel(monthOf(monthNo(st.latest) - 11)) + ' – ' + monthLabel(st.latest) : '';
+    var diff = st.annual != null && billYear ? st.annual - billYear : null;
+    var fc = st.forecast, fcDiff = fc && fc.cost != null && billYear ? fc.cost - billYear : null;
+    var rateText = ['elec', 'gas'].filter(function (k) { return st.rates[k]; }).map(function (k) {
+        return FUEL_BY_ID[k].label + ' ' + fmtRate(st.rates[k].unit) + '/kWh + ' + fmtRate(st.rates[k].standing) + '/day';
+    }).join(' · ');
+    var list = st.months.slice().reverse(), shown = all[0] ? list : list.slice(0, 12);
+    var meters = METER_FIELDS.filter(function (f) { return usage.meters && usage.meters[f.id]; });
+    function copy(id, v) { copyText(v).then(function (ok) { copied[1](ok ? id : null); if (ok) setTimeout(function () { copied[1](null); }, 1500); }); }
+    var vsBill = function (d) {
+        return d == null ? null : E('span', { style: { color: d > 0 ? ui.C.amber : ui.C.zinc400 } },
+            E('span', { style: { filter: p ? 'blur(6px)' : 'none' } }, fmtGBP(Math.abs(d))), d > 0 ? ' more than' : ' less than', ' the bill’s ', E('span', { style: { filter: p ? 'blur(6px)' : 'none' } }, fmtGBP(billYear)), ' a year');
+    };
+    return E('div', { style: { padding: '12px 16px 0' } },
+        // The rolling year, as the sheet's Annual Cost.
+        E('div', { style: cardStyle(ui, { padding: '18px 20px' }) },
+            E('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' } },
+                E('span', { style: capsLabel(ui) }, 'Last 12 months'),
+                E('span', { style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.zinc600 } }, range)),
+            E('div', { style: { display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 8 } },
+                E('span', { style: money(ui, 32, p) }, st.annual == null ? '—' : fmtGBP(st.annual)),
+                E('span', { style: { fontFamily: ui.sys, fontSize: 15, color: ui.C.zinc600 } }, 'energy cost')),
+            diff != null && E('div', { style: { fontFamily: ui.sys, fontSize: 13, marginTop: 4 } }, vsBill(diff)),
+            st.annual == null && E('div', { style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.zinc600, marginTop: 4 } }, 'Needs 12 months of readings.'),
+            E('div', { style: { borderTop: '1px solid ' + ui.C.border, marginTop: 14, paddingTop: 8 } },
+                FUELS.map(function (f) { return E(StatLine, { key: f.id, label: f.label, color: f.color, kwh: st.running[f.id], vsAvg: st.vsAverage[f.id], vsLy: st.vsLastYear[f.id] }); }))),
+        // The forecast.
+        fc && E('div', { style: cardStyle(ui, { padding: '18px 20px', marginTop: 12 }) },
+            E('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' } },
+                E('span', { style: Object.assign(capsLabel(ui), { color: FC_COLOR }) }, 'Next 12 months'),
+                E('span', { style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.zinc600 } }, monthLabel(fc.months[0].month) + ' – ' + monthLabel(fc.months[11].month))),
+            E('div', { style: { display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 8 } },
+                E('span', { style: money(ui, 28, p) }, fc.cost == null ? '—' : fmtGBP(fc.cost)),
+                E('span', { style: { fontFamily: ui.sys, fontSize: 14, color: ui.C.zinc600 } }, fc.cost == null ? 'add unit rates to price it' : 'forecast · ' + fmtGBP(fc.cost / 12) + ' a month')),
+            fcDiff != null && E('div', { style: { fontFamily: ui.sys, fontSize: 13, marginTop: 4 } }, vsBill(fcDiff)),
+            E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc400, marginTop: 10 } },
+                FUELS.map(function (f) { return f.label + ' ' + fmtKwh(fc.kwh[f.id]); }).join(' · ')),
+            rateText && E('div', { style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.zinc600, marginTop: 4, lineHeight: 1.4 } }, 'At ' + rateText),
+            E('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginTop: 14 } },
+                E('span', { style: { fontFamily: ui.sys, fontSize: 12.5, color: ui.C.zinc400 } }, 'Weight on last 12 months'),
+                E(Segmented, { options: WEIGHTS, value: WEIGHTS.filter(function (w) { return Math.abs(w.id - fc.weight) < 0.01; }).map(function (w) { return w.id; })[0],
+                    onChange: function (v) { saveUsage(props.state, b.id, Object.assign({}, usage, { weight: v })); } })),
+            E('div', { style: { fontFamily: ui.sys, fontSize: 11.5, color: ui.C.zinc700, marginTop: 8, lineHeight: 1.4 } },
+                'Each month blends last year’s use with the average of earlier years. 67% counts last year twice as much; 100% repeats last year.')),
+        // Charts.
+        E('div', { style: cardStyle(ui, { padding: '16px 16px 14px', marginTop: 12 }) },
+            E('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 } },
+                E('span', { style: capsLabel(ui) }, 'Use by month'),
+                E(Segmented, { options: FUELS, value: fuel[0], onChange: setFuel })),
+            E(SeasonChart, { stats: st, fuel: fuel[0] }),
+            E('div', { style: Object.assign(capsLabel(ui), { margin: '18px 0 10px' }) }, 'Each year'),
+            E(YearBars, { stats: st, fuel: fuel[0] })),
+        // Months.
+        E('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', margin: '22px 4px 8px' } },
+            E('span', { style: capsLabel(ui) }, 'Months'),
+            E('span', { style: { fontFamily: ui.sys, fontSize: 11.5, color: ui.C.zinc600 } }, 'Electricity · Gas · Cost')),
+        E('div', { style: cardStyle(ui, { overflow: 'hidden' }) },
+            shown.map(function (m, i) {
+                var c = monthCost(m), partial = !hasReading(m);
+                return E('button', { key: m.month, onClick: function () { props.onMonth(m.month); },
+                    style: { display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '11px 14px', background: 'none', border: 'none', borderTop: i ? '1px solid ' + ui.C.border : 'none',
+                             textAlign: 'left', cursor: 'pointer', fontFamily: ui.sys, fontVariantNumeric: 'tabular-nums' } },
+                    E('span', { style: { flex: 1, fontSize: 14, color: ui.C.white } }, monthLabel(m.month), partial && E('span', { style: { color: ui.C.zinc600, fontSize: 12 } }, ' · so far')),
+                    E('span', { style: { width: 62, textAlign: 'right', fontSize: 13, color: FUELS[0].color } }, m.elec && m.elec.kwh != null ? Math.round(m.elec.kwh).toLocaleString('en-GB') : '—'),
+                    E('span', { style: { width: 62, textAlign: 'right', fontSize: 13, color: FUELS[1].color } }, m.gas && m.gas.kwh != null ? Math.round(m.gas.kwh).toLocaleString('en-GB') : '—'),
+                    E('span', { style: Object.assign(money(ui, 13.5, p, ui.C.white, 600), { width: 58, textAlign: 'right' }) }, c == null ? '—' : fmtGBP(c)));
+            }),
+            list.length > 12 && E('button', { onClick: function () { _usageAll = !all[0]; all[1](!all[0]); },
+                style: { display: 'block', width: '100%', padding: '11px', background: 'none', border: 'none', borderTop: '1px solid ' + ui.C.border, color: TEAL, fontFamily: ui.sys, fontSize: 13.5, fontWeight: 600, cursor: 'pointer' } },
+                all[0] ? 'Show the last 12' : 'Show all ' + list.length + ' months')),
+        E('div', { style: { display: 'flex', gap: 10, marginTop: 14 } },
+            // A month in progress (rates or a part cost, no reading yet) is the one to fill in next.
+            E('button', { style: Object.assign(buttonStyle(ui, 'primary'), { flex: 1 }), onClick: function () { props.onMonth(list[0] && !hasReading(list[0]) ? list[0].month : null); } },
+                list[0] && !hasReading(list[0]) ? 'Finish ' + monthLabel(list[0].month) : '+ Add month'),
+            E('button', { style: Object.assign(buttonStyle(ui), { flex: 1 }), onClick: props.onPaste }, 'Paste from sheet')),
+        // Meters.
+        E('div', { style: Object.assign(capsLabel(ui), { margin: '22px 4px 8px' }) }, 'Meters'),
+        E('div', { style: cardStyle(ui, { padding: '2px 14px 6px' }) },
+            meters.map(function (f, i) {
+                return E(Field, { key: f.id, label: f.label },
+                    E('span', { style: { fontVariantNumeric: 'tabular-nums', filter: p ? 'blur(6px)' : 'none', overflow: 'hidden', textOverflow: 'ellipsis' } }, usage.meters[f.id]),
+                    E(Chip, { onClick: function () { copy(f.id, usage.meters[f.id]); } }, copied[0] === f.id ? 'Copied' : 'Copy'));
+            }),
+            E('button', { onClick: props.onMeters, style: { display: 'block', width: '100%', background: 'none', border: 'none', color: TEAL, fontFamily: ui.sys, fontSize: 13.5, padding: '10px 0 6px', cursor: 'pointer', textAlign: 'left' } },
+                meters.length ? 'Edit meter numbers' : '+ Add meter numbers (MPAN, MPRN, serials)')));
+}
+
+// One month: readings, rates and cost for each fuel, and any support.
+function UsageMonthView(props) {
+    var ui = useUI(), b = props.bill, usage = b.usage || { months: [], meters: {} };
+    var existing = props.month ? usage.months.filter(function (m) { return m.month === props.month; })[0] : null;
+    var rates = latestRates(usage.months);
+    var lastKey = usage.months.length ? usage.months[usage.months.length - 1].month : todayISO().slice(0, 7);
+    var str = function (v) { return v == null ? '' : String(v); };
+    var f = React.useState(function () {
+        var m = existing || {};
+        var fuel = function (k) {
+            var x = m[k] || {}, r = rates[k] || {};
+            return { kwh: str(x.kwh), standing: str(existing ? x.standing : r.standing), unit: str(existing ? x.unit : r.unit), cost: str(x.cost) };
+        };
+        return { month: existing ? existing.month : (usage.months.length ? monthOf(monthNo(lastKey) + 1) : lastKey), elec: fuel('elec'), gas: fuel('gas'), support: str(m.support) };
+    });
+    var form = f[0], err = React.useState(null), del = React.useState(false);
+    function set(k, sub, v) { var n = JSON.parse(JSON.stringify(form)); if (sub) n[k][sub] = v; else n[k] = v; f[1](n); }
+    var toNum = function (v) { var t = String(v).replace(/[£,\s]/g, ''); return t === '' ? null : /^\d+(\.\d+)?$/.test(t) ? Number(t) : NaN; };
+    var fuelOut = function (k) { var x = form[k]; return { kwh: toNum(x.kwh), standing: toNum(x.standing), unit: toNum(x.unit), cost: toNum(x.cost) }; };
+    function save() {
+        if (!MONTH_KEY.test(form.month)) return err[1]('Pick the month.');
+        var m = { month: form.month, elec: fuelOut('elec'), gas: fuelOut('gas'), support: toNum(form.support) };
+        var bad = [m.elec, m.gas].some(function (x) { return Object.keys(x).some(function (k) { return isNaN(x[k]) && x[k] !== null; }); }) || (m.support !== null && isNaN(m.support));
+        if (bad) return err[1]('Use plain numbers: kWh, and £ for rates and costs (0.24 for 24p).');
+        var months = usage.months.filter(function (x) { return x.month !== m.month && (!existing || x.month !== existing.month); }).concat([m]);
+        saveUsage(props.state, b.id, Object.assign({}, usage, { months: months }));
+        props.onDone();
+    }
+    function remove() {
+        if (!del[0]) { del[1](true); setTimeout(function () { del[1](false); }, 4000); return; }
+        saveUsage(props.state, b.id, Object.assign({}, usage, { months: usage.months.filter(function (x) { return x.month !== existing.month; }) }));
+        props.onDone();
+    }
+    var box = function (k, sub, ph) {
+        return E('input', { value: sub ? form[k][sub] : form[k], inputMode: 'decimal', placeholder: ph || '',
+                            onChange: function (e) { set(k, sub, e.target.value); }, style: inputStyle(ui) });
+    };
+    var fuelBlock = function (fu) {
+        var x = fuelOut(fu.id), est = !isNaN(x.kwh) && !isNaN(x.unit) && x.kwh != null && x.unit != null && MONTH_KEY.test(form.month)
+            ? x.kwh * x.unit + (isNaN(x.standing) ? 0 : x.standing || 0) * daysIn(form.month) : null;
+        return E('div', { key: fu.id, style: cardStyle(ui, { padding: '14px 14px 2px', marginBottom: 12 }) },
+            E('div', { style: { fontFamily: ui.sys, fontSize: 14, fontWeight: 600, color: fu.color, marginBottom: 10 } }, fu.label),
+            E('div', { style: { display: 'flex', gap: 10 } },
+                E(Label, { text: 'Used (kWh)', flex: 1 }, box(fu.id, 'kwh')),
+                E(Label, { text: 'Cost (£)', flex: 1 }, box(fu.id, 'cost', est != null ? est.toFixed(2) : ''))),
+            E('div', { style: { display: 'flex', gap: 10 } },
+                E(Label, { text: 'Unit rate (£/kWh)', flex: 1 }, box(fu.id, 'unit', '0.24')),
+                E(Label, { text: 'Standing (£/day)', flex: 1 }, box(fu.id, 'standing', '0.50'))));
+    };
+    return E('div', { style: { padding: '16px 16px 0' } },
+        E(Label, { text: 'Month' }, E('input', { type: 'month', value: form.month, onChange: function (e) { set('month', null, e.target.value); }, style: inputStyle(ui) })),
+        FUELS.map(fuelBlock),
+        E(Label, { text: 'Government support (£, taken off the cost)' }, box('support', null)),
+        E('div', { style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.zinc600, lineHeight: 1.45, marginBottom: 14 } },
+            'Leave Cost blank to work it out: kWh × unit rate + standing charge × days in the month. Rates start as last month’s.'),
+        err[0] && E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.rose, marginBottom: 10 } }, err[0]),
+        E('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
+            E('button', { style: buttonStyle(ui, 'primary'), onClick: save }, existing ? 'Save' : 'Add month'),
+            existing && E('button', { style: buttonStyle(ui, 'danger'), onClick: remove }, del[0] ? 'Tap again to delete' : 'Delete month')));
+}
+
+function UsagePasteView(props) {
+    var ui = useUI(), b = props.bill;
+    var txt = React.useState(''), done = React.useState(null);
+    var parsed = React.useMemo(function () { return parseUsagePaste(txt[0]); }, [txt[0]]);
+    var meterNames = METER_FIELDS.filter(function (f) { return parsed.meters[f.id]; }).map(function (f) { return f.label; });
+    function add() {
+        var replaced = ((b.usage && b.usage.months) || []).filter(function (m) { return parsed.months.some(function (x) { return x.month === m.month; }); }).length;
+        saveUsage(props.state, b.id, mergeUsage(b.usage, parsed));
+        done[1]({ months: parsed.months.length, replaced: replaced });
+        txt[1]('');
+    }
+    var first = parsed.months[0], last = parsed.months[parsed.months.length - 1];
+    return E('div', { style: { padding: '16px 16px 0' } },
+        E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc400, lineHeight: 1.5, marginBottom: 12 } },
+            'Copy your usage sheet, header rows included, and paste it below. A row per month (‘April 2021’): electricity kWh, standing charge, unit rate and cost, the same for gas, then government support. Pasted months replace the same months already here.'),
+        E('textarea', { value: txt[0], rows: 6, placeholder: 'Paste here', onChange: function (e) { txt[1](e.target.value); done[1](null); },
+                        autoCapitalize: 'none', autoCorrect: 'off', spellCheck: false,
+                        style: inputStyle(ui, { height: 'auto', padding: '10px', fontSize: 13, fontFamily: 'ui-monospace, Menlo, monospace', resize: 'vertical', whiteSpace: 'pre', overflowX: 'auto' }) }),
+        done[0] && E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.emerald, margin: '12px 0' } },
+            'Saved ' + done[0].months + ' months' + (done[0].replaced ? ' (' + done[0].replaced + ' replaced)' : '') + '.'),
+        parsed.months.length > 0 && E('div', { style: cardStyle(ui, { padding: '14px', marginTop: 14, fontFamily: ui.sys }) },
+            E('div', { style: { fontSize: 14, color: ui.C.white, fontWeight: 600 } }, parsed.months.length + ' months · ' + monthLabel(first.month) + ' – ' + monthLabel(last.month)),
+            E('div', { style: { fontSize: 12.5, color: ui.C.zinc600, marginTop: 4, lineHeight: 1.45 } },
+                parsed.months.filter(hasReading).length + ' with readings' + (meterNames.length ? ' · meter numbers: ' + meterNames.join(', ') : '') +
+                (parsed.skipped ? ' · ' + parsed.skipped + ' empty months skipped' : '')),
+            E('button', { style: Object.assign(buttonStyle(ui, 'primary'), { width: '100%', marginTop: 12 }), onClick: add }, 'Save ' + parsed.months.length + ' months')),
+        txt[0].trim() && !parsed.months.length && E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.amber, marginTop: 12 } },
+            'No months found. Each row should start with the month, like ‘April 2021’.'));
+}
+
+function MetersView(props) {
+    var ui = useUI(), b = props.bill, usage = b.usage || { months: [], meters: {} };
+    var f = React.useState(function () { var o = {}; METER_FIELDS.forEach(function (x) { o[x.id] = (usage.meters && usage.meters[x.id]) || ''; }); return o; });
+    function save() {
+        saveUsage(props.state, b.id, Object.assign({}, usage, { meters: f[0] }));
+        props.onDone();
+    }
+    return E('div', { style: { padding: '16px 16px 0' } },
+        METER_FIELDS.map(function (x) {
+            return E(Label, { key: x.id, text: x.label }, E('input', { value: f[0][x.id], autoCapitalize: 'characters', autoCorrect: 'off', spellCheck: false,
+                onChange: function (e) { var n = Object.assign({}, f[0]); n[x.id] = e.target.value; f[1](n); }, style: inputStyle(ui) }));
+        }),
+        E('button', { style: Object.assign(buttonStyle(ui, 'primary'), { width: '100%' }), onClick: save }, 'Save'));
+}
+
 function ScreenInner(props) {
     var ui = useUI();
     var state = useStoreState(), estate = useEstateState();
@@ -780,14 +1340,26 @@ function ScreenInner(props) {
     React.useLayoutEffect(function () {
         if (view.name === 'main' && _ready && scrollRef.current) scrollRef.current.scrollTo({ top: _mainScrollTop, behavior: 'instant' });
     }, [view.name, _ready]);
-    var back = view.name === 'main' ? null : function () { setView({ name: 'main' }); };
+    // The usage page's own forms go back to it; everything else goes back to the bills.
+    var toUsage = function () { setView({ name: 'usage', id: view.id }); };
+    var inUsage = view.name === 'usageMonth' || view.name === 'usagePaste' || view.name === 'meters';
+    var back = view.name === 'main' ? null : inUsage ? toUsage : function () { setView({ name: 'main' }); };
+    var bill = view.id ? bills.filter(function (b) { return b.id === view.id; })[0] : null;
     var body;
     if (!_ready) body = E('div', { style: { padding: 32, textAlign: 'center', fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc600 } }, 'Loading…');
     else if (view.name === 'edit') body = E(EditView, { id: view.id, state: state, estate: estate, onDone: back });
     else if (view.name === 'paste') body = E(PasteView, { state: state, estate: estate, privacy: props.privacyMode });
+    else if (view.name === 'usage' && bill) body = E(UsageView, { bill: bill, state: state, privacy: props.privacyMode,
+        onMonth: function (mk) { setView({ name: 'usageMonth', id: bill.id, month: mk }); },
+        onPaste: function () { setView({ name: 'usagePaste', id: bill.id }); }, onMeters: function () { setView({ name: 'meters', id: bill.id }); } });
+    else if (view.name === 'usageMonth' && bill) body = E(UsageMonthView, { bill: bill, month: view.month, state: state, onDone: toUsage });
+    else if (view.name === 'usagePaste' && bill) body = E(UsagePasteView, { bill: bill, state: state });
+    else if (view.name === 'meters' && bill) body = E(MetersView, { bill: bill, state: state, onDone: toUsage });
     else body = E(MainView, { bills: bills, privacy: props.privacyMode, onPaste: function () { setView({ name: 'paste' }); },
-                              onEdit: function (id) { setView({ name: 'edit', id: id }); } });
-    var title = view.name === 'paste' ? 'Paste bills' : view.id ? 'Edit bill' : 'Add bill';
+                              onEdit: function (id) { setView({ name: 'edit', id: id }); }, onUsage: function (id) { setView({ name: 'usage', id: id }); } });
+    var title = view.name === 'paste' ? 'Paste bills' : view.name === 'usage' ? (bill ? bill.name : '') + ' usage'
+        : view.name === 'usageMonth' ? (view.month ? monthLabel(view.month) : 'Add month') : view.name === 'usagePaste' ? 'Paste usage'
+        : view.name === 'meters' ? 'Meter numbers' : view.id ? 'Edit bill' : 'Add bill';
     return E('div', {
         'data-swipe-tabs': view.name === 'main' ? '' : null, 'data-tab-screen': 'lifeadmin',
         style: { position: 'fixed', top: 'var(--topbar-h, 0px)', left: 0, right: 0, bottom: 0, zIndex: 9995, background: ui.C.bg, display: 'flex', flexDirection: 'column', WebkitTapHighlightColor: 'transparent' }
@@ -828,5 +1400,6 @@ window.LifeAdminColor = TEAL;
 // For tests only: the pure parts, no UI.
 window.__lifeAdminInternals = { validateState: validateState, validBill: validBill, validLink: validLink, parsePaste: parsePaste, parseDate: parseDate,
     parseMoney: parseMoney, costFrom: costFrom, mergeBills: mergeBills, resolveBill: resolveBill, resolveAll: resolveAll, totals: totals,
-    sortBills: sortBills, renewalAlerts: renewalAlerts, hintFor: hintFor, guessCategory: guessCategory, subLine: subLine };
+    sortBills: sortBills, renewalAlerts: renewalAlerts, hintFor: hintFor, guessCategory: guessCategory, subLine: subLine,
+    validUsage: validUsage, parseUsagePaste: parseUsagePaste, mergeUsage: mergeUsage, usageStats: usageStats, monthCost: monthCost, fuelCost: fuelCost, isEnergyBill: isEnergyBill };
 })();
