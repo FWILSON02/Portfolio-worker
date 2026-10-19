@@ -143,3 +143,78 @@ test('cloud backup counts bills, so losing them holds the backup back', () => {
     assert.equal(before.bills, 2);
     assert.match(app.cloudBackupShrink(before, now), /0 Life Admin bills \(the last backup had 2\)/);
 });
+
+// ── Energy usage ──
+// The shape of a usage sheet copied out of Numbers (made-up figures): two header rows, a row per month, meter numbers
+// in side columns, a month in progress with only rates and a part cost, and empty months.
+function usageSheet() {
+    const rows = [
+        '\t\tStanding Cost\tUnit Cost\t\t\tStanding Cost\tUnit Cost\t\t\t\t\t\t',
+        '\tHistorical Electricity Usage kWh\t\t\tElectricity Cost\tHistorical Gas Usage kWh\t\t\tGas Cost\tGovernment Support\tAnnual Cost\t\tAverage Electricity Use\tAverage Gas Use',
+        'January 2021\t\t\t\t\t\t\t\t\t\t\tJanuary\t300\t3,000',
+    ];
+    const elec = [300, 280, 260, 240, 220, 200, 200, 210, 230, 260, 290, 320];
+    const gas = [3000, 2500, 2000, 1400, 700, 400, 250, 250, 500, 1300, 2200, 2900];
+    const names = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+    for (let y = 2023; y <= 2025; y++) for (let m = 0; m < 12; m++) {
+        const k = y === 2025 ? 1.1 : 1;             // the last year uses 10% more
+        const e = Math.round(elec[m] * k), g = Math.round(gas[m] * k);
+        const side = y === 2024 && m === 0 ? 'MPAN\t1234567890123\t' : y === 2024 && m === 1 ? 'MPRN\t98765\t' : '\t\t';
+        rows.push([names[m] + ' ' + y, e, '£0.50', '£0.25', '£' + Math.round(e * 0.25 + 15), g, '£0.30', '£0.06', '£' + Math.round(g * 0.06 + 9),
+                   y === 2023 && m === 0 ? '£50' : '', '', side].join('\t'));
+    }
+    rows.push('January 2026\t\t£0.50\t£0.25\t£10\t\t£0.30\t£0.06\t£5\t\t\t\t\t');
+    rows.push('February 2026' + '\t'.repeat(13));
+    return rows.join('\n');
+}
+
+test('parseUsagePaste reads the usage sheet: columns from the headers, meters, the month in progress', () => {
+    const p = L.parseUsagePaste(usageSheet());
+    assert.equal(p.months.length, 37);
+    assert.deepEqual(plain(p.meters), { mpan: '1234567890123', mprn: '98765' });
+    assert.deepEqual(plain(p.months[0]), { month: '2023-01', elec: { kwh: 300, standing: 0.5, unit: 0.25, cost: 90 },
+                                           gas: { kwh: 3000, standing: 0.3, unit: 0.06, cost: 189 }, support: 50 });
+    assert.deepEqual(plain(p.months[36].elec), { kwh: null, standing: 0.5, unit: 0.25, cost: 10 });
+});
+
+test('usageStats: the rolling year, averages and the weighted forecast', () => {
+    const u = L.mergeUsage(null, L.parseUsagePaste(usageSheet()));
+    const st = L.usageStats(u);
+    assert.equal(st.latest, '2025-12');                                   // January 2026 has no reading yet
+    const y25 = u.months.filter(m => m.month.startsWith('2025'));
+    assert.equal(st.annual, y25.reduce((s, m) => s + L.monthCost(m), 0));
+    assert.equal(st.running.elec, y25.reduce((s, m) => s + m.elec.kwh, 0));
+    assert.ok(Math.abs(st.vsLastYear.elec - 0.1) < 0.01);
+    assert.ok(Math.abs(st.avg.elec[0] - (300 + 300 + 330) / 3) < 1e-9);
+    // Default weight 2/3 on the last 12 months: January = 2/3 × 330 + 1/3 × 300.
+    assert.equal(st.forecast.months[0].month, '2026-01');
+    assert.ok(Math.abs(st.forecast.months[0].elec - 320) < 1e-9);
+    const jan = 320 * 0.25 + 0.5 * 31 + st.forecast.months[0].gas * 0.06 + 0.3 * 31;
+    assert.ok(Math.abs(st.forecast.months[0].cost - jan) < 1e-9);
+    // 100% repeats the last year's use.
+    const full = L.usageStats(Object.assign({}, u, { weight: 1 }));
+    assert.equal(Math.round(full.forecast.kwh.elec), st.running.elec);
+});
+
+test('a month\'s cost: the one entered, else kWh × rate + standing × days, less support', () => {
+    assert.equal(L.monthCost({ month: '2024-02', elec: { kwh: 100, unit: 0.25, standing: 0.5, cost: null }, gas: null, support: 10 }), 25 + 0.5 * 29 - 10);
+    assert.equal(L.monthCost({ month: '2024-02', elec: { kwh: 100, unit: 0.25, standing: 0.5, cost: 40 }, gas: null, support: null }), 40);
+    assert.equal(L.monthCost({ month: '2024-02', elec: { kwh: 100 }, gas: null }), null);
+});
+
+test('usage rides on the bill: validated, merged by month, kept when the bill is edited', () => {
+    const b = L.validBill({ name: 'Energy', usage: { months: [{ month: '2025-13', elec: { kwh: 1 } }, { month: '2025-01', elec: { kwh: 5 } }], meters: { mpan: 'X' }, weight: 0.8 } });
+    assert.deepEqual(plain(b.usage), { months: [{ month: '2025-01', elec: { kwh: 5, standing: null, unit: null, cost: null }, gas: null, support: null }], meters: { mpan: 'X' }, weight: 0.8 });
+    const merged = L.mergeUsage(b.usage, { months: [{ month: '2025-01', elec: { kwh: 7 } }, { month: '2025-02', gas: { kwh: 9 } }], meters: { mprn: 'Y' } });
+    assert.deepEqual(plain(merged.months.map(m => m.month)), ['2025-01', '2025-02']);
+    assert.equal(merged.months[0].elec.kwh, 7);
+    assert.deepEqual(plain(merged.meters), { mpan: 'X', mprn: 'Y' });
+    assert.equal(merged.weight, 0.8);
+    assert.equal(L.isEnergyBill({ name: 'Energy' }), true);
+    assert.equal(L.isEnergyBill({ name: 'Water' }), false);
+});
+
+test('cloud backup counts energy usage months', () => {
+    const c = app.cloudBackupCounts({ lifeAdmin: { bills: [{ usage: { months: [{}, {}, {}] } }, {}] } });
+    assert.equal(c.usage, 3);
+});
