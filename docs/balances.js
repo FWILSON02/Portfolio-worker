@@ -335,7 +335,7 @@ var BalancesStore = {
             if (next) return saveState(next);
         }).catch(function () {});
     },
-    // Settings → Estate (index.html): export, delete, and open the Import view on the Estate tab.
+    // Settings (index.html): export and open the Import view on the Estate tab (Backup), and delete (Estate).
     exportFile: function (kind) {
         var name = 'estate-' + todayISO() + (kind === 'csv' ? '.csv' : '.json');
         var text = kind === 'csv' ? buildCsv(_state) : buildJson(_state);
@@ -1682,9 +1682,9 @@ function MainView(props) {
             })
         ),
         E('button', { style: Object.assign(buttonStyle(ui, 'primary'), { width: '100%', fontSize: 15 }), onClick: props.onUpdate }, 'Update balances'),
-        // Import, export, the backup reminder and Delete live in Settings → Estate (Fergus asked).
+        // Import and export live in Settings → Backup, Delete in Settings → Estate (Fergus asked).
         stale && E('div', { style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.amber, textAlign: 'center', marginTop: 10, lineHeight: 1.4 } },
-            'Last exported ' + relTime(state.lastExportAt) + '. Export a backup from Settings → Estate.')
+            'Last exported ' + relTime(state.lastExportAt) + '. Set up the cloud backup or export one in Settings → Backup.')
     );
 }
 
