@@ -73,10 +73,10 @@ EVERY.forEach(function (f) { EVERY_BY_ID[f.id] = f; });
 //          end:      'YYYY-MM-DD' when the contract or policy ends or renews; null = rolling.
 //          estate:   id of an Estate mortgage this bill follows: its monthly payment and deal end come from the Estate
 //                    tab (Fergus asked), so the two can't disagree. amount, every and end are then ignored.
-//          costFrom: 'last12' | 'forecast' | null: an energy bill's yearly cost follows its usage page (the last 12 months
-//                    or the 12-month forecast) instead of the amount typed in (Fergus asked). amount stays as the
+//          costFrom: 'last12' | 'forecast' | null: an energy bill's yearly cost follows its usage page (the last 12 months'
+//                    use at today's rates, or the 12-month forecast) instead of the amount typed in (Fergus asked). amount stays as the
 //                    fallback until the usage has the figure.
-var COST_FROM = [{ id: 'last12', label: 'Last 12 months of usage' }, { id: 'forecast', label: '12-month forecast' }];
+var COST_FROM = [{ id: 'last12', label: "Last 12 months' use at today's rates" }, { id: 'forecast', label: '12-month forecast' }];
 var COST_FROM_BY_ID = { last12: COST_FROM[0], forecast: COST_FROM[1] };
 var DB_NAME = 'portfolio-lifeadmin';
 var DB_STORE = 'kv';
@@ -243,7 +243,7 @@ function resolveBill(b, estate) {
     }
     out.formula = null;
     if (b.costFrom && b.usage) {
-        var st = usageStats(b.usage), v = b.costFrom === 'last12' ? st.annual : st.forecast && st.forecast.cost;
+        var st = usageStats(b.usage), v = b.costFrom === 'last12' ? st.current && st.current.cost : st.forecast && st.forecast.cost;
         if (v != null) { out.amount = Math.round(v * 100) / 100; out.every = 'year'; out.formula = b.costFrom; }
     }
     var per = (EVERY_BY_ID[out.every] || EVERY_BY_ID.month).per;
@@ -594,7 +594,7 @@ function usageStats(usage, today) {
     var weight = usage && num(usage.weight) != null ? Math.min(1, Math.max(0, usage.weight)) : DEFAULT_WEIGHT;
     var recentStart = latest ? monthNo(latest) - 11 : 0;
     var adjust = (usage && usage.adjust) || {};
-    var rates = forecastRates(usage), forecast = null;
+    var rates = forecastRates(usage), forecast = null, current = null;
     if (latest) {
         var plan = [], total = 0, priced = true, kwhTotal = { elec: 0, gas: 0 }, days = 0;
         for (var i = 1; i <= 12; i++) {
@@ -623,6 +623,18 @@ function usageStats(usage, today) {
             if (rates[k]) parts[k] = { kwh: kwhTotal[k], unit: rates[k].unit, standing: rates[k].standing, days: days,
                                        energy: kwhTotal[k] * rates[k].unit, standingCost: rates[k].standing * days };
         });
+        // The last 12 months' use priced at today's rates (Fergus: past usage, current costs), no adjustment.
+        if (year.length === 12) {
+            var cur = 0, curParts = {}, curOk = true;
+            ['elec', 'gas'].forEach(function (k) {
+                if (running[k] == null) return;
+                if (!rates[k]) { curOk = false; return; }
+                curParts[k] = { kwh: running[k], unit: rates[k].unit, standing: rates[k].standing, days: days,
+                                energy: running[k] * rates[k].unit, standingCost: rates[k].standing * days };
+                cur += curParts[k].energy + curParts[k].standingCost;
+            });
+            if (curOk && (curParts.elec || curParts.gas)) current = { cost: cur, parts: curParts, days: days };
+        }
         forecast = { months: plan, kwh: kwhTotal, cost: priced && (rates.elec || rates.gas) ? total : null, weight: weight, parts: parts, days: days, adjust: { elec: adjust.elec || 0, gas: adjust.gas || 0 } };
     }
     // Use by calendar month, one series per year (the year-on-year bars).
@@ -637,7 +649,7 @@ function usageStats(usage, today) {
              annual: rolling.length && rolling[rolling.length - 1].month === latest ? rolling[rolling.length - 1].cost : null,
              running: running, vsAverage: { elec: pctVs(running.elec, avgYear.elec), gas: pctVs(running.gas, avgYear.gas) },
              vsLastYear: { elec: pctVs(running.elec, before.elec), gas: pctVs(running.gas, before.gas) },
-             full: year.length === 12, rates: rates, forecast: forecast, years: years };
+             full: year.length === 12, rates: rates, forecast: forecast, current: current, years: years };
 }
 
 // Paste from the usage sheet: a row per month ('April 2021') with electricity kWh, standing charge, unit rate and
@@ -1019,7 +1031,7 @@ function EditView(props) {
     var usage = existing && existing.usage, canFormula = !fromEstate && !!(usage && usage.months.length) && isEnergyBill(existing);
     var formula = canFormula && form.costFrom ? form.costFrom : null;
     var formulaValue = null;
-    if (formula) { var st = usageStats(usage); formulaValue = formula === 'last12' ? st.annual : st.forecast && st.forecast.cost; }
+    if (formula) { var st = usageStats(usage); formulaValue = formula === 'last12' ? st.current && st.current.cost : st.forecast && st.forecast.cost; }
     return E('div', { style: { padding: '16px 16px 0' } },
         E(Label, { text: 'Bill' }, input('name', { placeholder: 'Energy', autoCapitalize: 'words' })),
         E(Label, { text: 'Provider' }, input('provider', { placeholder: 'Who it’s with', autoCapitalize: 'words' })),
@@ -1032,7 +1044,7 @@ function EditView(props) {
             E('div', { style: inputStyle(ui, { display: 'flex', alignItems: 'center', justifyContent: 'flex-end', color: ui.C.blue, fontFamily: ui.rounded, fontVariantNumeric: 'tabular-nums' }) },
                 formulaValue == null ? '—' : Math.round(formulaValue).toLocaleString('en-GB')),
             E('div', { style: { fontFamily: ui.sys, fontSize: 11, color: ui.C.zinc700, marginTop: 4 } },
-                formulaValue == null ? (formula === 'last12' ? 'Needs 12 months of readings; until then the amount typed in is used.' : 'Needs unit rates to price it; until then the amount typed in is used.')
+                formulaValue == null ? (formula === 'last12' ? 'Needs 12 months of readings and unit rates; until then the amount typed in is used.' : 'Needs unit rates to price it; until then the amount typed in is used.')
                                      : 'Worked out from the usage page; it updates as you add months.')),
         !fromEstate && !formula && E('div', { style: { display: 'flex', gap: 10 } },
             E(Label, { text: 'Cost (£)', flex: 1 }, input('amount', { inputMode: 'decimal', placeholder: '0' })),
@@ -1281,6 +1293,8 @@ function UsageView(props) {
                 E('span', { style: { fontFamily: ui.sys, fontSize: 15, color: ui.C.zinc600 } }, 'energy cost')),
             diff != null && E('div', { style: { fontFamily: ui.sys, fontSize: 13, marginTop: 4 } }, vsBill(diff)),
             st.annual == null && E('div', { style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.zinc600, marginTop: 4 } }, 'Needs 12 months of readings.'),
+            st.current && E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc400, marginTop: 4 } },
+                'Same use at today’s rates: ', E('span', { style: { filter: p ? 'blur(6px)' : 'none' } }, fmtGBP(st.current.cost))),
             E('div', { style: { borderTop: '1px solid ' + ui.C.border, marginTop: 14, paddingTop: 8 } },
                 FUELS.map(function (f) { return E(StatLine, { key: f.id, label: f.label, color: f.color, kwh: st.running[f.id], vsAvg: st.vsAverage[f.id], vsLy: st.vsLastYear[f.id] }); }))),
         // The forecast.

@@ -283,7 +283,10 @@ test('an energy bill can take its cost from the usage page', () => {
     const base = { name: 'Energy', amount: 150, every: 'month', usage: u };
     const last = L.resolveBill(L.validBill(Object.assign({ costFrom: 'last12' }, base)), null);
     assert.equal(last.formula, 'last12');
-    assert.equal(last.annual, Math.round(st.annual * 100) / 100);
+    // Last 12 months' kWh priced at today's rates, not what those months cost.
+    const r = st.rates, want = st.running.elec * r.elec.unit + st.running.gas * r.gas.unit + (r.elec.standing + r.gas.standing) * st.forecast.days;
+    assert.ok(Math.abs(st.current.cost - want) < 1e-6);
+    assert.equal(last.annual, Math.round(want * 100) / 100);
     const fc = L.resolveBill(L.validBill(Object.assign({ costFrom: 'forecast' }, base)), null);
     assert.equal(fc.annual, Math.round(st.forecast.cost * 100) / 100);
     // Not enough usage yet: the typed amount stands.
