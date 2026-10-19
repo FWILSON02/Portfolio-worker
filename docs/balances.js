@@ -9,6 +9,7 @@
 // Exposes:
 //   window.BalancesScreen  — the Estate view (props: onClose, privacyMode, appValues, ui)
 //   window.BalancesStore   — backupSnapshot() / restore(obj) for the app's JSON backup, plus load/subscribe
+//   window.MaturityAlerts  — the maturity alert banner and the Investments tab's alert list
 //
 // Data lives in its own IndexedDB database ('portfolio-balances'), so Settings → Clear cache never touches it.
 // No balances are ever written into this file or index.html: the repo is public.
@@ -274,11 +275,11 @@ function validateState(s) {
         });
         return sn.partial ? { date: sn.date, values: values, partial: true } : { date: sn.date, values: values };
     }).sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
-    return {
+    return Object.assign({
         v: 1, accounts: accounts, snapshots: snapshots,
         lastExportAt: typeof s.lastExportAt === 'number' ? s.lastExportAt : null,
         updatedAt: typeof s.updatedAt === 'number' ? s.updatedAt : null,
-    };
+    }, validWindows(s.alertWindows) ? { alertWindows: validWindows(s.alertWindows) } : null);
 }
 
 var _state = emptyState();
@@ -296,6 +297,8 @@ var _loaded = idbRead().then(function (s) {
 
 function saveState(next, opts) {
     next.updatedAt = Date.now();
+    // Settings → Alerts survive anything that rebuilds the balances (import, delete) without saying otherwise.
+    if (!('alertWindows' in next) && _state.alertWindows) next.alertWindows = _state.alertWindows;
     _state = next;
     emit();
     // Ask Safari to keep this site's storage; a no-op where it is already persistent (Home Screen apps).
@@ -342,6 +345,13 @@ var BalancesStore = {
         });
     },
     deleteAll: function () { return saveState(emptyState()); },
+    // Settings → Alerts: the windows in use, and saving one kind's { before, after } (days).
+    alertWindows: function () { return alertWindows(_state.alertWindows); },
+    setAlertWindow: function (kind, w) {
+        var next = Object.assign({}, _state.alertWindows || {});
+        next[kind] = Object.assign({}, next[kind] || {}, w);
+        return saveState(Object.assign({}, _state, { alertWindows: validWindows(next) }));
+    },
     relTime: function (ts) { return relTime(ts); },
     // Asks the Estate screen to open a view ('import'); picked up when it mounts or, if open, straight away.
     openView: function (v) { _pendingView = v; window.dispatchEvent(new Event('estate-open-view')); },
@@ -894,7 +904,8 @@ function buildJson(state) {
             firstDate: dates[0] || null,
             lastDate: dates[dates.length - 1] || null,
         },
-        data: { v: state.v, accounts: state.accounts, snapshots: state.snapshots },
+        data: Object.assign({ v: state.v, accounts: state.accounts, snapshots: state.snapshots },
+                            state.alertWindows ? { alertWindows: state.alertWindows } : null),
     }, null, 2);
 }
 // Accepts this screen's JSON export, or a full app backup (its payload.balances). Returns a clean state or throws.
@@ -1436,6 +1447,208 @@ function Header(props) {
     );
 }
 
+// ── Maturity alerts ──────────────────────────────────────────────────────────
+// A banner at the top of Investments (gilts, Citi / HSBC vests and Sharesave) and Estate (mortgage deal, fixed-term
+// savings) once something is near its date, so there is time to act. Fergus's lead times: 3 months for the mortgage
+// and gilts, 1 month for vesting (fixed savers: 1 month). Amber from the start of that window, red for its last days.
+// After its date an alert stays red until closed (Fergus), or until it is dealt with: the gilt no longer held, a
+// balance entered after the saver's end, a new deal end, the plan marked done. Dates more than `after` days ago are
+// left out, so an old plan row never wakes up. Both windows can be changed in Settings → Alerts (state.alertWindows,
+// saved with the balances so backups carry them). Closing one hides it for a week or for good; "for good" is that
+// one event only (the id carries its date), so the next vest or deal still alerts.
+var ALERT_KINDS = [
+    { id: 'gilt',     label: 'Gilts',             before: 90, after: 90, red: 14 },
+    { id: 'vest',     label: 'Vests & Sharesave', before: 30, after: 90, red: 7 },
+    { id: 'mortgage', label: 'Mortgage deal',     before: 90, after: 90, red: 14 },
+    { id: 'saver',    label: 'Fixed savers',      before: 30, after: 90, red: 14 },
+];
+var WINDOW_MAX = 730;
+// Settings → Alerts: { [kind]: { before, after } } in days, whole numbers 0 to WINDOW_MAX. Null when nothing valid.
+function validWindows(w) {
+    if (!w || typeof w !== 'object') return null;
+    var out = {}, any = false;
+    ALERT_KINDS.forEach(function (k) {
+        var x = w[k.id];
+        if (!x || typeof x !== 'object') return;
+        var o = {};
+        ['before', 'after'].forEach(function (f) {
+            var n = x[f];
+            if (typeof n === 'number' && isFinite(n) && n >= 0) o[f] = Math.min(WINDOW_MAX, Math.round(n));
+        });
+        if (Object.keys(o).length) { out[k.id] = o; any = true; }
+    });
+    return any ? out : null;
+}
+// The windows in use for each kind: the saved ones over the defaults. Red never starts before the alert does.
+function alertWindows(saved) {
+    var out = {};
+    ALERT_KINDS.forEach(function (k) {
+        var x = (saved && saved[k.id]) || {};
+        var before = x.before != null ? x.before : k.before;
+        out[k.id] = { before: before, after: x.after != null ? x.after : k.after, red: Math.min(k.red, before) };
+    });
+    return out;
+}
+var ALERT_SILENCE_KEY = 'maturity_alert_silence';   // { [alert id]: 'YYYY-MM-DD' (hidden until) | 'never' }
+var WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+function isoDays(date) { return Date.UTC(+date.slice(0, 4), +date.slice(5, 7) - 1, +date.slice(8, 10)) / 86400000; }
+function addDaysISO(date, n) { return new Date((isoDays(date) + n) * 86400000).toISOString().slice(0, 10); }
+// 'amber', 'red' (also once passed), or null when the date is further off than `before` or more than `after` days gone.
+function alertStage(kind, days, windows) {
+    var r = alertWindows(windows)[kind];
+    if (!r || days == null || days < -r.after || days > r.before) return null;
+    return days <= r.red ? 'red' : 'amber';
+}
+// "Thu 22 Oct", with the year when it isn't this year's.
+function alertDay(date, today) {
+    return WEEKDAYS[new Date(isoDays(date) * 86400000).getUTCDay()] + ' ' + Number(date.slice(8, 10)) + ' ' + MONTHS[Number(date.slice(5, 7)) - 1] +
+        (date.slice(0, 4) !== today.slice(0, 4) ? ' ' + date.slice(0, 4) : '');
+}
+function inDays(days) {
+    return days === 0 ? 'today' : days === 1 ? 'tomorrow' : days > 1 ? 'in ' + days + ' days' : days === -1 ? 'yesterday' : -days + ' days ago';
+}
+// Builds an alert, or null when it isn't due yet. o: { kind, key, date, title(when, past), parts }; parts is the line under
+// the date: text, and { gbp } amounts (blurred in privacy mode).
+function makeAlert(o, today, windows) {
+    if (!o.date || !ISO_DATE.test(o.date)) return null;
+    var days = isoDays(o.date) - isoDays(today), stage = alertStage(o.kind, days, windows);
+    if (!stage) return null;
+    return { id: o.kind + ':' + o.key + ':' + o.date, kind: o.kind, date: o.date, days: days, stage: stage,
+             title: o.title(inDays(days), days < 0), when: alertDay(o.date, today), parts: o.parts || [] };
+}
+function byDate(list) { return list.filter(Boolean).sort(function (a, b) { return a.days - b.days || (a.id < b.id ? -1 : 1); }); }
+
+// Estate: each open mortgage's current deal end, each fixed-term saving's end. windows: as saved (default: the state's).
+function estateAlerts(state, today, windows) {
+    if (windows === undefined) windows = state && state.alertWindows;
+    var out = [], tl = resolveTimeline((state && state.snapshots) || []), asOf = tl.length ? tl[tl.length - 1].asOf : {};
+    (state && state.accounts || []).forEach(function (a) {
+        if (a.closed) return;
+        if (a.debt && a.loan && a.loan.end) {
+            out.push(makeAlert({ kind: 'mortgage', key: a.id, date: a.loan.end, title: function (w, past) { return a.name + ' deal ' + (past ? 'ended ' : 'ends ') + w; },
+                parts: [a.loan.end < today ? 'now on the lender’s variable rate' : 'then the lender’s variable rate'] }, today, windows));
+        }
+        var t = termOf(a);
+        if (t && !(asOf[a.id] && asOf[a.id] > t.end)) {
+            out.push(makeAlert({ kind: 'saver', key: a.id, date: t.end, title: function (w, past) { return a.name + (past ? ' matured ' : ' matures ') + w; },
+                parts: ['about ', { gbp: termValue(t, t.end) }, ' at ' + t.rate + '% AER'] }, today, windows));
+        }
+    });
+    return byDate(out);
+}
+// Investments. gilts: [{ ticker, name, nominal, maturity }] still held. plans: the comp config rows; values: the latest
+// restricted point's planDetails (plan_id → { valueGBP, phase }) for the RSU value before tax.
+function investmentAlerts(gilts, plans, values, today, windows) {
+    var out = [];
+    (gilts || []).forEach(function (g) {
+        if (!(g.nominal > 0)) return;
+        out.push(makeAlert({ kind: 'gilt', key: g.ticker, date: g.maturity, title: function (w, past) { return 'Gilt ' + (past ? 'matured ' : 'matures ') + w; },
+            parts: [{ gbp: g.nominal }, ' back as cash'] }, today, windows));
+    });
+    // Vests on the same day from the same employer (tranches) are one alert.
+    var groups = {};
+    (plans || []).forEach(function (p) {
+        if (!p || (p.restricted_category !== 'RSU' && p.restricted_category !== 'SAYE')) return;
+        if (p.status === 'DRAFT' || p.status === 'EXERCISED' || p.status === 'CANCELLED' || p.completion_date) return;
+        var date = p.maturity_vesting_date;
+        if (!date || !ISO_DATE.test(date)) return;
+        var k = (p.institution || '') + '|' + p.restricted_category + '|' + date;
+        var g = groups[k] || (groups[k] = { inst: p.institution || 'Employer', cat: p.restricted_category, date: date, units: 0, value: 0, valued: true });
+        g.units += Number(p.restricted_category === 'SAYE' ? p.total_target_units : p.current_units) || 0;
+        var v = values && values[p.plan_id];
+        if (v && isFinite(v.valueGBP) && v.phase === 'RESTRICTED') g.value += v.valueGBP; else g.valued = false;
+    });
+    Object.keys(groups).forEach(function (k) {
+        var g = groups[k], units = Math.round(g.units).toLocaleString('en-GB');
+        out.push(g.cat === 'RSU'
+            ? makeAlert({ kind: 'vest', key: k, date: g.date, title: function (w, past) { return g.inst + ' shares ' + (past ? 'vested ' : 'vest ') + w; },
+                parts: g.valued && g.value > 0 ? [units + ' shares, about ', { gbp: g.value }, ' before tax'] : [units + ' shares'] }, today, windows)
+            : makeAlert({ kind: 'vest', key: k, date: g.date, title: function (w, past) { return g.inst + ' Sharesave ' + (past ? 'matured ' : 'matures ') + w; },
+                parts: [units + ' options to exercise or let lapse'] }, today, windows));
+    });
+    return byDate(out);
+}
+
+function readSilence() {
+    try { var o = JSON.parse(localStorage.getItem(ALERT_SILENCE_KEY) || '{}'); return o && typeof o === 'object' ? o : {}; } catch (e) { return {}; }
+}
+function silenced(map, id, today) { var v = map[id]; return v === 'never' || (typeof v === 'string' && today < v); }
+function silenceAlert(id, how, today) {
+    var map = readSilence();
+    map[id] = how === 'never' ? 'never' : addDaysISO(today, 7);
+    // Forget entries for dates long gone so the list doesn't grow forever.
+    Object.keys(map).forEach(function (k) { var d = k.slice(-10); if (ISO_DATE.test(d) && d < addDaysISO(today, -WINDOW_MAX - 30)) delete map[k]; });
+    try { localStorage.setItem(ALERT_SILENCE_KEY, JSON.stringify(map)); } catch (e) {}
+}
+
+var ALERT_ICONS = {
+    gilt: ['M8 2v4', 'M16 2v4', 'M3 10h18', { t: 'r', x: 3, y: 4, w: 18, h: 18, rx: 2 }],
+    saver: ['M8 2v4', 'M16 2v4', 'M3 10h18', { t: 'r', x: 3, y: 4, w: 18, h: 18, rx: 2 }],
+    vest: [{ t: 'c', cx: 12, cy: 12, r: 9 }, 'M12 7v5l3 2'],
+    mortgage: ['M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z'],
+};
+function AlertIcon(props) {
+    return E('svg', { width: 18, height: 18, viewBox: '0 0 24 24', fill: 'none', stroke: props.color, strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round',
+                      style: { flex: 'none', marginTop: 1 }, 'aria-hidden': true },
+        (ALERT_ICONS[props.kind] || ALERT_ICONS.gilt).map(function (d, i) {
+            return typeof d === 'string' ? E('path', { key: i, d: d })
+                : d.t === 'c' ? E('circle', { key: i, cx: d.cx, cy: d.cy, r: d.r })
+                : E('rect', { key: i, x: d.x, y: d.y, width: d.w, height: d.h, rx: d.rx });
+        }));
+}
+var ALERT_TONES = {
+    red:   { bg: '#dc2626', border: '#dc2626', title: '#ffffff', sub: 'rgba(255,255,255,0.88)', x: 'rgba(255,255,255,0.85)', div: 'rgba(255,255,255,0.22)',
+             btn: 'rgba(255,255,255,0.18)' },
+    amber: { bg: 'rgba(251,191,36,0.10)', border: 'rgba(251,191,36,0.45)', title: '#fbbf24', sub: '#cbd5e1', x: '#a1a1aa', div: 'rgba(251,191,36,0.2)',
+             btn: 'rgba(251,191,36,0.14)' },
+};
+// The banner. props: alerts (from estateAlerts), or source(windows) → alerts (index.html, with investmentAlerts) so a
+// change in Settings → Alerts shows straight away; privacy. Draws nothing when none is due.
+function MaturityBanner(props) {
+    var ui = useUI();
+    var st = useBalancesState();
+    var tick = React.useState(0), more = React.useState(false), asking = React.useState(null);
+    var today = todayISO(), map = readSilence();
+    var shown = (props.source ? props.source(st.alertWindows) : props.alerts || []).filter(function (a) { return !silenced(map, a.id, today); });
+    if (!shown.length) return null;
+    var rows = more[0] ? shown : shown.slice(0, 2), hidden = shown.length - rows.length;
+    function silence(id, how) { silenceAlert(id, how, today); asking[1](null); tick[1](function (n) { return n + 1; }); }
+    // Consecutive alerts of one colour share a box (red first: the list is soonest first).
+    var boxes = [];
+    rows.forEach(function (a) {
+        var last = boxes[boxes.length - 1];
+        if (last && last.stage === a.stage) last.rows.push(a); else boxes.push({ stage: a.stage, rows: [a] });
+    });
+    return E('div', { role: 'status', style: { display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 } },
+        boxes.map(function (b, bi) {
+            var t = ALERT_TONES[b.stage], lastBox = bi === boxes.length - 1;
+            var btn = { flex: 1, background: t.btn, border: 'none', borderRadius: 10, padding: '8px 6px', color: t.title, fontFamily: ui.sys, fontSize: 13,
+                        fontWeight: 600, cursor: 'pointer' };
+            return E('div', { key: b.stage + bi, style: { background: t.bg, border: '1px solid ' + t.border, borderRadius: 16, padding: '12px 10px 12px 14px', fontFamily: ui.sys } },
+                b.rows.map(function (a, i) {
+                    return E('div', { key: a.id, style: i ? { borderTop: '1px solid ' + t.div, marginTop: 10, paddingTop: 10 } : null },
+                        E('div', { style: { display: 'flex', gap: 10, alignItems: 'flex-start' } },
+                            E(AlertIcon, { kind: a.kind, color: t.title }),
+                            E('div', { style: { flex: 1, minWidth: 0 } },
+                                E('div', { style: { color: t.title, fontSize: 15, fontWeight: 600, lineHeight: '20px' } }, a.title),
+                                E('div', { style: { color: t.sub, fontSize: 13, lineHeight: '18px', marginTop: 2 } },
+                                    a.when + (a.parts.length ? ' · ' : ''),
+                                    a.parts.map(function (x, k) {
+                                        return typeof x === 'string' ? x : E('span', { key: k, style: { filter: props.privacy ? 'blur(6px)' : 'none' } }, fmtGBP(x.gbp));
+                                    }))),
+                            E('button', { 'aria-label': 'Close alert', onClick: function () { asking[1](asking[0] === a.id ? null : a.id); },
+                                          style: { background: 'none', border: 'none', color: t.x, fontSize: 22, lineHeight: '18px', padding: '0 4px 6px 8px', cursor: 'pointer', fontFamily: ui.sys } }, '×')),
+                        asking[0] === a.id && E('div', { style: { display: 'flex', gap: 8, marginTop: 10, paddingLeft: 28 } },
+                            E('button', { style: btn, onClick: function () { silence(a.id, 'week'); } }, 'Hide for a week'),
+                            E('button', { style: btn, onClick: function () { silence(a.id, 'never'); } }, 'Don’t show again')));
+                }),
+                lastBox && hidden > 0 && E('button', { onClick: function () { more[1](true); },
+                    style: { display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', borderTop: '1px solid ' + t.div, marginTop: 10,
+                             padding: '9px 0 0', color: t.title, fontFamily: ui.sys, fontSize: 13, fontWeight: 600, cursor: 'pointer' } },
+                    '+' + hidden + ' more · ' + shown.slice(rows.length).map(function (a) { return a.title.replace(/ (in \d+ days|today|tomorrow|yesterday|\d+ days ago)$/, ''); }).join(', ') + ' ›'));
+        }));
+}
+
 // ── Main view ────────────────────────────────────────────────────────────────
 function MainView(props) {
     var ui = useUI();
@@ -1457,6 +1670,7 @@ function MainView(props) {
     var prev = series.length > 1 ? series[series.length - 2] : null;
     var stale = !state.lastExportAt || (Date.now() - state.lastExportAt) > 35 * 86400000;
     return E('div', { style: { padding: '12px 16px 0' } },
+        E(MaturityBanner, { alerts: estateAlerts(state, todayISO()), privacy: props.privacy }),
         latest ? E(Hero, { series: series, privacy: props.privacy })
                : E('div', { style: cardStyle(ui, { marginBottom: 12, fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc600 }) }, 'No balances entered yet. Tap Update balances to add this month’s.'),
         series.length > 1 && E(Chart, { series: series, accounts: state.accounts, privacy: props.privacy }),
@@ -2080,8 +2294,11 @@ function BalancesScreen(props) {
 window.BalancesScreen = BalancesScreen;
 window.BalancesStore = BalancesStore;
 window.BalancesIcon = WalletIcon;
+// Maturity alerts for the Investments tab (index.html builds its list with investmentAlerts).
+window.MaturityAlerts = { Banner: MaturityBanner, investmentAlerts: investmentAlerts, today: todayISO, kinds: ALERT_KINDS, max: WINDOW_MAX };
 // For tests only: the pure parts, no UI.
 window.__balancesInternals = { applyLinked: applyLinked, parseJsonBackup: parseJsonBackup, buildJson: buildJson, parseImport: parseImport, importToState: importToState, runChecks: runChecks, buildSeries: buildSeries, parseAmount: parseAmount, buildCsv: buildCsv,
     resolveTimeline: resolveTimeline, paydayOf: paydayOf, validLink: validLink, hintName: hintName, termValue: termValue, termRuns: termRuns, monthTicks: monthTicks, niceStep: niceStep, axisLabel: axisLabel, totalsFor: totalsFor, indexAccounts: indexAccounts, withPartial: withPartial, liveLinked: liveLinked,
-    grow: grow, payDown: payDown, loanOwed: loanOwed, assetValue: assetValue, validateState: validateState, breakdown: breakdown, groupValue: groupValue };
+    grow: grow, payDown: payDown, loanOwed: loanOwed, assetValue: assetValue, validateState: validateState, breakdown: breakdown, groupValue: groupValue,
+    alertStage: alertStage, alertWindows: alertWindows, validWindows: validWindows, estateAlerts: estateAlerts, investmentAlerts: investmentAlerts, silenceAlert: silenceAlert, silenced: silenced, readSilence: readSilence };
 })();
