@@ -247,3 +247,10 @@ test('forecast rates: the tariff entered wins, gaps fall back to the latest mont
     // Pasting more months keeps the tariff.
     assert.deepEqual(plain(L.mergeUsage(withTariff, { months: [], meters: {} }).tariff), { elec: { unit: 0.3, standing: 0.6 } });
 });
+
+test('pasted rates keep their decimals and read pence', () => {
+    const p = L.parseUsagePaste('Month,Electricity usage kWh,Electricity standing £/day,Electricity unit rate £/kWh,Electricity cost £,Gas usage kWh,Gas standing £/day,Gas unit rate £/kWh,Gas cost £\n' +
+                                'March 2026,300,0.43762,22.45p,80,2000,0.30184,0.05476,120');
+    assert.deepEqual(plain(p.months[0].elec), { kwh: 300, standing: 0.43762, unit: 0.2245, cost: 80 });
+    assert.equal(p.months[0].gas.unit, 0.05476);
+});
