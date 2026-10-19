@@ -1459,6 +1459,8 @@ var ALERT_KINDS = [
     { id: 'vest',     label: 'Vests & Sharesave', before: 30, after: 90, red: 7 },
     { id: 'mortgage', label: 'Mortgage deal',     before: 90, after: 90, red: 14 },
     { id: 'saver',    label: 'Fixed savers',      before: 30, after: 90, red: 14 },
+    // Life Admin (lifeadmin.js): each bill's contract end, so there's time to compare quotes before it rolls over.
+    { id: 'renewal',  label: 'Bill renewals',     before: 30, after: 14, red: 7 },
 ];
 var WINDOW_MAX = 730;
 // Settings → Alerts: { [kind]: { before, after } } in days, whole numbers 0 to WINDOW_MAX. Null when nothing valid.
@@ -1584,6 +1586,7 @@ var ALERT_ICONS = {
     saver: ['M8 2v4', 'M16 2v4', 'M3 10h18', { t: 'r', x: 3, y: 4, w: 18, h: 18, rx: 2 }],
     vest: [{ t: 'c', cx: 12, cy: 12, r: 9 }, 'M12 7v5l3 2'],
     mortgage: ['M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z'],
+    renewal: ['M21 12a9 9 0 1 1-3-6.7L21 8', 'M21 3v5h-5'],
 };
 function AlertIcon(props) {
     return E('svg', { width: 18, height: 18, viewBox: '0 0 24 24', fill: 'none', stroke: props.color, strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round',
@@ -2281,7 +2284,9 @@ window.BalancesScreen = BalancesScreen;
 window.BalancesStore = BalancesStore;
 window.BalancesIcon = WalletIcon;
 // Maturity alerts for the Investments tab (index.html builds its list with investmentAlerts).
-window.MaturityAlerts = { Banner: MaturityBanner, investmentAlerts: investmentAlerts, today: todayISO, kinds: ALERT_KINDS, max: WINDOW_MAX };
+// make and sort build Life Admin's renewal alerts (lifeadmin.js).
+window.MaturityAlerts = { Banner: MaturityBanner, investmentAlerts: investmentAlerts, today: todayISO, kinds: ALERT_KINDS, max: WINDOW_MAX,
+                          make: makeAlert, sort: byDate };
 // For tests only: the pure parts, no UI.
 window.__balancesInternals = { applyLinked: applyLinked, parseJsonBackup: parseJsonBackup, buildJson: buildJson, parseImport: parseImport, importToState: importToState, runChecks: runChecks, buildSeries: buildSeries, parseAmount: parseAmount, buildCsv: buildCsv,
     resolveTimeline: resolveTimeline, paydayOf: paydayOf, validLink: validLink, hintName: hintName, termValue: termValue, termRuns: termRuns, monthTicks: monthTicks, niceStep: niceStep, axisLabel: axisLabel, totalsFor: totalsFor, indexAccounts: indexAccounts, withPartial: withPartial, liveLinked: liveLinked,
