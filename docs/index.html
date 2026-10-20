@@ -7506,7 +7506,7 @@ function Row({ icon: Icon, iconColor, iconBg, label, sub, right, onClick, isLabe
 
 // The pull request that last changed the app. Bump it in every PR so Settings → App shows which change the phone is
 // running (Fergus asked; the Estate ?v= number only moved when balances.js changed, so it looked stuck).
-const APP_BUILD = 78;
+const APP_BUILD = 79;
 
 // Settings → App: pulls the newest index.html, balances.js and lifeadmin.js past the browser's cache, then reloads. A Home Screen web app
 // on iOS keeps serving cached files for a while after a deploy, and closing it from the app switcher doesn't clear that.
@@ -8164,13 +8164,8 @@ function buildContribSteps(performanceChart, benchmarkTimeline, perfLedger) {
         if (i === 0) continue;
         const prevDate = pp.date;
         const pRow = rowsByDate.get(prevDate);
-        const lineKey = pc.investedAll !== undefined ? 'investedAll' : 'invested';
-        const invPrev = pp[lineKey], invCurr = pc[lineKey];
-        const okSeries = invPrev != null && invCurr != null && isFinite(invPrev) && isFinite(invCurr) && invPrev > 0 && invCurr > 0;
-        const r = okSeries ? (invCurr / invPrev - 1) : 0;
-        if (Math.abs(r) < 1e-12) { steps[i] = { r: 0, c: null, o: 0 }; continue; }
-        if (!pRow || !cRow) { steps[i] = { r, c: null, o: r }; continue; }
         // The step's own invested cash flows, exactly as the line treats them (internal transfers are not flows).
+        // Kept on every step (cf per holding, f in all) for the £ breakdown, which needs them even when the line is flat.
         const rowMs = new Date(date).getTime();
         const periodMs = rowMs - new Date(prevDate).getTime();
         const cf = {};
@@ -8192,10 +8187,16 @@ function buildContribSteps(performanceChart, benchmarkTimeline, perfLedger) {
         }
         // Restricted flows: end of step (weight 0), as in the line.
         for (const k in (pc.rFlow || {})) { cf[k] = (cf[k] || 0) + pc.rFlow[k]; netCF += pc.rFlow[k]; }
+        const lineKey = pc.investedAll !== undefined ? 'investedAll' : 'invested';
+        const invPrev = pp[lineKey], invCurr = pc[lineKey];
+        const okSeries = invPrev != null && invCurr != null && isFinite(invPrev) && isFinite(invCurr) && invPrev > 0 && invCurr > 0;
+        const r = okSeries ? (invCurr / invPrev - 1) : 0;
+        if (Math.abs(r) < 1e-12) { steps[i] = { r: 0, c: null, o: 0, cf, f: netCF }; continue; }
+        if (!pRow || !cRow) { steps[i] = { r, c: null, o: r, cf, f: netCF }; continue; }
         const prevInv = pRow.holdingsValue + (pRow.untickeredValue || 0) + rSum(pp);
         const currInv = cRow.holdingsValue + (cRow.untickeredValue || 0) + rSum(pc);
         const denom = prevInv + wCF;
-        if (!(denom > 1)) { steps[i] = { r, c: null, o: r }; continue; }
+        if (!(denom > 1)) { steps[i] = { r, c: null, o: r, cf, f: netCF }; continue; }
         const rawR = (currInv - prevInv - netCF) / denom;
         // If the line clamped this step (|r| capped at 50%), scale the holdings the same way; fall back to 1 on anything odd.
         let scale = Math.abs(rawR) > 1e-9 ? r / rawR : 1;
@@ -8209,7 +8210,7 @@ function buildContribSteps(performanceChart, benchmarkTimeline, perfLedger) {
             const ci = scale * g / denom;
             if (ci !== 0 && isFinite(ci)) { c[tk] = ci; sumC += ci; }
         }
-        steps[i] = { r, c, o: r - sumC };
+        steps[i] = { r, c, o: r - sumC, cf, f: netCF };
     }
     return { steps, idxByDate, px, dates, inv, by };
 }
@@ -8223,6 +8224,27 @@ function makeContribRange(S, topN) {
     const N = topN || 5;
     const cache = new Map();
     const A = x => (Math.abs(x) < 1e-9 ? 1 : Math.log(1 + x) / x);   // Carino log-mean helper
+    // Per-holding facts for the table, all measured over rows a -> b:
+    //  held    price return (GBP) chained over only the steps the holding was held at both ends of
+    //  heldDays  calendar days those steps cover;  pa  annualised held return, only when held >= 1 year
+    //  sold    true if the holding is no longer held on row b;  weight  its share of invested value there
+    const statsFor = function (r, a, b) {
+        let g = 1, days = 0, n = 0;
+        for (let i = a + 1; i <= b; i++) {
+            const p1 = S.px[i] && S.px[i][r.tk], p0 = S.px[i - 1] && S.px[i - 1][r.tk];
+            if (p1 > 0 && p0 > 0) {
+                g *= p1 / p0;
+                days += (Date.parse(S.dates[i]) - Date.parse(S.dates[i - 1])) / 86400000;
+                n++;
+            }
+        }
+        r.held = n > 0 ? g - 1 : null;
+        r.heldDays = n > 0 ? days : 0;
+        r.pa = (n > 0 && days >= 365) ? Math.pow(g, 365.25 / days) - 1 : null;
+        const vEnd = S.by[b] ? (S.by[b][r.tk] || 0) : 0;
+        r.sold = Math.abs(vEnd) < 1e-9;
+        r.weight = (!r.sold && S.inv[b] > 0) ? vEnd / S.inv[b] : null;
+    };
     const contribForRange = function (startDate, endDate) {
         const key = startDate + '|' + endDate;
         if (cache.has(key)) return cache.get(key);
@@ -8250,27 +8272,7 @@ function makeContribRange(S, topN) {
                 const rest = all.filter(r => top.indexOf(r) < 0);
                 // Listed biggest absolute contribution first, gainers and drags alike: that is what explains the move.
                 // (`all` is already sorted that way, so `top` keeps that order.)
-                // Per-holding facts for the table, all measured over the window start -> end row:
-                //  held    price return (GBP) chained over only the steps the holding was held at both ends of
-                //  heldDays  calendar days those steps cover;  pa  annualised held return, only when held >= 1 year
-                //  sold    true if the holding is no longer held on the end row;  weight  its share of invested value there
-                const heldStats = function (r) {
-                    let g = 1, days = 0, n = 0;
-                    for (let i = a + 1; i <= b; i++) {
-                        const p1 = S.px[i] && S.px[i][r.tk], p0 = S.px[i - 1] && S.px[i - 1][r.tk];
-                        if (p1 > 0 && p0 > 0) {
-                            g *= p1 / p0;
-                            days += (Date.parse(S.dates[i]) - Date.parse(S.dates[i - 1])) / 86400000;
-                            n++;
-                        }
-                    }
-                    r.held = n > 0 ? g - 1 : null;
-                    r.heldDays = n > 0 ? days : 0;
-                    r.pa = (n > 0 && days >= 365) ? Math.pow(g, 365.25 / days) - 1 : null;
-                    const vEnd = S.by[b] ? (S.by[b][r.tk] || 0) : 0;
-                    r.sold = Math.abs(vEnd) < 1e-9;
-                    r.weight = (!r.sold && S.inv[b] > 0) ? vEnd / S.inv[b] : null;
-                };
+                const heldStats = r => statsFor(r, a, b);
                 // "Other" = every holding beyond the top N (listed again, with stats, in `rest`) + `tail`, the part no holding
                 // explains (untickered items, dealing costs, the clamp, and contributions too small to list).
                 const restShown = rest.filter(r => Math.abs(r.c) >= 5e-6);
@@ -8287,6 +8289,50 @@ function makeContribRange(S, topN) {
             }
         }
         cache.set(key, out);
+        return out;
+    };
+    // The £ move of the invested value from startDate to endDate, split the same way (Fergus asked for Analyse in £):
+    // each holding's gain = its value at the end - at the start - the money put into it (buys, transfers in) + taken
+    // out (sells); `flows` = all the money put in less taken out; `other` = what is left (untickered items, costs), so
+    // rows + other + flows = total exactly. Same shape as contribForRange, with `c` in £.
+    const gainCache = new Map();
+    contribForRange.gains = function (startDate, endDate) {
+        const key = startDate + '|' + endDate;
+        if (gainCache.has(key)) return gainCache.get(key);
+        let out = null;
+        const a = S.idxByDate.get(startDate), b = S.idxByDate.get(endDate);
+        if (a != null && b != null && b > a && Number.isFinite(S.inv[a]) && Number.isFinite(S.inv[b])) {
+            const by0 = S.by[a] || {}, by1 = S.by[b] || {}, cfSum = {};
+            let flows = 0;
+            for (let i = a + 1; i <= b; i++) {
+                const st = S.steps[i];
+                if (!st) continue;
+                flows += st.f || 0;
+                for (const tk in (st.cf || {})) cfSum[tk] = (cfSum[tk] || 0) + st.cf[tk];
+            }
+            const keys = new Set([...Object.keys(by0), ...Object.keys(by1), ...Object.keys(cfSum)]);
+            const all = [];
+            for (const tk of keys) {
+                const g = (by1[tk] || 0) - (by0[tk] || 0) - (cfSum[tk] || 0);
+                if (isFinite(g)) all.push({ tk, c: g });
+            }
+            all.sort((x, y) => Math.abs(y.c) - Math.abs(x.c));
+            const total = S.inv[b] - S.inv[a];
+            const movers = all.filter(r => Math.abs(r.c) >= 0.5);
+            const top = movers.slice(0, movers.length === N + 1 ? N + 1 : N);
+            const rest = all.filter(r => top.indexOf(r) < 0);
+            const restShown = rest.filter(r => Math.abs(r.c) >= 0.5);
+            let tail = total - flows;
+            for (const r of all) tail -= r.c;
+            for (const r of rest) if (Math.abs(r.c) < 0.5) tail += r.c;
+            let otherSum = tail;
+            for (const r of restShown) otherSum += r.c;
+            top.forEach(r => statsFor(r, a, b));
+            restShown.forEach(r => statsFor(r, a, b));
+            out = { total, flows, startDate, endDate, rows: top, rest: restShown, tail, other: otherSum, moreCount: restShown.length,
+                    showOther: restShown.length > 0 || Math.abs(otherSum) >= 0.5 };
+        }
+        gainCache.set(key, out);
         return out;
     };
     // One holding's own line for the chart, on the chart's dates: an index (100 = the first date in `dateList` it is
@@ -8405,10 +8451,9 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
         setPinDate(data[data.length - 1].date);
         setTableOpen(true);
     }, [data, timeframe, mode]);
-    // Analyse (and a tap on the timeframe already selected): open the table for the whole window. From £ mode it switches
-    // to % first; the flag is then consumed by the effect above once the mode change has cleared the old state.
+    // Analyse (and a tap on the timeframe already selected): open the table for the whole window, in £ or % as the chart
+    // is (Fergus asked for £: each holding's gain in £ and the money put in, rather than switching to %).
     const openTable = () => {
-        if (mode !== 'twr') { autoShowRef.current = true; setMode('twr'); return; }
         if (!(data && data.length >= 2)) return;
         setPrevPinDate(null); setCmpMode('start'); setOtherOpen(false);
         setPinDate(data[data.length - 1].date);
@@ -8618,12 +8663,23 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
     const focusPt = (hasData && focusIdx != null) ? data[focusIdx] : null;
     const _cmpDate = scrubIdx != null ? pinDate : prevPinDate;       // while pressing, compare against the pinned day
     const _cmpIdx = (hasData && _cmpDate) ? data.findIndex(d => d.date === _cmpDate) : -1;
-    const canCompare = mode === 'twr' && focusIdx != null && _cmpIdx >= 0 && _cmpIdx !== focusIdx;
+    const canCompare = focusIdx != null && _cmpIdx >= 0 && _cmpIdx !== focusIdx;
     const segActive = canCompare && cmpMode === 'prev';
     const loIdx = segActive ? Math.min(_cmpIdx, focusIdx) : 0;
     const hiIdx = segActive ? Math.max(_cmpIdx, focusIdx) : focusIdx;
     let tableContrib = null;
-    if (tableOpen && mode === 'twr' && typeof contribFn === 'function' && hasData && focusIdx != null && hiIdx > loIdx
+    const gbp = mode !== 'twr';
+    if (tableOpen && gbp && typeof contribFn === 'function' && typeof contribFn.gains === 'function' && hasData && focusIdx != null
+        && hiIdx > loIdx && data[loIdx] && data[hiIdx] && data[loIdx].date && data[hiIdx].date) {
+        // £: the rows must add up to the move the chart shows between the two days (to the pound), else nothing is shown.
+        const _vLo = data[loIdx][yKey], _vHi = data[hiIdx][yKey];
+        try {
+            const _res = contribFn.gains(data[loIdx].date, data[hiIdx].date);
+            if (_res && Number.isFinite(_res.total) && _vLo != null && _vHi != null && Math.abs(_res.total - (_vHi - _vLo)) <= 1)
+                tableContrib = _res;
+        } catch (e) { tableContrib = null; }
+    }
+    if (tableOpen && !gbp && typeof contribFn === 'function' && hasData && focusIdx != null && hiIdx > loIdx
         && data[loIdx] && data[hiIdx] && data[loIdx].date && data[hiIdx].date) {
         const _vLo = data[loIdx][yKey], _vHi = data[hiIdx][yKey];
         const _den = loIdx === 0 ? 100 : _vLo;
@@ -8637,7 +8693,7 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
     // If the US has not traded yet on the latest day (the chart leaves that day's benchmark empty), the S&P figure uses the
     // previous session's close instead, and is flagged with a small grey "c" (closed).
     let spxRange = null, spxClosed = false;
-    if (tableContrib && alignedSpx[loIdx]) {
+    if (tableContrib && !gbp && alignedSpx[loIdx]) {
         const _bLo = alignedSpx[loIdx].benchmark;
         const _ok = i => alignedSpx[i] && Number.isFinite(alignedSpx[i].benchmark);
         let _hi = hiIdx;
@@ -8651,12 +8707,17 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
     // Compute displayed delta (from period start or scrub vs period start)
     const displayV = scrubIdx != null ? scrubV : lastV;
     const displayDelta = firstV > 0 && displayV != null ? (displayV - firstV) / firstV : null;
-    const displayAbs   = displayV != null && firstV != null ? displayV - firstV : null;
+    const displayAbs0  = displayV != null && firstV != null ? displayV - firstV : null;
     // While pressing in "vs last press", the chip (like the pop-out) shows the compared range's move, not the window's
     // (the holding's, when one is drawn).
     const segOf = vals => (segActive && vals[loIdx] > 0 && vals[hiIdx] > 0) ? vals[hiIdx] / vals[loIdx] - 1 : null;
-    const segDelta = showHold ? segOf(holdVals) : (tableContrib ? tableContrib.total : null);
-    const displayDeltaShown = (scrubIdx != null && segActive && tableContrib && segDelta != null) ? segDelta : displayDelta;
+    // In £ the table's total is pounds: the chip shows that move and its % of the value on the earlier day.
+    const _segBase = gbp && tableContrib && data[loIdx] ? data[loIdx][yKey] : null;
+    const segDelta = showHold ? segOf(holdVals)
+        : !tableContrib ? null : !gbp ? tableContrib.total : (_segBase > 0 ? tableContrib.total / _segBase : null);
+    const _segShown = scrubIdx != null && segActive && tableContrib && segDelta != null;
+    const displayDeltaShown = _segShown ? segDelta : displayDelta;
+    const displayAbs = _segShown && gbp ? tableContrib.total : displayAbs0;
     const shortTk = tk => (tk.length > 9 ? tk.slice(0, 8) + '\u2026' : tk);
 
     function hitTest(clientX, clientY) {
@@ -8671,7 +8732,7 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
     function pinLastScrub() {
         const li = lastScrubRef.current;
         lastScrubRef.current = null;
-        if (!(tableOpen && mode === 'twr' && hasData && li != null && li >= 1 && data[li])) return;
+        if (!(tableOpen && hasData && li != null && li >= 1 && data[li])) return;
         const nd = data[li].date, cur = pinRef.current;
         if (cur && cur !== nd) setPrevPinDate(cur);
         setPinDate(nd);
@@ -8717,7 +8778,7 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
         const pctStr = `${pct >= 0 ? '+' : ''}${(pct * 100).toFixed(1)}%`;
         if (mode === 'twr') return pctStr;
         if (abs == null) return pctStr;
-        const absStr = privacyMode ? '••••' : `${abs >= 0 ? '+' : ''}£${Math.abs(Math.round(abs)).toLocaleString('en-GB')}`;
+        const absStr = privacyMode ? '••••' : `${abs >= 0 ? '+' : '\u2212'}£${Math.abs(Math.round(abs)).toLocaleString('en-GB')}`;
         return `${absStr}  ${pctStr}`;
     }
 
@@ -8743,6 +8804,9 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
         if (!tableContrib || !focusPt) return null;
         const T = tableContrib;
         const fmtPPn = v => { let n = Math.round(v * 10000) / 100; if (n === 0) n = 0; return (n >= 0 ? '+' : '') + n.toFixed(2); };
+        // In £ the figures are pounds (hidden in privacy mode); in % they are percentage points.
+        const fmtGbpN = v => { const n = Math.round(v); return privacyMode ? '••••' : (n >= 0 ? '+' : '\u2212') + '£' + Math.abs(n).toLocaleString('en-GB'); };
+        const fmtC = gbp ? fmtGbpN : fmtPPn;
         const fmtPctN = (v, dp) => {
             if (v == null || !Number.isFinite(v)) return '\u2014';
             const f = Math.pow(10, dp);
@@ -8779,7 +8843,7 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
             // Grey while a holding is drawn instead of the portfolio; tapping it brings the portfolio line back.
             gcell('pl', 2, 1, { fontFamily: mono, fontSize: 12, fontWeight: 700, color: showHold ? C.zinc600 : lineCol }, 'Portfolio'),
             gcell('pv', 3, 1, { fontFamily: mono, fontSize: 12, fontWeight: 700, color: showHold ? C.zinc600 : lineCol, textAlign: 'right',
-                fontVariantNumeric: 'tabular-nums' }, fmtPctN(T.total, 2)),
+                fontVariantNumeric: 'tabular-nums' }, gbp ? fmtGbpN(T.total) : fmtPctN(T.total, 2)),
             showHold ? React.createElement('button', { key: 'pback', onClick: () => setSel([]), 'aria-label': 'Show the portfolio line',
                 style: { gridColumn: '2 / span 2', gridRow: 1, alignSelf: 'stretch', margin: '-8px -4px', padding: 0, border: 'none',
                          background: 'transparent', cursor: 'pointer' } }) : null,
@@ -8802,7 +8866,7 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
         );
         const colHead = React.createElement('div', { style: { display: 'grid', gridTemplateColumns: cols, columnGap: 6,
             paddingBottom: 4, borderBottom: '1px solid ' + C.border } },
-            hdrCell('Holding'), hdrCell('Contrib', 1), hdrCell('Held return', 1));
+            hdrCell('Holding'), hdrCell(gbp ? 'Gain' : 'Contrib', 1), hdrCell('Held return', 1));
 
         const maxAbs = Math.max.apply(null, T.rows.map(r => Math.abs(r.c)).concat([1e-9]));
         const retCell = r => {
@@ -8818,7 +8882,8 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
             const label = shortTk(r.tk);
             // Tap holdings (up to three) to draw their own lines instead of the portfolio's; tap one again to drop it, or tap
             // the grey Portfolio to go back. A drawn row is outlined in its line's colour and carries a swatch of it (the legend).
-            const canPick = r.held != null && typeof contribFn.holdingSeries === 'function';
+            // % only: in £ a holding's line would sit flat along the bottom next to the whole portfolio.
+            const canPick = !gbp && r.held != null && typeof contribFn.holdingSeries === 'function';
             const pickedLine = holdLines.find(l => l.tk === r.tk);
             const picked = !!pickedLine;
             const pCol = picked ? holdCol(pickedLine.slot) : null;
@@ -8841,7 +8906,7 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
                         r.sold ? React.createElement('span', { style: { fontFamily: sys, fontSize: 9, fontStyle: 'italic', color: C.zinc700, flexShrink: 0 } },
                             / \(R\)$/.test(r.tk) ? 'vested' : 'sold') : null
                     ),
-                    numCell(fmtPPn(r.c), pos ? C.emerald : C.rose),
+                    numCell(fmtC(r.c), pos ? C.emerald : C.rose),
                     retCell(r)
                 )
             );
@@ -8854,7 +8919,7 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
             React.createElement('span', { key: 'l', style: { fontFamily: mono, fontSize: 12, fontWeight: 500, color: C.zinc600, paddingLeft: 3 } },
                 canExpand ? 'Other (' + T.moreCount + ') ' + (otherOpen ? '\u25be' : '\u25b8') : 'Other'),
             React.createElement('span', { key: 'p', style: { fontFamily: mono, fontSize: 12, fontWeight: 700, textAlign: 'right',
-                fontVariantNumeric: 'tabular-nums', color: C.zinc500 } }, fmtPPn(T.other))
+                fontVariantNumeric: 'tabular-nums', color: C.zinc500 } }, fmtC(T.other))
         ];
         const otherStyle = { display: 'grid', gridTemplateColumns: cols, columnGap: 6, alignItems: 'center', padding: '7px 0',
             borderTop: '1px solid ' + C.border, width: '100%', background: 'transparent', borderLeft: 'none', borderRight: 'none',
@@ -8870,17 +8935,23 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
             let tailV = T.tail;
             for (const r of folded) tailV += r.c;
             openRows = shownRest.map((r, i) => mkRow(r, i + 1, 10));
-            if (Math.abs(tailV) >= 5e-5 || folded.length > 0) {
+            if (Math.abs(tailV) >= (gbp ? 0.5 : 5e-5) || folded.length > 0) {
                 openRows.push(React.createElement('div', { key: '__tail', style: { display: 'grid', gridTemplateColumns: cols,
                     columnGap: 6, alignItems: 'center', padding: '7px 0', borderTop: '1px solid ' + C.border } },
                     React.createElement('span', { style: { fontFamily: mono, fontSize: 11, fontWeight: 500, color: C.zinc700, paddingLeft: 13 } },
                         folded.length > 0 ? 'Smaller & other (' + folded.length + ')' : 'Costs & other'),
-                    numCell(fmtPPn(tailV), C.zinc600, { fontSize: 11 })
+                    numCell(fmtC(tailV), C.zinc600, { fontSize: 11 })
                 ));
             }
         }
+        // £ only: the money put in less taken out over the range, which moves the value without being a gain.
+        const flowRow = gbp && Math.abs(T.flows) >= 0.5 ? React.createElement('div', { key: '__flows', style: { display: 'grid',
+            gridTemplateColumns: cols, columnGap: 6, alignItems: 'center', padding: '7px 0', borderTop: '1px solid ' + C.border } },
+            React.createElement('span', { style: { fontFamily: mono, fontSize: 12, fontWeight: 500, color: C.zinc600, paddingLeft: 3 } },
+                T.flows >= 0 ? 'Net money in' : 'Net money out'),
+            numCell(fmtGbpN(T.flows), C.zinc500)) : null;
         return React.createElement('div', { style: { marginTop: 10, paddingTop: 10, borderTop: '1px solid ' + C.border } },
-            hdrBlock, colHead, rows, otherRow, openRows);
+            hdrBlock, colHead, rows, otherRow, openRows, flowRow);
     })();
 
     return React.createElement('div', null,
