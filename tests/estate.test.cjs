@@ -51,12 +51,26 @@ test('totalsFor: shares, debts, liquid and the combined cash card', () => {
     assert.equal(t.groups.property, 200000);
 });
 
-test('payDown: a month\'s interest then the payment, on each payment day after "from"', () => {
-    const loan = { rate: 6, payment: 1000, start: '2024-01-15', end: '2050-01-15' };
-    // 15 Feb: 100,000 × 1.005 − 1,000 = 99,500. 15 Mar: 99,500 × 1.005 − 1,000 = 98,997.50.
-    assert.equal(E.payDown(-100000, loan, '2024-01-15', '2024-03-20'), -98997.5);
-    assert.equal(E.payDown(-100000, loan, '2024-01-15', '2024-01-20'), -100000);
-    assert.ok(E.payDown(-500, loan, '2024-01-15', '2024-12-31') === 0);   // never below zero (-0 counts as 0)
+test('workDown: interest charged daily, the payment taken off on each payment day after "from"', () => {
+    const loan = { payDay: 15, deals: [{ start: '2024-01-15', end: '2050-01-15', rate: 3.65, payment: 1000 }], balances: [] };
+    // 3.65% / 365 = 0.01% a day. 15 Feb: 100,000 × 1.0001^31 − 1,000. 20 Mar: that × 1.0001^34 − 1,000 (15 Mar) …
+    const feb = 100000 * Math.pow(1.0001, 31) - 1000;
+    const mar = (feb * Math.pow(1.0001, 29) - 1000) * Math.pow(1.0001, 5);
+    assert.equal(E.workDown(loan, 100000, '2024-01-15', '2024-03-20'), Math.round(mar * 100) / 100);
+    // Between payments the balance grows by the day's interest.
+    assert.equal(E.workDown(loan, 100000, '2024-01-15', '2024-01-20'), Math.round(100000 * Math.pow(1.0001, 5) * 100) / 100);
+    assert.equal(E.workDown(loan, 500, '2024-01-15', '2024-12-31'), 0);   // never below zero
+    // A payment day past the month's end falls on its last day.
+    const eom = Object.assign({}, loan, { payDay: 31 });
+    assert.equal(E.workDown(eom, 100000, '2024-02-01', '2024-02-29'), Math.round((100000 * Math.pow(1.0001, 28) - 1000) * 100) / 100);
+});
+
+test('workDown: each deal\'s rate and payment from its start; a deal with no rate gives null', () => {
+    const loan = { payDay: 1, deals: [{ start: '2024-01-01', rate: 0, payment: 1000 }, { start: '2024-03-01', rate: 3.65, payment: 500 }], balances: [] };
+    // 1 Feb: £1,000 at 0%. 1 Mar, the new deal's first day: its £500. Then a day at 0.01%.
+    assert.equal(E.workDown(loan, 10000, '2024-01-01', '2024-03-02'), Math.round(8500 * 1.0001 * 100) / 100);
+    const blank = { payDay: 1, deals: [{ start: '2024-01-01', rate: null, payment: null }], balances: [] };
+    assert.equal(E.workDown(blank, 10000, '2024-01-01', '2024-03-02'), null);
 });
 
 test('grow: compounds yearly', () => {
@@ -65,14 +79,41 @@ test('grow: compounds yearly', () => {
     assert.equal(E.grow(100000, 5, '2022-01-01', '2020-01-01'), 100000);   // no growth backwards
 });
 
-test('loanOwed: straight line between earlier points, then worked down from the current deal', () => {
-    const loan = { drawn: '2015-01-01', amount: 200000, points: [{ date: '2020-01-01', value: 150000 }],
-                   start: '2022-01-15', balance: 120000, rate: 6, payment: 1000, end: '2050-01-15' };
-    assert.equal(E.loanOwed(loan, '2014-12-31'), null);
-    assert.equal(E.loanOwed(loan, '2015-01-01'), 200000);
-    assert.equal(E.loanOwed(loan, '2017-07-02'), 175000);    // halfway from 2015 to 2020
-    assert.equal(E.loanOwed(loan, '2020-01-01'), 150000);
-    assert.equal(E.loanOwed(loan, '2022-02-20'), 119600);    // 120,000 × 1.005 − 1,000
+test('loanOwed: worked down from each known balance, fitted to meet the next one', () => {
+    const loan = E.validLoan({ drawn: '2021-03-17', amount: 652999, payDay: 31,
+        deals: [{ start: '2021-03-17' }, { start: '2024-12-31', end: '2029-12-31', rate: 3.8, payment: 2782.18 }],
+        balances: [{ date: '2024-12-31', value: 608678 }, { date: '2026-10-20', value: 589241.54 }] });
+    assert.equal(E.loanOwed(loan, '2021-03-16'), null);
+    assert.equal(E.loanOwed(loan, '2021-03-17'), 652999);
+    // The first deal has no rate: a straight line to the next balance.
+    const half = E.loanOwed(loan, '2023-02-07');
+    assert.ok(Math.abs(half - (652999 + 608678) / 2) < 400, `got ${half}`);
+    // Every balance the lender gave is met exactly.
+    assert.equal(E.loanOwed(loan, '2024-12-31'), 608678);
+    assert.equal(E.loanOwed(loan, '2026-10-20'), 589241.54);
+    // In between, the deal's own steps: the balance falls on each payment day.
+    assert.ok(E.loanOwed(loan, '2025-06-30') < E.loanOwed(loan, '2025-06-29'));
+    // After the last balance: daily interest, then the payment on the 31st (30 Oct in a 30-day month… October has 31).
+    const d = 0.038 / 365;
+    assert.equal(E.loanOwed(loan, '2026-10-30'), Math.round(589241.54 * Math.pow(1 + d, 10) * 100) / 100);
+    assert.equal(E.loanOwed(loan, '2026-10-31'), Math.round((589241.54 * Math.pow(1 + d, 11) - 2782.18) * 100) / 100);
+});
+
+test('validLoan: reads the earlier shape (remortgage points and the current deal) into deals and balances', () => {
+    const l = plain(E.validLoan({ drawn: '2015-01-01', amount: 200000, points: [{ date: '2020-01-01', value: 150000 }],
+                                  start: '2022-01-15', balance: 120000, rate: 6, payment: 1000, end: '2050-01-15' }));
+    assert.deepEqual(l, { drawn: '2015-01-01', amount: 200000, payDay: 15,
+        deals: [{ start: '2015-01-01', end: null, rate: null, payment: null }, { start: '2020-01-01', end: null, rate: null, payment: null },
+                { start: '2022-01-15', end: '2050-01-15', rate: 6, payment: 1000 }],
+        balances: [{ date: '2020-01-01', value: 150000 }, { date: '2022-01-15', value: 120000 }] });
+    assert.equal(E.validLoan({}), null);
+    // A remortgage point on the current deal's start is that deal, not another one.
+    const same = E.validLoan({ drawn: '2021-03-17', amount: 1, points: [{ date: '2024-12-31', value: 9 }], start: '2024-12-31', balance: 9, rate: 3.8, payment: 2 });
+    assert.deepEqual(plain(same.deals.map(d => d.start)), ['2021-03-17', '2024-12-31']);
+    // A sheet rate saved as a fraction is fixed before the shape is read.
+    const s = E.validateState({ accounts: [{ id: 'm', name: 'Mortgage', group: 'property', debt: true, rate: 0.038,
+        loan: { start: '2024-12-31', balance: 600000, rate: 0.038, payment: 2800 } }], snapshots: [] });
+    assert.equal(s.accounts[0].loan.deals[0].rate, 3.8);
 });
 
 test('assetValue: straight line between valuations, then the yearly rate', () => {

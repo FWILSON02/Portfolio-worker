@@ -54,8 +54,9 @@ function inMetric(a, metric) { return metric === 'cash' ? cardId(a) === 'cash' :
 //                        any later valuations. Between two points the value runs in a straight line; after the latest
 //                        it rises (+) or falls (−) by `rate` % a year. Once bought and price are set, every month from
 //                        the purchase is worked out from these points.
-//              loan:     { rate (%/yr), start, end ('YYYY-MM-DD'), payment (£/month) } for a repayment mortgage; null = none.
-//                        After each balance you enter, the amount owed is worked down month by month from these terms.
+//              loan:     { drawn, amount, payDay, deals, balances } for a repayment mortgage (see validLoan); null = none.
+//                        With the lender's balances it is worked out entirely from the loan; without, it is worked
+//                        down from each balance you enter by the current deal's terms.
 //              term:     { start, end ('YYYY-MM-DD'), rate (% AER), amount (£) } for a fixed-term saving: from the start
 //                        the amount grows at the rate until the end, then holds until you enter a balance after it.
 //              liquid:   true/false to count (or not) toward Liquid; null = the group's default.
@@ -141,43 +142,114 @@ function linkedToInvestments(a) {
 
 // The spreadsheet's rate column holds fractions (0.038 = 3.8%); loan rates are in %.
 function pctFromSheet(r) { return r < 1 ? Math.round(r * 1e6) / 1e4 : r; }
+// Mortgage (Fergus): { drawn, amount, payDay, deals: [{ start, end, rate, payment }], balances: [{ date, value }] }.
+// drawn/amount: when it was taken out and how much. payDay: the day of the month the payment goes out (null = the
+// day it was drawn). deals: every rate period, oldest first; a past deal's rate and payment may be left blank.
+// balances: figures from the lender's statements or app, each one the amount owed that day.
+// Saved before October 2026 as { drawn, amount, points, start, balance, rate, payment, end }; read into this shape.
 function validLoan(l) {
     if (!l || typeof l !== 'object') return null;
     var num = function (v) { return typeof v === 'number' && isFinite(v) ? v : null; };
-    var pts = (Array.isArray(l.points) ? l.points : []).filter(function (p) {
-        return p && ISO_DATE.test(p.date || '') && num(p.value) != null;
-    }).map(function (p) { return { date: p.date, value: Math.abs(p.value) }; })
-      .sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
-    var out = { rate: num(l.rate), payment: num(l.payment),
-                start: ISO_DATE.test(l.start || '') ? l.start : null, end: ISO_DATE.test(l.end || '') ? l.end : null,
-                balance: num(l.balance) == null ? null : Math.abs(l.balance),
-                drawn: ISO_DATE.test(l.drawn || '') ? l.drawn : null, amount: num(l.amount) == null ? null : Math.abs(l.amount),
-                points: pts };
-    return out.rate == null && out.payment == null && !out.start && !out.end && out.balance == null && !out.drawn && out.amount == null && !pts.length ? null : out;
+    var date = function (v) { return ISO_DATE.test(v || '') ? v : null; };
+    var byDate = function (k) { return function (a, b) { return a[k] < b[k] ? -1 : a[k] > b[k] ? 1 : 0; }; };
+    var deals = l.deals, balances = l.balances, payDay = l.payDay;
+    if (!Array.isArray(deals) && !Array.isArray(balances)) {
+        // Earlier shape: remortgage points (balance only) then the current deal and its starting balance. The first
+        // deal ran from the day it was drawn; rates of the earlier deals were never asked for.
+        var pts = Array.isArray(l.points) ? l.points : [];
+        deals = [{ start: l.drawn }].concat(pts.map(function (p) { return p && { start: p.date }; }))
+            .filter(function (d) { return d && d.start && d.start !== l.start && !(l.start && d.start > l.start); })
+            .concat(l.start || l.rate != null || l.payment != null || l.end ? [{ start: l.start, end: l.end, rate: l.rate, payment: l.payment }] : []);
+        balances = pts.concat(l.start ? [{ date: l.start, value: l.balance }] : []);
+        payDay = l.start ? Number(l.start.slice(8, 10)) : null;
+    }
+    var outDeals = (Array.isArray(deals) ? deals : []).filter(function (d) { return d && date(d.start); }).map(function (d) {
+        var rate = num(d.rate), payment = num(d.payment);
+        return { start: d.start, end: date(d.end), rate: rate, payment: payment == null ? null : Math.abs(payment) };
+    }).sort(byDate('start'));
+    var seen = {};
+    var outBalances = (Array.isArray(balances) ? balances : []).filter(function (p) { return p && date(p.date) && num(p.value) != null; })
+        .map(function (p) { return { date: p.date, value: Math.abs(p.value) }; }).sort(byDate('date'))
+        .filter(function (p) { if (seen[p.date]) return false; seen[p.date] = true; return true; });
+    var out = { drawn: date(l.drawn), amount: num(l.amount) == null ? null : Math.abs(l.amount),
+                payDay: num(payDay) != null && payDay >= 1 && payDay <= 31 ? Math.round(payDay) : null,
+                deals: outDeals, balances: outBalances };
+    return !out.drawn && out.amount == null && out.payDay == null && !outDeals.length && !outBalances.length ? null : out;
 }
-// Current deal's terms and its starting balance set: the amount owed is worked out entirely from the loan's points.
-function loanFormula(l) { return loanReady(l) && l.balance != null; }
-// Points the amount owed passes through, oldest first: the amount borrowed, each remortgage, the current deal's start.
-function loanPoints(l) {
-    var first = l.drawn && l.amount != null && l.drawn < l.start ? [{ date: l.drawn, value: l.amount }] : [];
-    var mid = l.points.filter(function (p) { return p.date < l.start && (!first.length || p.date > l.drawn); });
-    return first.concat(mid, [{ date: l.start, value: l.balance }]);
+// The current deal: the one that started last.
+function loanDeal(l) { return l && l.deals && l.deals.length ? l.deals[l.deals.length - 1] : null; }
+// The deal in force on date `d`: the last one started by then.
+function dealOn(l, d) {
+    var out = null;
+    l.deals.forEach(function (x) { if (x.start <= d) out = x; });
+    return out;
 }
-// Amount owed (positive) on date `d` (Fergus): a straight line between the points either side of it (earlier deals),
-// then from the current deal's start worked down month by month at its rate and payment. null before the first point.
-function loanOwed(l, d) {
-    if (!loanFormula(l)) return null;
-    var pts = loanPoints(l);
-    if (d < pts[0].date) return null;
-    if (d >= l.start) return payDown(l.balance, l, l.start, d);
-    for (var i = 0; i < pts.length - 1; i++) {
-        var p0 = pts[i], p1 = pts[i + 1];
-        if (d >= p0.date && d < p1.date) {
-            var t = (Date.parse(d) - Date.parse(p0.date)) / (Date.parse(p1.date) - Date.parse(p0.date));
-            return Math.round((p0.value + (p1.value - p0.value) * t) * 100) / 100;
+// Whether the current deal has the terms needed to work the balance down.
+function loanReady(l) { var d = loanDeal(l); return !!(d && d.rate != null && d.payment != null); }
+// Amounts the balance is known to pass through, oldest first: the amount borrowed, then each lender balance.
+function loanAnchors(l) {
+    var bal = l.balances || [];
+    var first = l.drawn && l.amount != null && !bal.some(function (p) { return p.date <= l.drawn; }) ? [{ date: l.drawn, value: l.amount }] : [];
+    return first.concat(bal);
+}
+// Worked out entirely from the loan: the current deal's terms and at least one known balance.
+function loanFormula(l) { return loanReady(l) && loanAnchors(l).length > 0; }
+function loanPayDay(l) { return l.payDay || (l.drawn ? Number(l.drawn.slice(8, 10)) : l.deals.length ? Number(l.deals[0].start.slice(8, 10)) : 1); }
+function addDays(d, n) { return new Date(Date.parse(d) + n * 864e5).toISOString().slice(0, 10); }
+function daysBetween(a, b) { return Math.round((Date.parse(b) - Date.parse(a)) / 864e5); }
+// Payment dates after `from` up to and including `to`: the pay day each month, or the month's last day when shorter.
+function payDates(l, from, to) {
+    var day = loanPayDay(l), y = Number(from.slice(0, 4)), m = Number(from.slice(5, 7)), out = [];
+    for (var n = 0; n < 1200; n++) {
+        var dim = new Date(Date.UTC(y, m, 0)).getUTCDate();
+        var d = y + '-' + String(m).padStart(2, '0') + '-' + String(Math.min(day, dim)).padStart(2, '0');
+        if (d > to) break;
+        if (d > from) out.push(d);
+        m++; if (m > 12) { m = 1; y++; }
+    }
+    return out;
+}
+// Amount owed (positive) moved on from `from` to `to`, as a repayment mortgage with interest charged daily: each day
+// the balance grows by the deal's rate / 365, and on each payment date the deal's payment comes off. A deal's terms
+// run on after its end date until the next deal. Never below 0. null when a day falls under no deal, or under one
+// whose rate or payment is blank.
+function workDown(l, owed, from, to) {
+    var b = owed, at = from;
+    var starts = l.deals.map(function (x) { return x.start; }).filter(function (s) { return s > from && s <= to; });
+    var events = payDates(l, from, to).map(function (d) { return { date: d, pay: true }; })
+        .concat(starts.map(function (d) { return { date: d, pay: false }; }), [{ date: to, pay: false }])
+        .sort(function (a, c) { return a.date < c.date ? -1 : a.date > c.date ? 1 : a.pay ? 1 : -1; });
+    for (var k = 0; k < events.length; k++) {
+        var e = events[k], days = daysBetween(at, e.date);
+        if (days > 0) {
+            var deal = dealOn(l, at);
+            if (!deal || deal.rate == null) return null;
+            b *= Math.pow(1 + deal.rate / 100 / 365, days);
+            at = e.date;
+        }
+        if (e.pay && b > 0) {
+            var now = dealOn(l, e.date);
+            if (!now || now.payment == null) return null;
+            b = Math.max(0, b - now.payment);
         }
     }
-    return l.balance;
+    return Math.round(b * 100) / 100;
+}
+// Amount owed (positive) on date `d`, or null before the first known balance. From each known balance the loan is
+// worked down by its deals; when a later balance is known, the gap between the worked-out figure and the lender's is
+// spread evenly over the time between them, so the line meets every balance the lender gave. Across a deal with no
+// rate or payment, a straight line between the two balances. After the last, worked down by the deals' terms.
+function loanOwed(l, d) {
+    if (!l || !l.deals) return null;
+    var pts = loanAnchors(l);
+    if (!pts.length || d < pts[0].date) return null;
+    var i = 0;
+    while (i + 1 < pts.length && pts[i + 1].date <= d) i++;
+    var a = pts[i], b = pts[i + 1], here = workDown(l, a.value, a.date, d);
+    if (!b) return here == null ? a.value : here;
+    var t = daysBetween(a.date, d) / daysBetween(a.date, b.date), there = workDown(l, a.value, a.date, b.date);
+    var v = here == null || there == null ? a.value + (b.value - a.value) * t : here + (b.value - there) * t;
+    return Math.round(v * 100) / 100;
 }
 
 // Fixed-term saving (Fergus): start and end dates, the rate (% AER) and the amount paid in.
@@ -235,7 +307,7 @@ function assetValue(x, d) {
 }
 // The yearly rate after the latest point, kept on the account as `growth`.
 function assetRate(x) { return x.rate; }
-// Loans saved before the fix took the sheet's fraction as a %: 0.038 meant 3.8%, not 0.038%.
+// Loans saved before the fix took the sheet's fraction as a %: 0.038 meant 3.8%, not 0.038%. (Earlier loan shape only.)
 function fixLoanRate(l, sheetRate) {
     return l && l.rate != null && typeof sheetRate === 'number' && sheetRate > 0 && sheetRate < 1 && l.rate === sheetRate
         ? Object.assign({}, l, { rate: pctFromSheet(sheetRate) }) : l;
@@ -256,7 +328,7 @@ function validateState(s) {
             closed: !!a.closed,
             liquid: typeof a.liquid === 'boolean' ? a.liquid : null,
             growth: (typeof a.growth === 'number' && isFinite(a.growth)) ? a.growth : null,
-            loan: fixLoanRate(validLoan(a.loan), a.rate),
+            loan: validLoan(fixLoanRate(a.loan, a.rate)),
             term: a.group === 'savings' ? validTerm(a.term) : null,
             asset: validAsset(a.asset, a.growth),
             appLinks: linksOf(a),
@@ -441,23 +513,6 @@ function grow(v, growth, from, to) {
     var years = (Date.parse(to) - Date.parse(from)) / (864e5 * 365.25);
     return years > 0 ? Math.round(v * Math.pow(1 + growth / 100, years) * 100) / 100 : v;
 }
-// Whether a loan has every term needed to work it down.
-function loanReady(l) { return !!(l && l.rate != null && l.payment != null && l.start && l.end); }
-// Amount owed on a repayment mortgage moved on from `from` to `to`: on each monthly payment day (the start date's day
-// of the month) between the start and end dates, a month's interest is added and the payment taken off. Never below 0.
-// `owed` is the stored balance (negative for a debt); the result keeps its sign.
-function payDown(owed, loan, from, to) {
-    var sign = owed < 0 ? -1 : 1, b = Math.abs(owed), i = loan.rate / 100 / 12;
-    var day = Number(loan.start.slice(8, 10)), y = Number(loan.start.slice(0, 4)), m = Number(loan.start.slice(5, 7));
-    for (var n = 0; n < 1200 && b > 0; n++) {
-        var dim = new Date(Date.UTC(y, m, 0)).getUTCDate();
-        var d = y + '-' + String(m).padStart(2, '0') + '-' + String(Math.min(day, dim)).padStart(2, '0');
-        if (d > to || d > loan.end) break;
-        if (d > from) b = Math.max(0, b * (1 + i) - loan.payment);
-        m++; if (m > 12) { m = 1; y++; }
-    }
-    return sign * Math.round(b * 100) / 100;
-}
 // Balances at `r.date` with each growing account (house, car) moved on from its last valuation at its own rate, and
 // each mortgage with loan terms worked down from its last balance. Only the gap after a value you enter is
 // estimated: an entered value always replaces the estimate.
@@ -478,7 +533,7 @@ function withGrowth(r, accounts) {
             out[a.id] = termValue(a.term, r.date);
             return;
         }
-        // Mortgage with its current deal's starting balance: worked out from its points from the first one on.
+        // Mortgage with the current deal's terms and a known balance: worked out from the loan from the first one on.
         if (loanFormula(a.loan)) {
             var owed = loanOwed(a.loan, r.date);
             if (owed == null) return;
@@ -490,7 +545,11 @@ function withGrowth(r, accounts) {
         var from = r.since && r.since[a.id] || r.asOf[a.id];
         if ((a.growth == null && !loan) || r.values[a.id] == null || !from || from >= r.date) return;
         out = out || Object.assign({}, r.values);
-        out[a.id] = loan ? payDown(r.values[a.id], loan, from, r.date) : grow(r.values[a.id], a.growth, from, r.date);
+        if (loan) {
+            var owed = workDown(loan, Math.abs(r.values[a.id]), from, r.date);
+            if (owed == null) return;
+            out[a.id] = r.values[a.id] < 0 ? -owed : owed;
+        } else out[a.id] = grow(r.values[a.id], a.growth, from, r.date);
     });
     return out ? Object.assign({}, r, { values: out }) : r;
 }
@@ -1524,9 +1583,10 @@ function estateAlerts(state, today, windows) {
     var out = [], tl = resolveTimeline((state && state.snapshots) || []), asOf = tl.length ? tl[tl.length - 1].asOf : {};
     (state && state.accounts || []).forEach(function (a) {
         if (a.closed) return;
-        if (a.debt && a.loan && a.loan.end) {
-            out.push(makeAlert({ kind: 'mortgage', key: a.id, date: a.loan.end, title: function (w, past) { return a.name + ' deal ' + (past ? 'ended ' : 'ends ') + w; },
-                parts: [a.loan.end < today ? 'now on the lender’s variable rate' : 'then the lender’s variable rate'] }, today, windows));
+        var deal = a.debt && loanDeal(a.loan);
+        if (deal && deal.end) {
+            out.push(makeAlert({ kind: 'mortgage', key: a.id, date: deal.end, title: function (w, past) { return a.name + ' deal ' + (past ? 'ended ' : 'ends ') + w; },
+                parts: [deal.end < today ? 'now on the lender’s variable rate' : 'then the lender’s variable rate'] }, today, windows));
         }
         var t = termOf(a);
         if (t && !(asOf[a.id] && asOf[a.id] > t.end)) {
@@ -1767,29 +1827,31 @@ function AssetFields(props) {
             grid(rateCells(f.rate, function (r) { setTop('rate', r); }, f.vals.length ? 'After the latest, each year it' : 'Each year it'))));
 }
 
-// Mortgage (Fergus): the amount borrowed, the balance at each remortgage, then the current deal (its starting balance,
-// rate, payment, start and end). Straight lines between the earlier points; the current deal works itself down.
+// Mortgage (Fergus): when it was taken out, the day payments go out, every deal (rate period) and the balances the
+// lender has given. The amount owed is worked out from these: see loanOwed.
 function LoanFields(props) {
     var ui = useUI();
     var a = props.a, l = a.loan || {};
     var str = function (v) { return v != null ? String(v) : ''; };
     var st = React.useState(function () {
-        return { rate: l.rate != null ? String(l.rate) : (a.rate != null ? String(pctFromSheet(a.rate)) : ''), payment: str(l.payment),
-                 start: l.start || '', end: l.end || '', balance: str(l.balance), drawn: l.drawn || '', amount: str(l.amount),
-                 pts: (l.points || []).map(function (p) { return { date: p.date, value: String(p.value) }; }) };
+        var deals = (l.deals || []).map(function (d) { return { start: d.start, end: d.end || '', rate: str(d.rate), payment: str(d.payment) }; });
+        if (!deals.length) deals = [{ start: '', end: '', rate: a.rate != null ? String(pctFromSheet(a.rate)) : '', payment: '' }];
+        return { drawn: l.drawn || '', amount: str(l.amount), payDay: str(l.payDay), deals: deals,
+                 balances: (l.balances || []).map(function (p) { return { date: p.date, value: String(p.value) }; }) };
     });
     var f = st[0];
     var num = function (t) { var n = Number(String(t).replace(/[£,%\s]/g, '')); return t === '' || isNaN(n) ? null : n; };
     var toLoan = function (d) {
-        return validLoan({ rate: num(d.rate), payment: num(d.payment), start: d.start, end: d.end, balance: num(d.balance),
-            drawn: d.drawn, amount: num(d.amount), points: d.pts.map(function (p) { return { date: p.date, value: num(p.value) }; }) });
+        return validLoan({ drawn: d.drawn, amount: num(d.amount), payDay: num(d.payDay),
+            deals: d.deals.map(function (x) { return { start: x.start, end: x.end, rate: num(x.rate), payment: num(x.payment) }; }),
+            balances: d.balances.map(function (p) { return { date: p.date, value: num(p.value) }; }) });
     };
     function update(next) { st[1](next); props.onChange(toLoan(next)); }
     function set(k, v) { var n = Object.assign({}, f); n[k] = v; update(n); }
-    function setPt(i, k, v) { var n = Object.assign({}, f, { pts: f.pts.slice() }); n.pts[i] = Object.assign({}, n.pts[i]); n.pts[i][k] = v; update(n); }
-    function addPt() { update(Object.assign({}, f, { pts: f.pts.concat([{ date: '', value: '' }]) })); }
-    function removePt(i) { update(Object.assign({}, f, { pts: f.pts.filter(function (_, k) { return k !== i; }) })); }
-    var loan = toLoan(f), ready = loanReady(loan), formula = loanFormula(loan);
+    function setIn(list, i, k, v) { var n = Object.assign({}, f); n[list] = f[list].slice(); n[list][i] = Object.assign({}, n[list][i]); n[list][i][k] = v; update(n); }
+    function add(list, row) { var n = Object.assign({}, f); n[list] = f[list].concat([row]); update(n); }
+    function remove(list, i) { var n = Object.assign({}, f); n[list] = f[list].filter(function (_, k) { return k !== i; }); update(n); }
+    var loan = toLoan(f), deal = loanDeal(loan), formula = loanFormula(loan);
     var lab = function (t) { return E('span', { style: { fontFamily: ui.sys, fontSize: 10, color: ui.C.zinc600, letterSpacing: '0.04em' } }, t); };
     var input = function (value, onChange, extra) { return fieldInput(ui, value, onChange, extra); };
     var cell = function (t, el) { return E('label', { style: { display: 'block', minWidth: 0 } }, lab(t), el); };
@@ -1798,35 +1860,50 @@ function LoanFields(props) {
         return E('div', { style: { display: 'flex', alignItems: 'center', marginBottom: 4 } },
             E('span', { style: { flex: 1, fontFamily: ui.sys, fontSize: 11, color: ui.C.zinc400, fontWeight: 600 } }, t), extra || null);
     };
+    var note = function (t) { return E('div', { style: { fontFamily: ui.sys, fontSize: 11, color: ui.C.zinc700, marginBottom: 6 } }, t); };
+    var removeBtn = function (onClick) {
+        return E('button', { type: 'button', onClick: onClick, style: { background: 'none', border: 'none', color: ui.C.rose, fontFamily: ui.sys, fontSize: 12, padding: 0, cursor: 'pointer' } }, 'Remove');
+    };
+    var addBtn = function (t, onClick) {
+        return E('button', { type: 'button', onClick: onClick,
+            style: { marginTop: 8, background: 'none', border: '1px dashed ' + ui.C.border, borderRadius: 8, width: '100%', padding: '7px 0', color: ui.C.blue, fontFamily: ui.sys, fontSize: 12, cursor: 'pointer' } }, t);
+    };
     var section = function (key, kids) { return E('div', { key: key, style: { marginTop: 8, paddingTop: 8, borderTop: '1px dashed ' + ui.C.border } }, kids); };
     var blur = props.privacy ? 'blur(6px)' : 'none';
-    var nowOwed = formula ? loanOwed(loan, todayISO()) : null;
+    var today = todayISO(), payDay = loanPayDay(loan || { deals: [] });
+    var ord = function (n) { return n + (n % 10 === 1 && n !== 11 ? 'st' : n % 10 === 2 && n !== 12 ? 'nd' : n % 10 === 3 && n !== 13 ? 'rd' : 'th'); };
+    var status = formula
+        ? E('span', null, 'Owed today ', E('span', { style: { filter: blur } }, fmtGBP(loanOwed(loan, today))),
+            ': ' + deal.rate + '% interest charged daily, £' + deal.payment.toLocaleString('en-GB') + ' paid on the ' + ord(payDay) + ' of each month',
+            deal.end ? (deal.end < today ? '; deal ended ' : ' until ') + monthLabel(deal.end.slice(0, 7)) : '')
+        : loanReady(loan) ? 'Add the amount borrowed or a balance from your lender to work out what you owe:'
+        : 'Add the current deal’s rate and monthly payment to keep this up to date:';
     return E('div', { style: { marginTop: 6 } },
-        E('div', { style: { fontFamily: ui.sys, fontSize: 11, color: ready ? ui.C.blue : ui.C.zinc700, marginBottom: 4 } },
-            formula ? E('span', null, 'Owed today ', E('span', { style: { filter: blur } }, fmtGBP(nowOwed)),
-                        ', down £' + loan.payment.toLocaleString('en-GB') + ' a month at ' + loan.rate + '% until ' + monthLabel(loan.end.slice(0, 7)),
-                        loanPoints(loan).length > 1 ? '; straight line before this deal' : '')
-            : ready ? 'Add the balance when this deal started to work it out from these terms alone:'
-            : 'Add the mortgage below to keep it up to date:'),
-        head('When you bought'),
+        E('div', { style: { fontFamily: ui.sys, fontSize: 11, color: formula ? ui.C.blue : ui.C.zinc700, marginBottom: 4 } }, status),
+        head('Mortgage'),
         grid([cell('Borrowed on', input(f.drawn, function (v) { set('drawn', v); }, { type: 'date' })),
-              cell('Amount borrowed £', input(f.amount, function (v) { set('amount', v); }, { inputMode: 'decimal', placeholder: '0' }))]),
-        f.pts.map(function (p, i) {
-            return section(i, [
-                head('Remortgage ' + (i + 1), E('button', { type: 'button', onClick: function () { removePt(i); }, style: { background: 'none', border: 'none', color: ui.C.rose, fontFamily: ui.sys, fontSize: 12, padding: 0, cursor: 'pointer' } }, 'Remove')),
-                grid([cell('Started on', input(p.date, function (v) { setPt(i, 'date', v); }, { type: 'date' })),
-                      cell('Balance then £', input(p.value, function (v) { setPt(i, 'value', v); }, { inputMode: 'decimal', placeholder: '0' }))])]);
+              cell('Amount borrowed £', input(f.amount, function (v) { set('amount', v); }, { inputMode: 'decimal', placeholder: '0' })),
+              cell('Payment day of month', input(f.payDay, function (v) { set('payDay', v); }, { inputMode: 'numeric', placeholder: f.drawn ? String(Number(f.drawn.slice(8, 10))) : '1' }))]),
+        f.deals.map(function (d, i) {
+            var current = i === f.deals.length - 1;
+            return section('deal' + i, [
+                head(current ? 'Current deal' : 'Deal ' + (i + 1), f.deals.length > 1 ? removeBtn(function () { remove('deals', i); }) : null),
+                grid([cell('Started on', input(d.start, function (v) { setIn('deals', i, 'start', v); }, { type: 'date' })),
+                      cell('Ends on', input(d.end, function (v) { setIn('deals', i, 'end', v); }, { type: 'date' })),
+                      cell('Interest rate %', input(d.rate, function (v) { setIn('deals', i, 'rate', v); }, { inputMode: 'decimal', placeholder: current ? '4.5' : 'Not known' })),
+                      cell('Monthly payment £', input(d.payment, function (v) { setIn('deals', i, 'payment', v); }, { inputMode: 'decimal', placeholder: current ? '1,200' : 'Not known' }))])]);
         }),
-        E('button', { type: 'button', onClick: addPt,
-            style: { marginTop: 8, background: 'none', border: '1px dashed ' + ui.C.border, borderRadius: 8, width: '100%', padding: '7px 0', color: ui.C.blue, fontFamily: ui.sys, fontSize: 12, cursor: 'pointer' } },
-            '+ Add an earlier remortgage'),
-        section('deal', [
-            head('Current deal'),
-            grid([cell('Started on', input(f.start, function (v) { set('start', v); }, { type: 'date' })),
-                  cell('Balance then £', input(f.balance, function (v) { set('balance', v); }, { inputMode: 'decimal', placeholder: '0' })),
-                  cell('Interest rate %', input(f.rate, function (v) { set('rate', v); }, { inputMode: 'decimal', placeholder: '4.5' })),
-                  cell('Monthly payment £', input(f.payment, function (v) { set('payment', v); }, { inputMode: 'decimal', placeholder: '1,200' })),
-                  cell('Ends on', input(f.end, function (v) { set('end', v); }, { type: 'date' }))])]));
+        addBtn('+ Add a deal', function () { add('deals', { start: '', end: '', rate: '', payment: '' }); }),
+        section('balances', [
+            head('Balances from your lender'),
+            note('From a statement or your lender’s app, on the day shown. What you owe is worked out to pass through each one.'),
+            f.balances.map(function (p, i) {
+                return E('div', { key: i, style: { marginBottom: 8 } },
+                    grid([cell('On', input(p.date, function (v) { setIn('balances', i, 'date', v); }, { type: 'date' })),
+                          cell('Balance £', input(p.value, function (v) { setIn('balances', i, 'value', v); }, { inputMode: 'decimal', placeholder: '0' }))]),
+                    E('div', { style: { textAlign: 'right', marginTop: 4 } }, removeBtn(function () { remove('balances', i); })));
+            }),
+            addBtn('+ Add a balance', function () { add('balances', { date: today, value: '' }); })]));
 }
 
 // Fixed-term saving (Fergus): when it started and ends, the rate and the amount paid in. The balance grows at the
@@ -2290,6 +2367,6 @@ window.MaturityAlerts = { Banner: MaturityBanner, investmentAlerts: investmentAl
 // For tests only: the pure parts, no UI.
 window.__balancesInternals = { applyLinked: applyLinked, parseJsonBackup: parseJsonBackup, buildJson: buildJson, parseImport: parseImport, importToState: importToState, runChecks: runChecks, buildSeries: buildSeries, parseAmount: parseAmount, buildCsv: buildCsv,
     resolveTimeline: resolveTimeline, paydayOf: paydayOf, validLink: validLink, hintName: hintName, termValue: termValue, termRuns: termRuns, monthTicks: monthTicks, niceStep: niceStep, axisLabel: axisLabel, totalsFor: totalsFor, indexAccounts: indexAccounts, withPartial: withPartial, liveLinked: liveLinked,
-    grow: grow, payDown: payDown, loanOwed: loanOwed, assetValue: assetValue, validateState: validateState, breakdown: breakdown, groupValue: groupValue,
+    grow: grow, workDown: workDown, validLoan: validLoan, loanOwed: loanOwed, assetValue: assetValue, validateState: validateState, breakdown: breakdown, groupValue: groupValue,
     alertStage: alertStage, alertWindows: alertWindows, validWindows: validWindows, estateAlerts: estateAlerts, investmentAlerts: investmentAlerts, silenceAlert: silenceAlert, silenced: silenced, readSilence: readSilence };
 })();

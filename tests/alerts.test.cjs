@@ -24,10 +24,10 @@ test('alertStage: amber from the lead time, red for the last days and after, not
 
 test('estateAlerts: mortgage deal end and fixed-term saver end, soonest first', () => {
     const state = { accounts: [
-        { id: 'm', name: 'Mortgage', group: 'property', debt: true, loan: { end: '2027-01-01' } },
+        { id: 'm', name: 'Mortgage', group: 'property', debt: true, loan: { deals: [{ start: '2022-01-01', end: '2027-01-01' }] } },
         { id: 's', name: 'Fixed Saver', group: 'savings', term: { start: '2025-10-28', end: '2026-10-28', rate: 4.6, amount: 15000 } },
         { id: 'far', name: 'Later Saver', group: 'savings', term: { start: '2026-01-01', end: '2027-06-01', rate: 4, amount: 1000 } },
-        { id: 'old', name: 'Old Mortgage', group: 'property', debt: true, closed: true, loan: { end: '2026-11-01' } },
+        { id: 'old', name: 'Old Mortgage', group: 'property', debt: true, closed: true, loan: { deals: [{ start: '2022-01-01', end: '2026-11-01' }] } },
     ], snapshots: [] };
     const a = plain(E.estateAlerts(state, TODAY));
     assert.deepEqual(a.map(x => [x.title, x.stage, x.when]), [
@@ -81,7 +81,7 @@ test('closing an alert hides it for a week, or for good', () => {
 
 test('after the date: past tense, and cleared once dealt with', () => {
     const state = { accounts: [
-        { id: 'm', name: 'Mortgage', group: 'property', debt: true, loan: { end: '2026-10-01' } },
+        { id: 'm', name: 'Mortgage', group: 'property', debt: true, loan: { deals: [{ start: '2022-01-01', end: '2026-10-01' }] } },
         { id: 's', name: 'Fixed Saver', group: 'savings', term: { start: '2025-10-01', end: '2026-10-10', rate: 4, amount: 1000 } },
         { id: 'd', name: 'Done Saver', group: 'savings', term: { start: '2025-10-01', end: '2026-10-10', rate: 4, amount: 1000 } },
     ], snapshots: [{ date: '2026-09-20', values: { s: 1000, d: 1000 } }, { date: '2026-10-15', partial: true, values: { d: 1041 } }] };
@@ -114,6 +114,6 @@ test('Settings → Alerts windows change when an alert starts and how long it st
     assert.deepEqual(JSON.parse(E.buildJson(st)).data.alertWindows, w);
     assert.equal('alertWindows' in E.validateState({ accounts: [], snapshots: [] }), false);
     // A state built with them uses them.
-    const s2 = Object.assign({}, st, { accounts: [{ id: 'm', name: 'Mortgage', debt: true, loan: { end: '2027-01-01' } }], alertWindows: { mortgage: { before: 30 } } });
+    const s2 = Object.assign({}, st, { accounts: [{ id: 'm', name: 'Mortgage', debt: true, loan: { deals: [{ start: '2022-01-01', end: '2027-01-01' }] } }], alertWindows: { mortgage: { before: 30 } } });
     assert.equal(E.estateAlerts(s2, TODAY).length, 0);   // 74 days off, window now 30
 });

@@ -21,8 +21,8 @@ const SHEET = [
     '\t\t\t\t1\t87%\t£2,000',
 ].join('\n');
 const ESTATE = { accounts: [
-    { id: 'mort', name: 'Northbank Mortgage', debt: true, closed: false, link: 'https://bank.example', loan: { payment: 2100, end: '2030-12-31', rate: 4.1, start: '2025-01-01' } },
-    { id: 'old', name: 'Old Mortgage', debt: true, closed: true, loan: { payment: 900, end: '2020-01-01' } },
+    { id: 'mort', name: 'Northbank Mortgage', debt: true, closed: false, link: 'https://bank.example', loan: { deals: [{ start: '2025-01-01', end: '2030-12-31', rate: 4.1, payment: 2100 }], balances: [] } },
+    { id: 'old', name: 'Old Mortgage', debt: true, closed: true, loan: { deals: [{ start: '2015-01-01', end: '2020-01-01', rate: null, payment: 900 }], balances: [] } },
 ] };
 
 test('parsePaste reads a Bills sheet: header lined up on the right, totals skipped', () => {
