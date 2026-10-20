@@ -26,6 +26,7 @@ var CATEGORIES = [
     { id: 'utilities', label: 'Utilities', color: '#60a5fa' },
     { id: 'insurance', label: 'Insurance', color: '#a78bfa' },
     { id: 'services',  label: 'Services',  color: '#fb923c' },
+    { id: 'subscriptions', label: 'Subscriptions', color: '#facc15' },
     { id: 'other',     label: 'Other',     color: '#9da5b4' },
 ];
 var CATEGORY_BY_ID = {};
@@ -39,15 +40,18 @@ function migrateCategory(cat, name, estate) {
     if ((cat === 'services' || cat === 'other') && CHILDCARE.test(n)) return 'childcare';
     return cat;
 }
+// Subscriptions (Fergus): contracts and memberships paid on repeat, e.g. mobile, gym, Netflix, Amazon, Ring, RHS magazine.
+var SUBSCRIPTION = /subscri|membership|member\b|netflix|spotify|disney|amazon|\bprime\b|apple|icloud|youtube|now tv|audible|kindle|\bring\b|magazine|\brhs\b|national trust|\bgym\b|fitness|strava|\bwhich\b|discovery|mobile|\bsim\b|giffgaff|vodafone|\bo2\b|\bee\b|patreon|xbox|playstation|nintendo|google one|dropbox|adobe|microsoft 365|office 365/;
 // A pasted bill's category from its name.
 function guessCategory(name) {
     var n = String(name || '').toLowerCase();
-    if (/insur|cover|warranty|protect/.test(n)) return 'insurance';
+    if (/insur|\bcover\b|warranty|protect/.test(n)) return 'insurance';
     if (/mortgage/.test(n)) return 'mortgage';
     if (CHILDCARE.test(n)) return 'childcare';
+    if (SUBSCRIPTION.test(n)) return 'subscriptions';
     if (/rent|council|service charge|ground rent/.test(n)) return 'home';
     if (/energy|gas|electric|water|internet|broadband|wifi|fibre|tv|licen[cs]e|phone|mobile|sim/.test(n)) return 'utilities';
-    if (/clean|gardener|gym|subscription|netflix|spotify|window/.test(n)) return 'services';
+    if (/clean|gardener|window/.test(n)) return 'services';
     return 'other';
 }
 
@@ -63,7 +67,7 @@ var EVERY_BY_ID = {};
 EVERY.forEach(function (f) { EVERY_BY_ID[f.id] = f; });
 
 // ── Store (IndexedDB, own database) ──────────────────────────────────────────
-// state = { v: 1, bills: [Bill], updatedAt }
+// state = { v: 2, bills: [Bill], updatedAt }   (v 2: Subscriptions added)
 //   Bill = { id, name, provider, category, amount, every, account, username, link, end, notes, estate }
 //          name:     what the bill is ('Energy', 'Council Tax').
 //          amount:   £ paid each `every` (see EVERY); the monthly and yearly figures are worked out from it.
@@ -81,7 +85,7 @@ var COST_FROM_BY_ID = { last12: COST_FROM[0], forecast: COST_FROM[1] };
 var DB_NAME = 'portfolio-lifeadmin';
 var DB_STORE = 'kv';
 var DB_KEY = 'state';
-function emptyState() { return { v: 1, bills: [], updatedAt: null }; }
+function emptyState() { return { v: 2, bills: [], updatedAt: null }; }
 
 function idbOpen() {
     return new Promise(function (resolve, reject) {
@@ -152,15 +156,18 @@ function validBill(b) {
 // Returns a cleaned copy of a stored or restored state, or null when it is not a Life Admin state at all.
 function validateState(s) {
     if (!s || typeof s !== 'object' || !Array.isArray(s.bills)) return null;
-    var seen = {}, bills = [];
+    var seen = {}, bills = [], before2 = !(s.v >= 2);
     s.bills.forEach(function (b) {
         var c = validBill(b);
         if (!c) return;
+        // Subscriptions came later (v 2): once, bills the name says are subscriptions move over from where the old
+        // guess put them. After that a category you pick stays, even for a name that looks like a subscription.
+        if (before2 && /^(services|utilities|other)$/.test(c.category) && guessCategory(c.name) === 'subscriptions') c.category = 'subscriptions';
         while (seen[c.id]) c.id = newId();
         seen[c.id] = true;
         bills.push(c);
     });
-    return { v: 1, bills: bills, updatedAt: typeof s.updatedAt === 'number' ? s.updatedAt : null };
+    return { v: 2, bills: bills, updatedAt: typeof s.updatedAt === 'number' ? s.updatedAt : null };
 }
 var _idn = 0;
 function newId() { return 'b' + Date.now().toString(36) + (_idn++).toString(36) + Math.random().toString(36).slice(2, 6); }
@@ -412,9 +419,13 @@ function parsePaste(textIn, estate) {
         cols = {};
         DEFAULT_ORDER.forEach(function (k, i) { cols[k] = i; });
     }
-    var mortgages = estateMortgages(estate);
+    var mortgages = estateMortgages(estate), heading = null;
     for (var r = start; r < rows.length; r++) {
         var row = rows[r];
+        // A line holding only a category's name ('Subscriptions') is a heading: the bills under it go in that category.
+        var filled = row.filter(function (c) { return c; });
+        var cat = filled.length === 1 ? CATEGORIES.filter(function (c) { return c.label.toLowerCase() === filled[0].toLowerCase(); })[0] : null;
+        if (cat) { heading = cat.id; continue; }
         var get = function (k) { return cols[k] == null ? '' : row[cols[k]] || ''; };
         var name = get('name');
         if (!name || /^(total|totals|sum|subtotal)$/i.test(name) || row.some(function (c) { return /^total$/i.test(c); })) { out.skipped++; continue; }
@@ -422,7 +433,7 @@ function parsePaste(textIn, estate) {
         var user = get('username');
         if (/^-?\d+(\.\d+)?\s*%$/.test(user)) user = '';   // a rate in the wrong column is not a login
         var bill = validBill({ name: name, provider: get('provider'), account: get('account'), username: user, link: get('link'),
-                               end: parseDate(get('end')), notes: get('notes'), amount: cost.amount, every: cost.every });
+                               end: parseDate(get('end')), notes: get('notes'), amount: cost.amount, every: cost.every, category: heading });
         if (!bill) { out.skipped++; continue; }
         var estateName = null;
         if (/mortgage/i.test(name) && mortgages.length) {
@@ -791,6 +802,7 @@ var BILL_ICONS = {
     phone: icon([{ t: 'r', x: 7, y: 2, w: 10, h: 20, rx: 2 }, 'M11 18h2']),
     insurance: icon(['M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z']),
     car: icon(['M5 17h14', 'M3 17v-4l2-5h14l2 5v4', { t: 'c', cx: 7.5, cy: 17, r: 1.8 }, { t: 'c', cx: 16.5, cy: 17, r: 1.8 }]),
+    subscriptions: icon(['M4 12a8 8 0 0 1 13.7-5.7L20 8.5', 'M20 4v4.5h-4.5', 'M20 12a8 8 0 0 1-13.7 5.7L4 15.5', 'M4 20v-4.5h4.5']),
     services: icon(['M12 3l1.8 4.2L18 9l-4.2 1.8L12 15l-1.8-4.2L6 9l4.2-1.8z', 'M19 15l.8 1.7 1.7.8-1.7.8L19 20l-.8-1.7-1.7-.8 1.7-.8z']),
     other: icon([{ t: 'r', x: 4, y: 3, w: 16, h: 18, rx: 2 }, 'M8 8h8', 'M8 12h8', 'M8 16h5']),
     childcare: icon([{ t: 'c', cx: 12, cy: 12, r: 9 }, 'M9 14.5a4 4 0 0 0 6 0', { t: 'c', cx: 9, cy: 10, r: 0.8 }, { t: 'c', cx: 15, cy: 10, r: 0.8 }]),
