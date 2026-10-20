@@ -222,9 +222,11 @@ function useEstateState() {
 }
 
 // ── Calculations ─────────────────────────────────────────────────────────────
-// Estate mortgages a bill can follow: open debts with a monthly payment.
+// An Estate mortgage's current deal: the last of its deals (Estate keeps them oldest first).
+function currentDeal(a) { var d = a && a.loan && a.loan.deals; return d && d.length ? d[d.length - 1] : null; }
+// Estate mortgages a bill can follow: open debts whose current deal has a monthly payment.
 function estateMortgages(estate) {
-    return ((estate && estate.accounts) || []).filter(function (a) { return a && !a.closed && a.debt && a.loan && typeof a.loan.payment === 'number'; });
+    return ((estate && estate.accounts) || []).filter(function (a) { var d = currentDeal(a); return a && !a.closed && a.debt && d && typeof d.payment === 'number'; });
 }
 // A bill as shown: its yearly and monthly cost, with an Estate mortgage's payment and deal end in place of its own.
 // fromEstate: the Estate account followed; missing: it follows one that is no longer there (or has no payment).
@@ -234,9 +236,9 @@ function resolveBill(b, estate) {
         var a = estateMortgages(estate).filter(function (x) { return x.id === b.estate; })[0];
         if (a) {
             out.fromEstate = a;
-            out.amount = Math.abs(a.loan.payment);
+            out.amount = Math.abs(currentDeal(a).payment);
             out.every = 'month';
-            out.end = a.loan.end || null;
+            out.end = currentDeal(a).end || null;
             if (!out.provider) out.provider = a.name;
             if (!out.link && a.link) out.link = a.link;
         } else out.missing = true;
