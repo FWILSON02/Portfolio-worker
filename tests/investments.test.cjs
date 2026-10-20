@@ -48,3 +48,27 @@ test('pxToGBP: pence, dollars, and refusing an unknown currency', () => {
     assert.equal(app.pxToGBP('C', 50, 1.25, { C: 'USD' }), 40);
     assert.equal(app.pxToGBP('C', 50, 1.25, {}), null);                      // never guess
 });
+
+test('contribution ranges in £: each holding\'s gain net of what was put in, then the money in, adding up to the move', () => {
+    const d = s => new Date(s + 'T12:00:00Z');
+    const chart = [{ date: '2026-01-05', investedAll: 100 }, { date: '2026-01-06', investedAll: 103 }, { date: '2026-01-07', investedAll: 104 }];
+    const rows = [
+        { date: '2026-01-05', holdingsValue: 1500, byTicker: { A: 1000, B: 500 }, pxTicker: { A: 10, B: 5 } },
+        { date: '2026-01-06', holdingsValue: 1750, byTicker: { A: 1300, B: 450 }, pxTicker: { A: 11, B: 4.5 } },
+        { date: '2026-01-07', holdingsValue: 1350, byTicker: { A: 1350 }, pxTicker: { A: 11.4 } },
+    ];
+    const ledger = [
+        { parsedDate: d('2026-01-06'), category: 'buy', value: -200, instrument: { ticker: 'A' } },
+        { parsedDate: d('2026-01-07'), category: 'sell', value: 460, instrument: { ticker: 'B' } },
+    ];
+    const f = app.makeContribRange(app.buildContribSteps(chart, rows, ledger), 5);
+    const one = plain(f.gains('2026-01-05', '2026-01-06'));
+    assert.deepEqual(one.rows.map(r => [r.tk, Math.round(r.c)]), [['A', 100], ['B', -50]]);
+    assert.equal(Math.round(one.flows), 200);
+    assert.equal(Math.round(one.total), 250);
+    const two = plain(f.gains('2026-01-05', '2026-01-07'));
+    assert.deepEqual(two.rows.map(r => [r.tk, Math.round(r.c), r.sold]), [['A', 150, false], ['B', -40, true]]);
+    assert.equal(Math.round(two.flows), -260);
+    assert.equal(Math.round(two.total), -150);
+    assert.ok(Math.abs(two.other) < 0.01);
+});
