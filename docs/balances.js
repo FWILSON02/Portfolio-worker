@@ -1160,7 +1160,7 @@ function Segmented(props) {
 }
 
 var METRICS = [{ id: 'total', label: 'Total' }, { id: 'liquid', label: 'Liquid' }, { id: 'cash', label: 'C&C' }];
-var RANGES = [{ id: '1Y', label: '1Y', months: 12 }, { id: '3Y', label: '3Y', months: 36 }, { id: 'ALL', label: 'All', months: null }];
+var RANGES = [{ id: '3M', label: '3M', months: 3 }, { id: '6M', label: '6M', months: 6 }, { id: '1Y', label: '1Y', months: 12 }, { id: '3Y', label: '3Y', months: 36 }, { id: 'ALL', label: 'All', months: null }];
 var CMP_MODES = [{ id: 'prev', label: 'Month before' }, { id: 'start', label: 'From start' }, { id: 'custom', label: 'Custom' }];
 var LINE_COLS = ['#60a5fa', '#f472b6', '#fbbf24'];
 
