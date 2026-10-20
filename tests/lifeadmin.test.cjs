@@ -104,6 +104,8 @@ test('totals: per month, per year and per category', () => {
     assert.equal(t.annual, 1200 + 1300 + 600);
     assert.ok(Math.abs(t.monthly - 3100 / 12) < 1e-9);
     assert.deepEqual(plain(t.categories.map(c => c.id)), ['utilities', 'services']);
+    // Each category carries its yearly figure too, for the Yearly view.
+    assert.deepEqual(plain(t.categories.map(c => c.annual)), [1800, 1300]);
 });
 
 test('mergeBills updates a bill with the same name and provider, keeping what the paste left blank', () => {

@@ -263,17 +263,23 @@ function resolveBill(b, estate) {
 function resolveAll(state, estate) { return ((state && state.bills) || []).map(function (b) { return resolveBill(b, estate); }); }
 // Totals for the top card: per month and per year, and per category (biggest first).
 function totals(bills) {
-    var monthly = 0, annual = 0, by = {};
+    var monthly = 0, annual = 0, by = {}, byYear = {};
     bills.forEach(function (b) {
         if (b.annual == null) return;
         annual += b.annual; monthly += b.monthly;
         by[b.category] = (by[b.category] || 0) + b.monthly;
+        byYear[b.category] = (byYear[b.category] || 0) + b.annual;
     });
     var cats = CATEGORIES.filter(function (c) { return by[c.id] > 0; })
-        .map(function (c) { return { id: c.id, label: c.label, color: c.color, monthly: by[c.id], share: monthly ? by[c.id] / monthly : 0 }; })
+        .map(function (c) { return { id: c.id, label: c.label, color: c.color, monthly: by[c.id], annual: byYear[c.id], share: monthly ? by[c.id] / monthly : 0 }; })
         .sort(function (x, y) { return y.monthly - x.monthly; });
     return { monthly: monthly, annual: annual, count: bills.length, categories: cats };
 }
+// The figures shown across the main view: a month or a year (Fergus asked to see both clearly). Remembered on this phone.
+var PERIODS = [{ id: 'month', label: 'Monthly', key: 'monthly', unit: 'a month', short: '/mo' }, { id: 'year', label: 'Yearly', key: 'annual', unit: 'a year', short: '/yr' }];
+var PERIOD_KEY = 'lifeadmin_period';
+function savedPeriod() { try { return localStorage.getItem(PERIOD_KEY) === 'year' ? 'year' : 'month'; } catch (e) { return 'month'; } }
+function periodOf(id) { return id === 'year' ? PERIODS[1] : PERIODS[0]; }
 var SORTS = [{ id: 'cost', label: 'Biggest' }, { id: 'renews', label: 'Renews' }, { id: 'name', label: 'A–Z' }];
 function sortBills(bills, how) {
     var list = bills.slice();
@@ -853,34 +859,29 @@ function Header(props) {
 }
 
 function Hero(props) {
-    var ui = useUI(), t = props.totals, p = props.privacy;
+    var ui = useUI(), t = props.totals, p = props.privacy, per = periodOf(props.period), other = periodOf(props.period === 'year' ? 'month' : 'year');
     return E('div', { style: cardStyle(ui, { padding: '18px 20px' }) },
-        E('div', { style: capsLabel(ui) }, 'Monthly outgoings'),
+        E('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 } },
+            E('span', { style: capsLabel(ui) }, per.label + ' outgoings'),
+            E(Segmented, { options: PERIODS, value: props.period, onChange: props.onPeriod })),
         E('div', { style: { display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 8 } },
-            E('span', { style: money(ui, 32, p) }, fmtGBP(t.monthly)),
-            E('span', { style: { fontFamily: ui.sys, fontSize: 15, color: ui.C.zinc600 } }, 'a month')),
+            E('span', { style: money(ui, 32, p) }, fmtGBP(t[per.key])),
+            E('span', { style: { fontFamily: ui.sys, fontSize: 15, color: ui.C.zinc600 } }, per.unit)),
         E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc600, marginTop: 4 } },
-            E('span', { style: { filter: p ? 'blur(6px)' : 'none' } }, fmtGBP(t.annual)), ' a year · ' + t.count + (t.count === 1 ? ' bill' : ' bills')),
+            E('span', { style: { filter: p ? 'blur(6px)' : 'none' } }, fmtGBP(t[other.key])), ' ' + other.unit + ' · ' + t.count + (t.count === 1 ? ' bill' : ' bills')),
         t.categories.length > 0 && E('div', { style: { display: 'flex', height: 8, borderRadius: 4, overflow: 'hidden', gap: 2, margin: '16px 0 10px' } },
             t.categories.map(function (c) { return E('div', { key: c.id, style: { flex: Math.max(c.share, 0.01), background: c.color } }); })),
         t.categories.map(function (c) {
             return E('div', { key: c.id, style: { display: 'flex', alignItems: 'center', fontFamily: ui.sys, fontSize: 13.5, color: ui.C.zinc400, padding: '4px 0' } },
                 E('span', { style: { width: 8, height: 8, borderRadius: 2, background: c.color, marginRight: 8, flexShrink: 0 } }),
                 E('span', { style: { flex: 1 } }, c.label),
-                E('span', { style: money(ui, 13.5, p, ui.C.zinc400, 500) }, fmtGBP(c.monthly)),
+                E('span', { style: money(ui, 13.5, p, ui.C.zinc400, 500) }, fmtGBP(c[per.key])),
                 E('span', { style: { minWidth: 48, marginLeft: 8, textAlign: 'right', color: ui.C.zinc700, fontVariantNumeric: 'tabular-nums' } }, Math.round(c.share * 100) + '%'));
         }));
 }
 
 function SortPicker(props) {
-    var ui = useUI();
-    return E('div', { style: { display: 'flex', background: 'rgba(0,0,0,0.3)', borderRadius: 9, padding: 2, gap: 2 } },
-        SORTS.map(function (s) {
-            var on = s.id === props.value;
-            return E('button', { key: s.id, onClick: function () { props.onChange(s.id); },
-                style: { border: 'none', borderRadius: 7, padding: '5px 10px', fontFamily: ui.sys, fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                         background: on ? 'rgba(255,255,255,0.10)' : 'transparent', color: on ? ui.C.white : ui.C.zinc600 } }, s.label);
-        }));
+    return E(Segmented, { options: SORTS, value: props.value, onChange: props.onChange });
 }
 
 function copyText(v) {
@@ -942,6 +943,7 @@ function Details(props) {
 
 function BillRow(props) {
     var ui = useUI(), b = props.bill, c = categoryOf(b.category), Icon = billIcon(b), sub = subLine(b, props.today), p = props.privacy;
+    var per = periodOf(props.period), other = periodOf(props.period === 'year' ? 'month' : 'year');
     return E('div', { style: { borderTop: props.first ? 'none' : '1px solid ' + ui.C.border } },
         E('button', { onClick: props.onToggle, 'aria-expanded': props.open,
             style: { display: 'flex', alignItems: 'center', gap: 12, width: '100%', padding: '12px 14px', background: 'none', border: 'none', textAlign: 'left', cursor: 'pointer', WebkitTapHighlightColor: 'transparent' } },
@@ -951,8 +953,8 @@ function BillRow(props) {
                 E('div', { style: { fontFamily: ui.sys, fontSize: 15, fontWeight: 600, color: ui.C.white, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, b.name),
                 E('div', { style: { fontFamily: ui.sys, fontSize: 12.5, color: sub.soon ? ui.C.amber : ui.C.zinc600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 1 } }, sub.text)),
             E('div', { style: { textAlign: 'right', flexShrink: 0 } },
-                E('div', { style: money(ui, 15, p, ui.C.white, 600) }, b.monthly == null ? '—' : fmtGBP(b.monthly)),
-                E('div', { style: money(ui, 12.5, p, ui.C.zinc700, 500) }, b.annual == null ? 'no cost' : fmtGBP(b.annual) + '/yr'))),
+                E('div', { style: money(ui, 15, p, ui.C.white, 600) }, b[per.key] == null ? '—' : fmtGBP(b[per.key]) + per.short),
+                E('div', { style: money(ui, 12.5, p, ui.C.zinc700, 500) }, b[other.key] == null ? 'no cost' : fmtGBP(b[other.key]) + other.short))),
         props.open && E(Details, { bill: b, hints: props.hints, privacy: p, onEdit: props.onEdit, onUsage: props.onUsage }));
 }
 
@@ -961,7 +963,8 @@ var _openId = null;
 var _mainScrollTop = 0;
 function MainView(props) {
     var ui = useUI();
-    var sort = React.useState(_sort), open = React.useState(_openId);
+    var sort = React.useState(_sort), open = React.useState(_openId), period = React.useState(savedPeriod);
+    function setPeriod(v) { try { localStorage.setItem(PERIOD_KEY, v); } catch (e) {} period[1](v); }
     var hints = React.useState(loginHints)[0];
     var bills = props.bills, today = todayISO();
     var t = React.useMemo(function () { return totals(bills); }, [bills]);
@@ -979,13 +982,13 @@ function MainView(props) {
     var list = sortBills(bills, sort[0]);
     return E('div', { style: { padding: '12px 16px 0' } },
         Banner && E(Banner, { source: function (w) { return renewalAlerts(bills, today, w); }, privacy: props.privacy }),
-        E(Hero, { totals: t, privacy: props.privacy }),
+        E(Hero, { totals: t, privacy: props.privacy, period: period[0], onPeriod: setPeriod }),
         E('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', margin: '22px 4px 8px' } },
             E('span', { style: capsLabel(ui) }, 'Bills'),
             E(SortPicker, { value: sort[0], onChange: function (v) { _sort = v; sort[1](v); } })),
         E('div', { style: cardStyle(ui, { overflow: 'hidden' }) },
             list.map(function (b, i) {
-                return E(BillRow, { key: b.id, bill: b, first: i === 0, today: today, hints: hints, privacy: props.privacy, open: open[0] === b.id,
+                return E(BillRow, { key: b.id, bill: b, first: i === 0, today: today, hints: hints, privacy: props.privacy, period: period[0], open: open[0] === b.id,
                     onToggle: function () { var v = open[0] === b.id ? null : b.id; _openId = v; open[1](v); },
                     onEdit: function () { props.onEdit(b.id); }, onUsage: function () { props.onUsage(b.id); } });
             })),
