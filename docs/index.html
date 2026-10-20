@@ -214,7 +214,7 @@ window.HelpCircle=_li([{t:'c',cx:12,cy:12,r:10},'M9.09 9a3 3 0 0 1 5.83 1c0 2-3 
 <!-- Life Admin (bills) lives in its own file too, loaded after balances.js (it uses the Estate mortgage and alert banner). Bump ?v= on change. -->
 <script src="lifeadmin.js?v=11"></script>
 <!-- Pay (salary, bonus, stock awards) lives in its own file as well. Bump ?v= on change. -->
-<script src="pay.js?v=1"></script>
+<script src="pay.js?v=2"></script>
 <script>
 try{"use strict";
 // ─── Lightweight SVG chart components (replaces Recharts) ──────────────────
@@ -7511,7 +7511,7 @@ function Row({ icon: Icon, iconColor, iconBg, label, sub, right, onClick, isLabe
 
 // The pull request that last changed the app. Bump it in every PR so Settings → App shows which change the phone is
 // running (Fergus asked; the Estate ?v= number only moved when balances.js changed, so it looked stuck).
-const APP_BUILD = 82;
+const APP_BUILD = 83;
 
 // Settings → App: pulls the newest index.html, balances.js, lifeadmin.js and pay.js past the browser's cache, then reloads. A Home Screen web app
 // on iOS keeps serving cached files for a while after a deploy, and closing it from the app switcher doesn't clear that.

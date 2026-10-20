@@ -124,6 +124,16 @@ test('mergeYears updates a pasted year in place and keeps its notes and vesting'
     assert.deepEqual([res.years[0].id, res.years[0].base, res.years[0].notes, res.years[0].vest], ['keep', 2, 'promoted', 3]);
 });
 
+test('EV (sales credits) is read from the sheet and pay is set against it in dollars', () => {
+    const r = P.parsePaste('\tTitle\tBase\tBonus\tEV $mm\t\n2020\tVP\t£100,000\t£50,000\t4,000,000\t9.9%\n2021\tVP\t£100,000\t£30,000\t5\t');
+    assert.deepEqual(plain(r.rows.map(y => y.ev)), [4000000, 5000000]);   // a small figure is in $mm
+    const rows = P.computeYears(r.rows.map((y, i) => (i ? Object.assign({}, y, { fx: 1.5 }) : y)));
+    assert.equal(round(rows[0].evPct), round(150000 * P.fxFor({ year: 2020 }).rate / 4000000));
+    assert.equal(round(rows[1].evPct), round(130000 * 1.5 / 5000000));
+    assert.equal(round(rows[1].evYoy), 0.25);
+    assert.equal(P.fxFor({ year: 2099 }).rate, P.fxFor({ year: 2025 }).rate);   // a year past the table takes its latest rate
+});
+
 test('the headers map to the right fields', () => {
     assert.equal(P.headerKey('Bonus (prorate)'), 'bonus');
     assert.equal(P.headerKey('Citi (C UN Equity) Stock Awarded'), 'shares');
@@ -131,6 +141,7 @@ test('the headers map to the right fields', () => {
     assert.equal(P.headerKey('TC GBP'), null);
     assert.equal(P.headerKey('3Yr average'), null);
     assert.equal(P.headerKey('Cash Payment'), 'cash');
+    assert.equal(P.headerKey('EV $mm'), 'ev');
     assert.equal(P.stockNameOf('Citi (C UN Equity) Stock Awarded'), 'Citi');
     assert.equal(P.stockNameOf('Stock Awarded'), '');
 });

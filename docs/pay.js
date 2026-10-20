@@ -29,6 +29,8 @@ var E = React.createElement;
 //          cash:       the cash part of the bonus, £. null = the bonus was all cash. The rest (bonus − cash) was paid in stock.
 //          shares:     how many shares the stock part bought, at `price` a share in `currency` (USD or GBP), named stockName ('Citi').
 //          vest:       years the stock vests over, an equal part each year from a year after the award (4: 25% a year).
+//          ev:         sales credits generated in the year (EV), $; null = none recorded.
+//          fx:         US$ per £1 for the year, to set pay against EV; null = the year's average from USD_PER_GBP.
 //          The bonus for a year is paid early the next year (the stock is awarded then), so cash, shares and price
 //          belong to the year the bonus was for, not the year it was paid.
 var DB_NAME = 'portfolio-pay';
@@ -91,6 +93,8 @@ function validYear(y) {
         currency: y.currency === 'GBP' ? 'GBP' : 'USD',
         stockName: text(y.stockName, 30),
         vest: [1, 2, 3, 4, 5].indexOf(y.vest) >= 0 ? y.vest : DEFAULT_VEST,
+        ev: positive(typeof y.ev === 'number' ? Math.round(y.ev) : null),
+        fx: typeof y.fx === 'number' && y.fx > 0.5 && y.fx < 3 ? Math.round(y.fx * 10000) / 10000 : null,
         notes: text(y.notes, 500),
     };
 }
@@ -167,10 +171,20 @@ function useStoreState() {
 function stockValue(y) { return y.bonus != null && y.cash != null ? Math.max(0, Math.round((y.bonus - y.cash) * 100) / 100) : 0; }
 function cashBonus(y) { return y.bonus == null ? null : Math.round((y.bonus - stockValue(y)) * 100) / 100; }
 function pct(a, b) { return a == null || b == null || !(b > 0) ? null : a / b - 1; }
+// US$ per £1, each year's average (Bank of England annual averages, rounded; 2025 approximate). A year can set its own.
+var USD_PER_GBP = { 2010: 1.546, 2011: 1.604, 2012: 1.585, 2013: 1.565, 2014: 1.648, 2015: 1.528, 2016: 1.355, 2017: 1.289,
+                    2018: 1.335, 2019: 1.277, 2020: 1.284, 2021: 1.376, 2022: 1.237, 2023: 1.244, 2024: 1.278, 2025: 1.32 };
+function fxFor(y) {
+    if (y.fx) return { rate: y.fx, own: true };
+    if (USD_PER_GBP[y.year]) return { rate: USD_PER_GBP[y.year], own: false };
+    var ks = Object.keys(USD_PER_GBP).map(Number).sort(function (a, b) { return a - b; });
+    return { rate: USD_PER_GBP[y.year < ks[0] ? ks[0] : ks[ks.length - 1]], own: false };
+}
 // Every year with its figures worked out, oldest first.
 //   tc:       total compensation: base + bonus + redundancy (as the sheet adds it up). Without a known bonus it is base
 //             (+ redundancy) and `complete` is false, so no growth is worked out from it.
 //   earned:   base + bonus, without redundancy.
+//   evPct:    pay (base + bonus, without redundancy) in $ at the year's rate, as a share of the year's EV (sales credits).
 //   yoy:      tc against the year before; yoyEarned without redundancy (only differs when either year had one).
 //   bonusYoy: the bonus against the year before's (none when that was £0).
 //   bonusPct: the bonus as a share of base.
@@ -180,8 +194,9 @@ function computeYears(years) {
     var by = {};
     var out = list.map(function (y) {
         var stock = stockValue(y), cash = cashBonus(y);
-        var earned = (y.base || 0) + (y.bonus || 0);
+        var earned = (y.base || 0) + (y.bonus || 0), fx = fxFor(y);
         var r = Object.assign({}, y, {
+            fxRate: fx.rate, fxOwn: fx.own,
             stock: stock, cashPart: cash, complete: y.bonus != null && y.base != null,
             earned: earned, tc: earned + (y.redundancy || 0),
             impliedFx: stock > 0 && y.shares && y.price && y.currency === 'USD' ? Math.round(y.shares * y.price / stock * 10000) / 10000 : null,
@@ -196,6 +211,8 @@ function computeYears(years) {
         r.yoyEarned = both ? pct(r.earned, p.earned) : null;
         r.bonusYoy = p && p.bonus != null && r.bonus != null ? pct(r.bonus, p.bonus) : null;
         r.bonusPct = r.bonus != null && r.base > 0 ? r.bonus / r.base : null;
+        r.evPct = r.ev && r.complete ? r.earned * r.fxRate / r.ev : null;
+        r.evYoy = r.ev && p && p.ev ? pct(r.ev, p.ev) : null;
         var three = [by[r.year - 2], p, r];
         var ok = three.every(function (x) { return x && x.complete; });
         r.avg3 = ok ? three.reduce(function (s, x) { return s + x.tc; }, 0) / 3 : null;
@@ -273,6 +290,7 @@ var HEADERS = {
     cash:       /^(cash|cash payment|cash bonus|cash paid)\b/,
     shares:     /(stock awarded|shares awarded|shares|stock award|award shares|units)$/,
     price:      /^(award price|share price|price|grant price)\b/,
+    ev:         /^(ev|sales credits?|credits|production)\b/,
     notes:      /^(notes|note|comments|comment)$/,
 };
 var DEFAULT_ORDER = ['year', 'title', 'base', 'bonus', 'redundancy'];
@@ -312,6 +330,8 @@ function parseNum(v) {
     return Number(t);
 }
 function parseMoney(v) { var n = parseNum(v); return n == null ? null : Math.round(Math.abs(n) * 100) / 100; }
+// EV in dollars; a small figure is in $mm (the sheet's header says $mm while its figures are whole dollars).
+function evOf(v) { var n = parseMoney(v); return n == null || n <= 0 ? null : n < 10000 ? n * 1e6 : n; }
 function yearOf(v) { var t = String(v == null ? '' : v).trim(); return /^(19[5-9]\d|20\d\d)$/.test(t) ? +t : null; }
 // text → { rows: [Year], skipped, paidNextYear, stockName }
 //   paidNextYear: the sheet puts a bonus's cash and shares on the row of the year they were paid (the year after the
@@ -339,8 +359,8 @@ function parsePaste(textIn, shift) {
         } else DEFAULT_ORDER.forEach(function (k, j) { if (r[j] != null && r[j] !== '') map[k] = r[j]; });
         var year = yearOf(map.year);
         var y = { year: year, title: map.title || '', base: parseMoney(map.base), bonus: parseMoney(map.bonus), redundancy: parseMoney(map.redundancy),
-                  cash: parseMoney(map.cash), shares: parseNum(map.shares), price: parseNum(map.price), notes: map.notes || '' };
-        if (!year || (y.base == null && y.bonus == null && y.redundancy == null && y.cash == null && y.shares == null)) { out.skipped++; return; }
+                  cash: parseMoney(map.cash), shares: parseNum(map.shares), price: parseNum(map.price), notes: map.notes || '', ev: evOf(map.ev) };
+        if (!year || (y.base == null && y.bonus == null && y.redundancy == null && y.cash == null && y.shares == null && y.ev == null)) { out.skipped++; return; }
         raw.push(y);
     });
     // A blank bonus before the last year with one was no bonus (£0); only the years after it are still to come.
@@ -375,7 +395,7 @@ function mergeYears(existing, incoming) {
         var old = by[y.year];
         if (old) {
             updated++;
-            by[y.year] = Object.assign({}, y, { id: old.id, notes: y.notes || old.notes, vest: y.shares ? (old.vest || y.vest) : old.vest,
+            by[y.year] = Object.assign({}, y, { id: old.id, notes: y.notes || old.notes, vest: y.shares ? (old.vest || y.vest) : old.vest, fx: y.fx || old.fx,
                                                 stockName: y.stockName || old.stockName, currency: y.shares ? (old.shares ? old.currency : y.currency) : old.currency });
         } else { added++; by[y.year] = y; }
     });
@@ -393,6 +413,7 @@ function fmtPct(v, signed) {
     var s = (Math.abs(v) * 100).toLocaleString('en-GB', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + '%';
     return signed ? (v > 0 ? '+' : v < 0 ? '−' : '') + s : (v < 0 ? '−' : '') + s;
 }
+function fmtUSDm(n) { return n == null ? '—' : '$' + (n / 1e6).toLocaleString('en-GB', { minimumFractionDigits: 1, maximumFractionDigits: 2 }) + 'm'; }
 function fmtShares(n) { return n == null ? '—' : n.toLocaleString('en-GB', { maximumFractionDigits: 2 }); }
 function fmtPrice(n, cur) { return n == null ? '—' : (cur === 'GBP' ? '£' : '$') + n.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 4 }); }
 function pad2(n) { return (n < 10 ? '0' : '') + n; }
@@ -638,6 +659,29 @@ function AwardsCard(props) {
             'Filled years have vested (counted from March). Values are at award: the bonus less its cash part.'));
 }
 
+// ── Sales credits (EV) ───────────────────────────────────────────────────────
+// Each year with sales credits: what was generated, and pay (base + bonus) as a share of it (Fergus: how production
+// translated into pay).
+function EvCard(props) {
+    var ui = useUI(), p = props.privacy, rows = props.rows.filter(function (r) { return r.ev; });
+    if (!rows.length) return null;
+    return E('div', null,
+        E('div', { style: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', margin: '22px 4px 8px' } },
+            E('span', { style: capsLabel(ui) }, 'Sales credits'),
+            E('span', { style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.zinc600 } }, 'Pay / EV')),
+        E('div', { style: cardStyle(ui, { overflow: 'hidden' }) },
+            rows.slice().reverse().map(function (r, i) {
+                return E('div', { key: r.year, style: { display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderTop: i ? '1px solid ' + ui.C.border : 'none', fontFamily: ui.sys } },
+                    E('span', { style: { fontSize: 14.5, fontWeight: 600, color: ui.C.white, width: 44 } }, r.year),
+                    E('span', { style: { flex: 1, minWidth: 0 } },
+                        E('span', { style: moneyStyle(ui, 14, p, ui.C.white, 600) }, fmtUSDm(r.ev)),
+                        r.evYoy != null && E('span', { style: { fontSize: 12, color: ui.C.zinc700, marginLeft: 8 } }, fmtPct(r.evYoy, true))),
+                    E('span', { style: { fontFamily: ui.rounded, fontVariantNumeric: 'tabular-nums', fontSize: 14, color: ui.C.zinc400, fontWeight: 600 } }, r.evPct == null ? '—' : fmtPct(r.evPct)));
+            })),
+        E('div', { style: { fontFamily: ui.sys, fontSize: 11.5, color: ui.C.zinc700, lineHeight: 1.45, padding: '8px 4px 0' } },
+            'Pay is base + bonus (no redundancy) turned into dollars at the year’s average rate; set a year’s own rate under Edit.'));
+}
+
 // ── Year list ────────────────────────────────────────────────────────────────
 function Details(props) {
     var ui = useUI(), r = props.row, p = props.privacy, f = [];
@@ -659,6 +703,9 @@ function Details(props) {
     if (r.bonusPct != null) f.push(E(Field, { key: 'bpct', label: 'Bonus / base' }, fmtPct(r.bonusPct)));
     if (r.avg3 != null) f.push(E(Field, { key: 'avg', label: '3-year average', privacy: p }, fmtGBP(r.avg3)));
     if (r.avg3 != null && Math.abs(r.avg3 - r.avg3Earned) > 0.5) f.push(E(Field, { key: 'avgE', label: '· without redundancy', privacy: p }, fmtGBP(r.avg3Earned)));
+    if (r.ev) f.push(E(Field, { key: 'ev', label: 'Sales credits (EV)', privacy: p }, fmtUSDm(r.ev) + (r.evYoy != null ? ' (' + fmtPct(r.evYoy, true) + ')' : '')));
+    if (r.evPct != null) f.push(E(Field, { key: 'evPct', label: 'Pay / EV' }, fmtPct(r.evPct)));
+    if (r.evPct != null) f.push(E(Field, { key: 'fxr', label: '· pay in $ at' }, '$' + r.fxRate.toFixed(3) + ' to £1' + (r.fxOwn ? '' : ' (year average)')));
     return E('div', { style: { padding: '2px 14px 12px', borderTop: '1px solid ' + ui.C.border, background: ui.C.surfaceHigh } },
         f,
         r.notes && E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc400, padding: '10px 0 0', whiteSpace: 'pre-wrap', lineHeight: 1.45 } }, r.notes),
@@ -706,6 +753,7 @@ function MainView(props) {
     return E('div', { style: { padding: '12px 16px 0' } },
         E(Hero, { summary: s, prev: s.latest ? byYear[s.latest.year - 1] : null, privacy: props.privacy }),
         E(ChartCard, { rows: rows, summary: s, today: today, privacy: props.privacy }),
+        E(EvCard, { rows: rows, privacy: props.privacy }),
         E(AwardsCard, { awards: awards, privacy: props.privacy }),
         E('div', { style: { margin: '22px 4px 8px' } }, E('span', { style: capsLabel(ui) }, 'Years')),
         E('div', { style: cardStyle(ui, { overflow: 'hidden' }) },
@@ -739,13 +787,13 @@ function EditView(props) {
         var str = function (v) { return v == null ? '' : String(v); };
         return { year: str(y.year), title: y.title || '', base: str(y.base), bonus: str(y.bonus), redundancy: str(y.redundancy), cash: str(y.cash),
                  shares: str(y.shares), price: str(y.price), currency: y.currency || 'USD', stockName: y.stockName || (last && last.stockName) || '',
-                 vest: y.vest || DEFAULT_VEST, notes: y.notes || '' };
+                 vest: y.vest || DEFAULT_VEST, ev: str(y.ev), fx: str(y.fx), notes: y.notes || '' };
     });
     var form = f[0], err = React.useState(null), del = React.useState(false);
     function set(k, v) { var n = Object.assign({}, form); n[k] = v; f[1](n); }
     function save() {
         var nums = {};
-        var bad = ['base', 'bonus', 'redundancy', 'cash', 'shares', 'price'].filter(function (k) {
+        var bad = ['base', 'bonus', 'redundancy', 'cash', 'shares', 'price', 'ev', 'fx'].filter(function (k) {
             if (form[k].trim() === '') { nums[k] = null; return false; }
             nums[k] = parseNum(form[k]);
             return nums[k] == null || nums[k] < 0;
@@ -756,7 +804,8 @@ function EditView(props) {
         if (props.state.years.some(function (y) { return y.year === yr && (!existing || y.id !== existing.id); })) return err[1](yr + ' is already here: open it from the list to change it.');
         if (nums.cash != null && nums.bonus != null && nums.cash > nums.bonus) return err[1]('The cash part can’t be more than the whole bonus.');
         var y = validYear({ id: existing ? existing.id : null, year: yr, title: form.title, base: nums.base, bonus: nums.bonus, redundancy: nums.redundancy,
-                            cash: nums.cash, shares: nums.shares, price: nums.price, currency: form.currency, stockName: form.stockName, vest: +form.vest, notes: form.notes });
+                            cash: nums.cash, shares: nums.shares, price: nums.price, currency: form.currency, stockName: form.stockName, vest: +form.vest,
+                            ev: nums.ev, fx: nums.fx, notes: form.notes });
         var years = existing ? props.state.years.map(function (x) { return x.id === y.id ? y : x; }) : props.state.years.concat([y]);
         saveState(Object.assign({}, props.state, { years: years })).catch(function () {});
         props.onDone();
@@ -791,6 +840,10 @@ function EditView(props) {
             E(Label, { text: 'Stock', flex: 1 }, input('stockName', { placeholder: 'e.g. Citi', autoCapitalize: 'words' })),
             E(Label, { text: 'Vests over', flex: 1.4 }, E('select', { value: form.vest, onChange: function (e) { set('vest', +e.target.value); }, style: inputStyle(ui) },
                 VESTS.map(function (v) { return E('option', { key: v.id, value: v.id }, v.label); })))),
+        E('div', { style: Object.assign(capsLabel(ui), { margin: '18px 0 10px' }) }, 'Sales credits'),
+        E('div', { style: { display: 'flex', gap: 10 } },
+            E(Label, { text: 'EV generated ($)', flex: 1.4 }, input('ev', { inputMode: 'decimal', placeholder: 'None' })),
+            E(Label, { text: '$ to £1', flex: 1, hint: 'Blank: the year’s average' }, input('fx', { inputMode: 'decimal', placeholder: yr ? String(fxFor({ year: yr }).rate) : '' }))),
         E(Label, { text: 'Notes' }, E('textarea', { value: form.notes, rows: 3, onChange: function (e) { set('notes', e.target.value); },
                                                     style: inputStyle(ui, { height: 'auto', padding: '8px 10px', resize: 'vertical' }) })),
         err[0] && E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.rose, marginBottom: 10 } }, err[0]),
@@ -836,6 +889,7 @@ function PasteView(props) {
                     var bits = ['base ' + fmtGBP(r.base), r.bonus == null ? 'bonus not known' : 'bonus ' + fmtGBP(r.bonus)];
                     if (r.stock > 0) bits.push(fmtGBP(r.stock) + ' in stock' + (r.shares ? ' (' + fmtShares(r.shares) + ' shares)' : ''));
                     if (r.redundancy) bits.push('redundancy ' + fmtGBP(r.redundancy));
+                    if (r.ev) bits.push('EV ' + fmtUSDm(r.ev));
                     return E('div', { key: r.year, style: { padding: '10px 14px', borderTop: i ? '1px solid ' + ui.C.border : 'none', fontFamily: ui.sys } },
                         E('div', { style: { fontSize: 14, color: ui.C.white, fontWeight: 600 } }, r.year + (r.title ? ' · ' + r.title : '')),
                         E('div', { style: { fontSize: 12, color: ui.C.zinc600, marginTop: 2, filter: p ? 'blur(5px)' : 'none' } }, bits.join(' · ')));
@@ -903,5 +957,5 @@ window.PayIcon = PayIcon;
 window.PayColor = ORANGE;
 // For tests only: the pure parts, no UI.
 window.__payInternals = { validateState: validateState, validYear: validYear, parsePaste: parsePaste, mergeYears: mergeYears, computeYears: computeYears,
-    stockAwards: stockAwards, receivedByYear: receivedByYear, summary: summary, isVested: isVested, headerKey: headerKey, stockNameOf: stockNameOf };
+    stockAwards: stockAwards, receivedByYear: receivedByYear, summary: summary, fxFor: fxFor, isVested: isVested, headerKey: headerKey, stockNameOf: stockNameOf };
 })();
