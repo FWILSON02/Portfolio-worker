@@ -277,6 +277,25 @@ test('Mortgage and Childcare: guessed from the name, and older bills move over',
     assert.deepEqual(plain(s.bills.map(b => b.category)), ['mortgage', 'mortgage', 'childcare', 'home']);
 });
 
+test('Subscriptions: guessed from the name; older bills move over once, then a category you pick stays', () => {
+    for (const n of ['Mobile phone contract', 'Gym', 'Netflix', 'Amazon Prime', 'Ring', 'RHS magazine', 'Spotify']) assert.equal(L.guessCategory(n), 'subscriptions', n);
+    assert.equal(L.guessCategory('Broadband'), 'utilities');
+    assert.equal(L.guessCategory('Mobile phone insurance'), 'insurance');
+    assert.equal(L.guessCategory('Engineering course'), 'other');
+    const old = L.validateState({ v: 1, bills: [{ name: 'Gym', category: 'services' }, { name: 'Mobile', category: 'utilities' },
+                                               { name: 'Netflix', category: 'other' }, { name: 'Energy', category: 'utilities' }] });
+    assert.equal(old.v, 2);
+    assert.deepEqual(plain(old.bills.map(b => b.category)), ['subscriptions', 'subscriptions', 'subscriptions', 'utilities']);
+    // A pasted list under a 'Subscriptions' heading: every name in it is a subscription, the heading is not a bill.
+    const r = L.parsePaste('Subscriptions\nNetflix\nRing\nWhich\nDiscovery +\nStrava\nWindow cleaner', null);
+    assert.deepEqual(plain(r.rows.map(x => [x.bill.name, x.bill.category])), [['Netflix', 'subscriptions'], ['Ring', 'subscriptions'],
+        ['Which', 'subscriptions'], ['Discovery +', 'subscriptions'], ['Strava', 'subscriptions'], ['Window cleaner', 'subscriptions']]);
+    assert.equal(L.guessCategory('Discovery +'), 'subscriptions');
+    assert.equal(L.guessCategory('Boiler cover'), 'insurance');
+    const kept = L.validateState({ v: 2, bills: [{ name: 'Gym', category: 'services' }] });
+    assert.equal(kept.bills[0].category, 'services');
+});
+
 test('an energy bill can take its cost from the usage page', () => {
     const u = L.mergeUsage(null, L.parseUsagePaste(usageSheet()));
     const st = L.usageStats(u);
