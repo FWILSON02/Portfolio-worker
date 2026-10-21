@@ -123,7 +123,21 @@ function validateState(s) {
     var out = { v: 2, years: years, updatedAt: typeof s.updatedAt === 'number' ? s.updatedAt : null };
     var th = validTakeHome(s.takeHome);
     if (th) out.takeHome = th;
+    var rv = validReview(s.review);
+    if (rv) out.review = rv;
     return out;
+}
+// The pay review calculator's figures (Fergus asked: entered during the yearly pay meeting, kept until cleared so the
+// app can close mid-meeting). year: the year whose bonus is being given; bonus: that bonus; newBase: the base for the
+// year after; notes: anything else said (stock, deferral); prevMonths: months worked in the year before, when that
+// year's bonus was pro rata (1-11), and fullYear: compare against it scaled up to a full year.
+function validReview(r) {
+    if (!r || typeof r !== 'object') return null;
+    var year = Math.round(Number(r.year));
+    if (!(year >= 1950 && year <= 2100)) return null;
+    var months = Math.round(Number(r.prevMonths));
+    return { year: year, bonus: money(r.bonus), newBase: money(r.newBase), notes: text(r.notes, 1000),
+             prevMonths: months >= 1 && months <= 11 ? months : null, fullYear: !!r.fullYear && months >= 1 && months <= 11 };
 }
 var SCHEMES = [{ id: 'sacrifice', label: 'Salary sacrifice' }, { id: 'netpay', label: 'Net pay (before tax)' }, { id: 'ras', label: 'Relief at source' }];
 var DEDUCTION_SHORT = { sacrifice: 'pre-tax', pretax: 'pre-tax, not NI', post: 'post-tax' };
@@ -277,6 +291,38 @@ function summary(rows) {
     if (first && latest && latest.year > first.year && first.earned > 0)
         cagr = Math.pow(latest.earned / first.earned, 1 / (latest.year - first.year)) - 1;
     return { latest: latest, current: current, first: first, cagr: cagr };
+}
+
+// The pay review: which year it's for (the one under way, its bonus not known yet; else the latest), and the
+// year-on-year sums for the figures entered. Redundancy is left out: it isn't pay for the work.
+function reviewYearOf(rows, review) {
+    if (review && rows.some(function (r) { return r.year === review.year; })) return review.year;
+    var s = summary(rows), y = s.current || s.latest;
+    return y ? y.year : null;
+}
+function reviewFigures(rows, review) {
+    var by = {};
+    rows.forEach(function (r) { by[r.year] = r; });
+    var Y = reviewYearOf(rows, review);
+    if (Y == null) return null;
+    var cur = by[Y], prev = by[Y - 1] || null, rv = review && review.year === Y ? review : {};
+    var bonus = rv.bonus != null ? rv.bonus : null, newBase = rv.newBase != null ? rv.newBase : null;
+    var prevBonus = prev && prev.bonus != null ? prev.bonus : null;
+    if (prevBonus != null && rv.fullYear && rv.prevMonths) prevBonus = prevBonus * 12 / rv.prevMonths;
+    var change = function (from, to) { return from == null || to == null ? null : { from: from, to: to, diff: to - from, pct: from > 0 ? to / from - 1 : null }; };
+    var ratio = function (b, base) { return b == null || !(base > 0) ? null : b / base; };
+    var tcPrev = prev && prev.base != null && prevBonus != null ? prev.base + prevBonus : null;
+    var tc = cur.base != null && bonus != null ? cur.base + bonus : null;
+    return {
+        year: Y, base: cur.base, prevBase: prev ? prev.base : null, prevBonus: prevBonus, prevBonusPaid: prev ? prev.bonus : null,
+        bonus: bonus, newBase: newBase,
+        baseChange: change(cur.base, newBase),
+        bonusChange: change(prevBonus, bonus),
+        tcPrev: tcPrev, tc: tc, tcChange: change(tcPrev, tc),
+        // Next year's pay if this bonus came again, against this year's pay on last year's bonus.
+        pkgChange: change(cur.base != null && prevBonus != null ? cur.base + prevBonus : null, newBase != null && bonus != null ? newBase + bonus : null),
+        ratioPrev: ratio(prevBonus, prev && prev.base), ratio: ratio(bonus, cur.base), ratioNew: ratio(bonus, newBase),
+    };
 }
 
 // ── Take-home pay ────────────────────────────────────────────────────────────
@@ -474,6 +520,7 @@ var UICtx = React.createContext(DEFAULT_UI);
 function useUI() { return React.useContext(UICtx); }
 
 function icon(paths) { return typeof _li === 'function' ? _li(paths) : function () { return null; }; }
+var CalcIcon = icon([{ t: 'r', x: 5, y: 2, w: 14, h: 20, rx: 2 }, 'M8 6h8', 'M8 11h.01', 'M12 11h.01', 'M16 11h.01', 'M8 15h.01', 'M12 15h.01', 'M16 15h.01', 'M8 19h.01', 'M12 19h4']);
 var PayIcon = icon([{ t: 'r', x: 2, y: 6, w: 20, h: 12, rx: 2 }, { t: 'c', cx: 12, cy: 12, r: 2.5 }, 'M6 12h.01', 'M18 12h.01']);
 
 function cardStyle(ui, extra) {
@@ -728,6 +775,7 @@ function MainView(props) {
     rows.forEach(function (r) { byYear[r.year] = r; });
     return E('div', { style: { padding: '12px 16px 0' } },
         E(Hero, { summary: s, prev: s.latest ? byYear[s.latest.year - 1] : null, privacy: props.privacy }),
+        props.onReview && E(ReviewButton, { year: reviewYearOf(rows, props.review), onOpen: props.onReview }),
         E(TakeHomeCard, { takeHome: props.takeHome, privacy: props.privacy, onEdit: props.onTakeHome }),
         E(ChartCard, { rows: rows, summary: s, privacy: props.privacy }),
         E('div', { style: { margin: '22px 4px 8px' } }, E('span', { style: capsLabel(ui) }, 'Years')),
@@ -875,6 +923,127 @@ function TakeHomeView(props) {
         E('button', { style: Object.assign(buttonStyle(ui, 'primary'), { width: '100%' }), onClick: save }, 'Save'));
 }
 
+// The way into the pay review calculator: once a year, so a slim row, not a card of figures.
+function ReviewButton(props) {
+    var ui = useUI();
+    return E('button', { onClick: props.onOpen, 'aria-label': 'Pay review ' + props.year,
+        style: Object.assign(cardStyle(ui, { borderRadius: 16 }), { display: 'flex', alignItems: 'center', gap: 10, width: '100%', marginTop: 12, padding: '12px 14px',
+                                                                    textAlign: 'left', cursor: 'pointer', WebkitTapHighlightColor: 'transparent' }) },
+        E('span', { style: { width: 30, height: 30, borderRadius: 8, background: tint(ui.accent, 0.14), color: ui.accent, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 } },
+            E(CalcIcon, { style: { width: 17, height: 17 }, strokeWidth: 1.9 })),
+        E('span', { style: { flex: 1, fontFamily: ui.sys } },
+            E('span', { style: { display: 'block', fontSize: 15, fontWeight: 600, color: ui.C.white } }, 'Pay review ' + props.year),
+            E('span', { style: { display: 'block', fontSize: 12.5, color: ui.C.zinc600, marginTop: 1 } }, 'Bonus and new base, year on year')),
+        E('span', { style: { color: ui.C.zinc600, fontSize: 20, lineHeight: 1 } }, '›'));
+}
+
+// Whole pounds as typed, with thousands separators: '121000' → '121,000'.
+function withCommas(v) { var d = String(v).replace(/[^0-9]/g, '').replace(/^0+(?=\d)/, ''); return d ? Number(d).toLocaleString('en-GB') : ''; }
+
+// The pay review calculator (Fergus asked): the whole screen, for the yearly meeting where the year's bonus and next
+// year's base are given. Two figures in, every comparison out: base, bonus and total comp year on year, and bonus
+// against base. What's typed is kept as it's typed, so the app can close mid-meeting; Save puts it in the years.
+function ReviewView(props) {
+    var ui = useUI(), p = props.privacy, state = props.state, rows = props.rows;
+    var Y = reviewYearOf(rows, state.review);
+    var rv = state.review && state.review.year === Y ? state.review : { year: Y, bonus: null, newBase: null, notes: '', prevMonths: null, fullYear: false };
+    var f = React.useState(function () { return { bonus: rv.bonus == null ? '' : withCommas(String(rv.bonus)), newBase: rv.newBase == null ? '' : withCommas(String(rv.newBase)), notes: rv.notes || '',
+                                                  months: rv.prevMonths ? String(rv.prevMonths) : '' }; });
+    var form = f[0], saved = React.useState(false);
+    function keep(next, extra) {
+        f[1](next); saved[1](false);
+        var m = parseNum(next.months);
+        saveState(Object.assign({}, state, { review: Object.assign({}, rv, { bonus: parseNum(next.bonus), newBase: parseNum(next.newBase), notes: next.notes,
+            prevMonths: m >= 1 && m <= 11 ? Math.round(m) : null }, extra || {}) })).catch(function () {});
+    }
+    function set(k, v) { var n = Object.assign({}, form); n[k] = v; keep(n); }
+    var fig = reviewFigures(rows, state.review && state.review.year === Y ? state.review : null);
+    if (!fig) return E('div', { style: { padding: 24, fontFamily: ui.sys, fontSize: 14, color: ui.C.zinc600 } }, 'Add a year of pay first.');
+    var prevYear = Y - 1, nextYear = Y + 1;
+    // Puts the bonus into the year and the new base into next year (title carried over); notes go on the bonus year.
+    function save() {
+        var years = state.years.slice(), cur = years.filter(function (y) { return y.year === Y; })[0];
+        years = years.map(function (y) {
+            if (y.year !== Y) return y;
+            var notes = form.notes.trim() ? (y.notes ? y.notes + '\n' : '') + form.notes.trim() : y.notes;
+            return Object.assign({}, y, { bonus: fig.bonus != null ? fig.bonus : y.bonus, notes: notes });
+        });
+        if (fig.newBase != null) {
+            var next = years.filter(function (y) { return y.year === nextYear; })[0];
+            if (next) years = years.map(function (y) { return y.year === nextYear ? Object.assign({}, y, { base: fig.newBase }) : y; });
+            else years.push({ year: nextYear, title: cur ? cur.title : '', base: fig.newBase, bonus: null });
+        }
+        saveState(Object.assign({}, state, { years: years, review: Object.assign({}, rv, { bonus: fig.bonus, newBase: fig.newBase, notes: '' }) })).catch(function () {});
+        f[1](Object.assign({}, form, { notes: '' }));
+        saved[1](true);
+    }
+    function clear() { f[1]({ bonus: '', newBase: '', notes: '', months: form.months }); saved[1](false); saveState(Object.assign({}, state, { review: null })).catch(function () {}); }
+    var bigInput = function (k, label) {
+        return E('label', { style: { flex: 1, minWidth: 0 } },
+            E('div', { style: { fontFamily: ui.sys, fontSize: 12.5, color: ui.C.zinc500, marginBottom: 6 } }, label),
+            E('div', { style: { position: 'relative' } },
+                E('span', { style: { position: 'absolute', left: 12, top: 12, fontFamily: ui.rounded, fontSize: 22, fontWeight: 700, color: ui.C.zinc600 } }, '£'),
+                E('input', { value: form[k], inputMode: 'numeric', placeholder: '0', onChange: function (e) { set(k, withCommas(e.target.value)); },
+                    style: inputStyle(ui, { height: 54, fontSize: 24, fontWeight: 700, fontFamily: ui.rounded, paddingLeft: 30, borderRadius: 14,
+                                            border: '1px solid ' + tint(ui.accent, 0.45), filter: p ? 'blur(7px)' : 'none' }) })));
+    };
+    var delta = function (c, size) {
+        if (!c) return E('span', { style: { fontFamily: ui.sys, fontSize: size || 15, color: ui.C.zinc700 } }, '—');
+        var col = c.diff > 0 ? ui.C.emerald : c.diff < 0 ? ui.C.rose : ui.C.zinc400;
+        return E('span', { style: { display: 'flex', alignItems: 'baseline', gap: 8, justifyContent: 'flex-end' } },
+            E('span', { style: moneyStyle(ui, size || 22, p, col) }, fmtPct(c.pct, true)),
+            E('span', { style: moneyStyle(ui, 14, p, col, 600) }, (c.diff < 0 ? '−' : '+') + fmtGBP(Math.abs(c.diff))));
+    };
+    // One comparison: a label, the old and new figures, and the change.
+    var block = function (key, label, fromLabel, from, toLabel, to, c, extra) {
+        return E('div', { key: key, style: { padding: '14px 0', borderTop: key === 'base' ? 'none' : '1px solid ' + ui.C.border } },
+            E('div', { style: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 } },
+                E('span', { style: { fontFamily: ui.sys, fontSize: 15, fontWeight: 700, color: ui.C.white } }, label),
+                delta(c)),
+            E('div', { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', columnGap: 8, rowGap: 2, marginTop: 6, fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc600 } },
+                E('span', null, fromLabel + ' ', E('span', { style: moneyStyle(ui, 13, p, ui.C.zinc400, 600) }, from == null ? '—' : fmtGBP(from))),
+                E('span', { style: { color: ui.C.zinc700 } }, '→'),
+                E('span', null, toLabel + ' ', E('span', { style: moneyStyle(ui, 13, p, ui.C.white, 600) }, to == null ? '—' : fmtGBP(to)))),
+            extra);
+    };
+    var ratioCell = function (label, v, strong) {
+        return E('div', { style: { flex: 1, textAlign: 'center', padding: '10px 4px', borderRadius: 12, background: strong ? tint(ui.accent, 0.10) : 'rgba(255,255,255,0.03)' } },
+            E('div', { style: moneyStyle(ui, 20, p, strong ? ui.accent : ui.C.white) }, v == null ? '—' : fmtPct(v)),
+            E('div', { style: { fontFamily: ui.sys, fontSize: 11.5, color: ui.C.zinc600, marginTop: 3, lineHeight: 1.3 } }, label));
+    };
+    var seg = function (opts, value, onChange) {
+        return E('div', { style: { display: 'flex', background: 'rgba(0,0,0,0.3)', borderRadius: 9, padding: 2, gap: 2 } }, opts.map(function (o) {
+            var on = o.id === value;
+            return E('button', { key: String(o.id), onClick: function () { onChange(o.id); }, style: { border: 'none', borderRadius: 7, padding: '5px 10px', fontFamily: ui.sys, fontSize: 12, fontWeight: 600,
+                cursor: 'pointer', background: on ? 'rgba(255,255,255,0.10)' : 'transparent', color: on ? ui.C.white : ui.C.zinc600 } }, o.label);
+        }));
+    };
+    // The year before's bonus as paid, or scaled to a full year when it was a part year (joined part way through).
+    var months = parseNum(form.months), partYear = months >= 1 && months <= 11;
+    var prorata = E('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginTop: 10, fontFamily: ui.sys, fontSize: 12.5, color: ui.C.zinc600 } },
+        E('span', { style: { display: 'flex', alignItems: 'center', gap: 6 } }, prevYear + ' months worked',
+            E('input', { value: form.months, inputMode: 'numeric', 'aria-label': prevYear + ' months worked', placeholder: '12', onChange: function (e) { set('months', e.target.value); },
+                         style: inputStyle(ui, { width: 46, height: 30, fontSize: 14, padding: '0 6px', textAlign: 'center' }) })),
+        partYear && seg([{ id: false, label: 'As paid' }, { id: true, label: 'Full year' }], !!rv.fullYear, function (v) { keep(form, { fullYear: v }); }));
+    return E('div', { style: { padding: '14px 16px 0' } },
+        E('div', { style: { display: 'flex', gap: 10 } }, bigInput('bonus', Y + ' bonus'), bigInput('newBase', nextYear + ' base')),
+        E('div', { style: cardStyle(ui, { padding: '4px 16px 14px', marginTop: 14 }) },
+            block('base', 'Base', String(Y), fig.base, String(nextYear), fig.newBase, fig.baseChange),
+            block('bonus', 'Bonus', String(prevYear) + (rv.fullYear && partYear ? ' full yr' : ''), fig.prevBonus, String(Y), fig.bonus, fig.bonusChange, prorata),
+            block('tc', 'Total comp', String(prevYear), fig.tcPrev, String(Y), fig.tc, fig.tcChange),
+            block('pkg', 'Next year', Y + ' base, ' + prevYear + ' bonus', fig.pkgChange && fig.pkgChange.from, nextYear + ' base, ' + Y + ' bonus', fig.pkgChange && fig.pkgChange.to, fig.pkgChange)),
+        E('div', { style: Object.assign(capsLabel(ui), { margin: '20px 4px 8px' }) }, 'Bonus as % of base'),
+        E('div', { style: { display: 'flex', gap: 8 } },
+            ratioCell(String(prevYear), fig.ratioPrev), ratioCell(String(Y), fig.ratio, true), ratioCell('of ' + nextYear + ' base', fig.ratioNew)),
+        E('div', { style: Object.assign(capsLabel(ui), { margin: '20px 4px 8px' }) }, 'Notes'),
+        E('textarea', { value: form.notes, rows: 4, placeholder: 'Stock, deferral, anything else agreed', onChange: function (e) { set('notes', e.target.value); },
+                        style: inputStyle(ui, { height: 'auto', padding: '10px', fontSize: 15, lineHeight: 1.4, resize: 'vertical' }) }),
+        saved[0] && E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.emerald, marginTop: 12 } }, 'Saved to ' + Y + (fig.newBase != null ? ' and ' + nextYear : '') + '.'),
+        E('div', { style: { display: 'flex', gap: 10, marginTop: 14 } },
+            E('button', { style: Object.assign(buttonStyle(ui, 'primary'), { flex: 2 }), onClick: save, disabled: fig.bonus == null && fig.newBase == null }, 'Save to pay history'),
+            E('button', { style: Object.assign(buttonStyle(ui), { flex: 1 }), onClick: clear }, 'Clear')));
+}
+
 // Paste rows copied out of a spreadsheet, check them, then add them.
 function PasteView(props) {
     var ui = useUI(), p = props.privacy;
@@ -916,7 +1085,7 @@ function PasteView(props) {
 
 // One Pay page, drawn inside the Cash Flow screen (which gives it the header, Back and the scrolling).
 //   page 'main':  the summary, take-home, chart and years; 'edit': add (id null) or change one year; 'paste': paste from
-//   the sheet; 'takehome': the pension and payslip figures take-home is worked out from.
+//   the sheet; 'takehome': the pension and payslip figures take-home is worked out from; 'review': the pay review calculator.
 function PayPage(props) {
     var ui = useUI();
     var state = useStoreState();
@@ -926,7 +1095,9 @@ function PayPage(props) {
     else if (props.page === 'edit') body = E(EditView, { id: props.id, state: state, onDone: props.onDone });
     else if (props.page === 'paste') body = E(PasteView, { state: state, privacy: props.privacy });
     else if (props.page === 'takehome') body = E(TakeHomeView, { state: state, onDone: props.onDone });
-    else body = E(MainView, { rows: rows, takeHome: takeHomeOf(state, rows), privacy: props.privacy, onPaste: props.onPaste, onEdit: props.onEdit, onTakeHome: props.onTakeHome });
+    else if (props.page === 'review') body = E(ReviewView, { state: state, rows: rows, privacy: props.privacy });
+    else body = E(MainView, { rows: rows, takeHome: takeHomeOf(state, rows), review: state.review, privacy: props.privacy, onPaste: props.onPaste, onEdit: props.onEdit,
+                              onTakeHome: props.onTakeHome, onReview: props.onReview });
     return E(React.Fragment, null,
         _loadError && E('div', { style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.rose, padding: '8px 16px' } }, 'Pay storage problem: ' + _loadError),
         body);
@@ -943,6 +1114,6 @@ window.PayStore = PayStore;
 window.PayIcon = PayIcon;
 // For tests only: the pure parts, no UI.
 window.__payInternals = { netPay: netPay, incomeTax: incomeTax, nationalInsurance: nationalInsurance, takeHomeOf: takeHomeOf, validTakeHome: validTakeHome,
-    validateState: validateState, validYear: validYear, parsePaste: parsePaste, mergeYears: mergeYears, computeYears: computeYears,
+    validateState: validateState, validYear: validYear, reviewFigures: reviewFigures, reviewYearOf: reviewYearOf, parsePaste: parsePaste, mergeYears: mergeYears, computeYears: computeYears,
     summary: summary, fxFor: fxFor, headerKey: headerKey, stockNameOf: stockNameOf };
 })();

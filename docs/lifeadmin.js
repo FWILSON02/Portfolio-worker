@@ -1723,7 +1723,7 @@ function MetersView(props) {
         E('button', { style: Object.assign(buttonStyle(ui, 'primary'), { width: '100%' }), onClick: save }, 'Save'));
 }
 
-var PAY_PAGES = { pay: 'main', payEdit: 'edit', payPaste: 'paste', payTakeHome: 'takehome' };
+var PAY_PAGES = { pay: 'main', payEdit: 'edit', payPaste: 'paste', payTakeHome: 'takehome', payReview: 'review' };
 var SCROLL_KEPT = { main: true, pay: true };
 var _scrollTops = { main: 0, pay: 0 };
 function ScreenInner(props) {
@@ -1741,7 +1741,7 @@ function ScreenInner(props) {
     var toUsage = function () { setView({ name: 'usage', id: view.id }); };
     var toPay = function () { setView({ name: 'pay' }); };
     var inUsage = view.name === 'usageMonth' || view.name === 'usagePaste' || view.name === 'meters' || view.name === 'tariff';
-    var inPay = view.name === 'payEdit' || view.name === 'payPaste' || view.name === 'payTakeHome';
+    var inPay = view.name === 'payEdit' || view.name === 'payPaste' || view.name === 'payTakeHome' || view.name === 'payReview';
     var PayView = window.PayView;
     var toHousehold = function () { setView({ name: 'household' }); };
     var back = view.name === 'main' ? null : inUsage ? toUsage : inPay ? toPay : view.name === 'share' ? toHousehold : function () { setView({ name: 'main' }); };
@@ -1763,7 +1763,7 @@ function ScreenInner(props) {
     else if ((view.name === 'pay' || inPay) && PayView) body = E(PayView, { page: PAY_PAGES[view.name], id: view.id,
         privacy: props.privacyMode, ui: Object.assign({}, ui, { accent: TEAL }), onDone: toPay,
         onEdit: function (id) { setView({ name: 'payEdit', id: id }); }, onPaste: function () { setView({ name: 'payPaste' }); },
-        onTakeHome: function () { setView({ name: 'payTakeHome' }); } });
+        onTakeHome: function () { setView({ name: 'payTakeHome' }); }, onReview: function () { setView({ name: 'payReview' }); } });
     else body = E(MainView, { bills: bills, share: shareOf(state), privacy: props.privacyMode, onPaste: function () { setView({ name: 'paste' }); },
                               onHousehold: toHousehold,
                               onSplit: function (id, v) {
@@ -1775,7 +1775,7 @@ function ScreenInner(props) {
         : view.name === 'usageMonth' ? (view.month ? monthLabel(view.month) : 'Add month') : view.name === 'usagePaste' ? 'Paste usage'
         : view.name === 'meters' ? 'Meter numbers' : view.name === 'tariff' ? 'Forecast rates'
         : view.name === 'pay' ? 'Pay' : view.name === 'payPaste' ? 'Paste pay' : view.name === 'payEdit' ? (view.id ? 'Edit year' : 'Add year')
-        : view.name === 'payTakeHome' ? 'Take-home pay' : view.name === 'share' ? 'Split bills' : view.name === 'household' ? 'Your bills'
+        : view.name === 'payTakeHome' ? 'Take-home pay' : view.name === 'payReview' ? 'Pay review' : view.name === 'share' ? 'Split bills' : view.name === 'household' ? 'Your bills'
         : view.id ? 'Edit bill' : 'Add bill';
     return E('div', {
         'data-swipe-tabs': view.name === 'main' ? '' : null, 'data-tab-screen': 'lifeadmin',

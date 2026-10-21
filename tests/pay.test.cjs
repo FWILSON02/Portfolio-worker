@@ -195,3 +195,25 @@ test('take-home: a deduction needs a name and an amount a month; an unknown kind
     assert.deepEqual(t.deductions.map(d => [d.name, d.monthly, d.kind]), [['Gym', 30, 'post'], ['Odd', 5, 'sacrifice']]);
     assert.deepEqual([...P.validTakeHome({ pct: 0.05 }).deductions], []);
 });
+
+test('pay review: base, bonus and total comp year on year, and bonus against base', () => {
+    const rows = P.computeYears([{ year: 2024, base: 100000, bonus: 30000 }, { year: 2025, base: 110000, bonus: 22000 }, { year: 2026, base: 120000, bonus: null }]);
+    // Before anything is typed: the year under way, last year's figures, no changes yet.
+    let f = P.reviewFigures(rows, null);
+    assert.deepEqual([f.year, f.base, f.prevBase, f.prevBonus, f.bonusChange, round(f.ratioPrev)], [2026, 120000, 110000, 22000, null, 0.2]);
+    f = P.reviewFigures(rows, P.validateState({ years: [], review: { year: 2026, bonus: 33000, newBase: 126000 } }).review);
+    assert.deepEqual([f.baseChange.diff, round(f.baseChange.pct)], [6000, 0.05]);
+    assert.deepEqual([f.bonusChange.diff, round(f.bonusChange.pct)], [11000, 0.5]);
+    assert.deepEqual([f.tcPrev, f.tc, f.tcChange.diff], [132000, 153000, 21000]);
+    assert.deepEqual([f.pkgChange.from, f.pkgChange.to], [142000, 159000]);
+    assert.deepEqual([round(f.ratio), round(f.ratioNew, 4)], [0.275, round(33000 / 126000)]);
+    // Last year's bonus was for part of the year: compared as paid, or scaled up to a full year.
+    const part = { year: 2026, bonus: 33000, newBase: 126000, prevMonths: 6 };
+    assert.equal(P.reviewFigures(rows, P.validateState({ years: [], review: part }).review).prevBonus, 22000);
+    f = P.reviewFigures(rows, P.validateState({ years: [], review: Object.assign({ fullYear: true }, part) }).review);
+    assert.deepEqual([f.prevBonus, round(f.bonusChange.pct)], [44000, -0.25]);
+    // Once the bonus is saved into 2026 the review stays on 2026 until it's cleared.
+    const saved = P.computeYears([{ year: 2025, base: 110000, bonus: 22000 }, { year: 2026, base: 120000, bonus: 33000 }, { year: 2027, base: 126000 }]);
+    assert.equal(P.reviewYearOf(saved, { year: 2026 }), 2026);
+    assert.equal(P.reviewYearOf(saved, null), 2027);
+});
