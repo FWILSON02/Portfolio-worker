@@ -205,7 +205,6 @@ test('pay review: base, bonus and total comp year on year, and bonus against bas
     assert.deepEqual([f.baseChange.diff, round(f.baseChange.pct)], [6000, 0.05]);
     assert.deepEqual([f.bonusChange.diff, round(f.bonusChange.pct)], [11000, 0.5]);
     assert.deepEqual([f.tcPrev, f.tc, f.tcChange.diff], [132000, 153000, 21000]);
-    assert.deepEqual([f.pkgChange.from, f.pkgChange.to], [142000, 159000]);
     assert.deepEqual([round(f.ratio), round(f.ratioNew, 4)], [0.275, round(33000 / 126000)]);
     // Last year's bonus was for part of the year: compared as paid, or scaled up to a full year.
     const part = { year: 2026, bonus: 33000, newBase: 126000, prevMonths: 6 };

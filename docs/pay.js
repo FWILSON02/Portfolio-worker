@@ -319,8 +319,6 @@ function reviewFigures(rows, review) {
         baseChange: change(cur.base, newBase),
         bonusChange: change(prevBonus, bonus),
         tcPrev: tcPrev, tc: tc, tcChange: change(tcPrev, tc),
-        // Next year's pay if this bonus came again, against this year's pay on last year's bonus.
-        pkgChange: change(cur.base != null && prevBonus != null ? cur.base + prevBonus : null, newBase != null && bonus != null ? newBase + bonus : null),
         ratioPrev: ratio(prevBonus, prev && prev.base), ratio: ratio(bonus, cur.base), ratioNew: ratio(bonus, newBase),
     };
 }
@@ -775,7 +773,6 @@ function MainView(props) {
     rows.forEach(function (r) { byYear[r.year] = r; });
     return E('div', { style: { padding: '12px 16px 0' } },
         E(Hero, { summary: s, prev: s.latest ? byYear[s.latest.year - 1] : null, privacy: props.privacy }),
-        props.onReview && E(ReviewButton, { year: reviewYearOf(rows, props.review), onOpen: props.onReview }),
         E(TakeHomeCard, { takeHome: props.takeHome, privacy: props.privacy, onEdit: props.onTakeHome }),
         E(ChartCard, { rows: rows, summary: s, privacy: props.privacy }),
         E('div', { style: { margin: '22px 4px 8px' } }, E('span', { style: capsLabel(ui) }, 'Years')),
@@ -788,6 +785,8 @@ function MainView(props) {
         E('div', { style: { display: 'flex', gap: 10, marginTop: 14 } },
             E('button', { style: Object.assign(buttonStyle(ui, 'primary'), { flex: 1 }), onClick: function () { props.onEdit(null); } }, '+ Add year'),
             E('button', { style: Object.assign(buttonStyle(ui), { flex: 1 }), onClick: props.onPaste }, 'Paste from sheet')),
+        // Once a year, so at the bottom (Fergus asked).
+        props.onReview && E(ReviewButton, { year: reviewYearOf(rows, props.review), onOpen: props.onReview }),
         E('div', { style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.zinc700, lineHeight: 1.45, padding: '14px 4px 0' } },
             'Each year’s bonus is the one for that year’s work. Total comp includes redundancy, as your sheet does. Pay is kept on this phone and in your encrypted backups.'));
 }
@@ -942,7 +941,8 @@ function withCommas(v) { var d = String(v).replace(/[^0-9]/g, '').replace(/^0+(?
 
 // The pay review calculator (Fergus asked): the whole screen, for the yearly meeting where the year's bonus and next
 // year's base are given. Two figures in, every comparison out: base, bonus and total comp year on year, and bonus
-// against base. What's typed is kept as it's typed, so the app can close mid-meeting; Save puts it in the years.
+// against base. What's typed is kept as it's typed, so the app can close mid-meeting; Save (always in view at the
+// bottom, Fergus asked) puts it in the years.
 function ReviewView(props) {
     var ui = useUI(), p = props.privacy, state = props.state, rows = props.rows;
     var Y = reviewYearOf(rows, state.review);
@@ -1030,18 +1030,19 @@ function ReviewView(props) {
         E('div', { style: cardStyle(ui, { padding: '4px 16px 14px', marginTop: 14 }) },
             block('base', 'Base', String(Y), fig.base, String(nextYear), fig.newBase, fig.baseChange),
             block('bonus', 'Bonus', String(prevYear) + (rv.fullYear && partYear ? ' full yr' : ''), fig.prevBonus, String(Y), fig.bonus, fig.bonusChange, prorata),
-            block('tc', 'Total comp', String(prevYear), fig.tcPrev, String(Y), fig.tc, fig.tcChange),
-            block('pkg', 'Next year', Y + ' base, ' + prevYear + ' bonus', fig.pkgChange && fig.pkgChange.from, nextYear + ' base, ' + Y + ' bonus', fig.pkgChange && fig.pkgChange.to, fig.pkgChange)),
+            block('tc', 'Total comp', String(prevYear), fig.tcPrev, String(Y), fig.tc, fig.tcChange)),
         E('div', { style: Object.assign(capsLabel(ui), { margin: '20px 4px 8px' }) }, 'Bonus as % of base'),
         E('div', { style: { display: 'flex', gap: 8 } },
             ratioCell(String(prevYear), fig.ratioPrev), ratioCell(String(Y), fig.ratio, true), ratioCell('of ' + nextYear + ' base', fig.ratioNew)),
         E('div', { style: Object.assign(capsLabel(ui), { margin: '20px 4px 8px' }) }, 'Notes'),
         E('textarea', { value: form.notes, rows: 4, placeholder: 'Stock, deferral, anything else agreed', onChange: function (e) { set('notes', e.target.value); },
                         style: inputStyle(ui, { height: 'auto', padding: '10px', fontSize: 15, lineHeight: 1.4, resize: 'vertical' }) }),
-        saved[0] && E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.emerald, marginTop: 12 } }, 'Saved to ' + Y + (fig.newBase != null ? ' and ' + nextYear : '') + '.'),
-        E('div', { style: { display: 'flex', gap: 10, marginTop: 14 } },
-            E('button', { style: Object.assign(buttonStyle(ui, 'primary'), { flex: 2 }), onClick: save, disabled: fig.bonus == null && fig.newBase == null }, 'Save to pay history'),
-            E('button', { style: Object.assign(buttonStyle(ui), { flex: 1 }), onClick: clear }, 'Clear')));
+        E('div', { style: { position: 'sticky', bottom: 0, margin: '14px -16px 0', padding: '12px 16px', background: ui.C.bg, borderTop: '1px solid ' + ui.C.border } },
+            saved[0] && E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.emerald, marginBottom: 10, textAlign: 'center' } },
+                'Saved: ' + Y + ' bonus' + (fig.newBase != null ? ' and ' + nextYear + ' base' : '') + ' are in your years.'),
+            E('div', { style: { display: 'flex', gap: 10 } },
+                E('button', { style: Object.assign(buttonStyle(ui, 'primary'), { flex: 2, minHeight: 50, fontSize: 16 }), onClick: save, disabled: fig.bonus == null && fig.newBase == null }, 'Save'),
+                E('button', { style: Object.assign(buttonStyle(ui), { flex: 1, minHeight: 50 }), onClick: clear }, 'Clear'))));
 }
 
 // Paste rows copied out of a spreadsheet, check them, then add them.
