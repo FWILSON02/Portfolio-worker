@@ -317,18 +317,18 @@ test('an energy bill can take its cost from the usage page', () => {
     assert.equal(L.validBill({ name: 'Energy', costFrom: 'nonsense' }).costFrom, null);
 });
 
-test('bills split with Fergus\'s wife count his share against him; hers count nothing', () => {
+test('a bill switched to split counts Fergus\'s share against him; the rest he pays in full', () => {
     const bills = L.resolveAll(L.validateState({ myShare: 0.6, bills: [
-        { name: 'Mortgage', amount: 1000, every: 'month', payer: 'split' },
-        { name: 'Gym', amount: 50, every: 'month' },
-        { name: 'Yoga', amount: 30, every: 'month', payer: 'wife' },
-        { name: 'Odd', amount: 10, every: 'month', payer: 'nonsense' }] }), null);
-    assert.deepEqual([...bills.map(b => b.payer)], ['split', 'me', 'wife', 'me']);
+        { name: 'Mortgage', amount: 1000, every: 'month', split: true },
+        { name: 'Netflix', amount: 50, every: 'month' },
+        { name: 'Odd', amount: 10, every: 'month', split: 'yes' }] }), null);
+    assert.deepEqual([...bills.map(b => b.split)], [true, false, false]);
     const t = L.totals(bills, 0.6);
-    assert.equal(Math.round(t.monthly), 1090);
+    assert.equal(Math.round(t.monthly), 1060);
     assert.equal(Math.round(t.mine.monthly), 660);   // 600 + 50 + 10
-    assert.equal(Math.round(t.wife.monthly), 430);   // 400 + 30
+    assert.equal(Math.round(t.wife.monthly), 400);
     assert.equal(t.split, true);
+    assert.equal(L.totals(bills.filter(b => !b.split)).split, false);
     assert.equal(L.shareOf(L.validateState({ bills: [], myShare: 0.6 })), 0.6);
     assert.equal(L.shareOf(L.validateState({ bills: [], myShare: 2 })), 0.5);   // out of range: back to half
     assert.equal(L.totals(bills).share, 0.5);
