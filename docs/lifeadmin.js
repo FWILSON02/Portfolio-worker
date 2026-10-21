@@ -74,7 +74,7 @@ EVERY.forEach(function (f) { EVERY_BY_ID[f.id] = f; });
 
 // ── Store (IndexedDB, own database) ──────────────────────────────────────────
 // state = { v: 2, bills: [Bill], myShare, updatedAt }   (v 2: Subscriptions added)
-//   myShare: Fergus's part of a split bill, 0.05 to 0.95; missing = half.
+//   myShare: Fergus's part of a split bill, 0 to 1 (1 while his wife isn't working, Fergus asked); missing = half.
 //   Bill = { id, name, provider, category, amount, every, account, username, link, end, notes, estate }
 //          name:     what the bill is ('Energy', 'Council Tax').
 //          amount:   £ paid each `every` (see EVERY); the monthly and yearly figures are worked out from it.
@@ -180,7 +180,7 @@ function validateState(s) {
         bills.push(c);
     });
     var out = { v: 2, bills: bills, updatedAt: typeof s.updatedAt === 'number' ? s.updatedAt : null };
-    if (typeof s.myShare === 'number' && s.myShare >= 0.05 && s.myShare <= 0.95) out.myShare = Math.round(s.myShare * 1000) / 1000;
+    if (typeof s.myShare === 'number' && s.myShare >= 0 && s.myShare <= 1) out.myShare = Math.round(s.myShare * 1000) / 1000;
     return out;
 }
 var _idn = 0;
@@ -1253,16 +1253,16 @@ function ShareView(props) {
     var f = React.useState(String(Math.round(shareOf(props.state) * 100))), err = React.useState(null);
     function save() {
         var v = parseMoney(f[0]);
-        if (v == null || v < 5 || v > 95) return err[1]('Give your share as a percentage between 5 and 95.');
+        if (v == null || v > 100) return err[1]('Give your share as a percentage from 0 to 100.');
         saveState(Object.assign({}, props.state, { myShare: Math.round(v * 10) / 1000 })).catch(function () {});
         props.onDone();
     }
     return E('div', { style: { padding: '16px 16px 0' } },
         E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc400, lineHeight: 1.5, marginBottom: 14 } },
-            'How much of each split bill is yours; your wife pays the rest. 50 splits them evenly; set it higher if you cover more. It applies to every bill switched to Split with wife (open a bill to switch it).'),
+            'How much of each split bill is yours; your wife pays the rest. 50 splits them evenly; 100 while she isn’t working, 0 while you aren’t. It applies to every bill switched to Split with wife (open a bill to switch it).'),
         E(Label, { text: 'Your share of split bills (%)' }, E('input', { value: f[0], inputMode: 'decimal', onChange: function (e) { f[1](e.target.value); }, style: inputStyle(ui) })),
         E('div', { style: { display: 'flex', gap: 8, marginBottom: 14 } },
-            [50, 60, 67, 75].map(function (n) { return E(Chip, { key: n, onClick: function () { f[1](String(n)); } }, n + '%'); })),
+            [0, 50, 60, 75, 100].map(function (n) { return E(Chip, { key: n, onClick: function () { f[1](String(n)); } }, n + '%'); })),
         err[0] && E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.rose, marginBottom: 10 } }, err[0]),
         E('button', { style: Object.assign(buttonStyle(ui, 'primary'), { width: '100%' }), onClick: save }, 'Save'));
 }

@@ -331,5 +331,7 @@ test('a bill switched to split counts Fergus\'s share against him; the rest he p
     assert.equal(L.totals(bills.filter(b => !b.split)).split, false);
     assert.equal(L.shareOf(L.validateState({ bills: [], myShare: 0.6 })), 0.6);
     assert.equal(L.shareOf(L.validateState({ bills: [], myShare: 2 })), 0.5);   // out of range: back to half
+    assert.deepEqual([0, 1].map(v => L.shareOf(L.validateState({ bills: [], myShare: v }))), [0, 1]);   // she isn't working / he isn't
+    assert.equal(Math.round(L.totals(bills, 1).mine.monthly), 1060);
     assert.equal(L.totals(bills).share, 0.5);
 });
