@@ -898,45 +898,41 @@ function Header(props) {
         E('div', { style: { fontFamily: ui.sys, fontSize: 17, fontWeight: 700, flex: 1, minWidth: 0, color: ui.C.white } }, props.title));
 }
 
-// The top of the page (Fergus asked for the headline figures first): what's left of take-home pay once his part of
-// the bills is paid, a month or a year. Take-home opens Pay, Your bills opens the household's bills; the bonus switch
-// counts the latest bonus after tax in or out. pay: PayStore.headline() (null without pay.js).
+// The top of the page under any alerts (Fergus asked for the headline figures first, kept short): what's left of
+// take-home pay once his part of the bills is paid, a month or a year. Pay opens the Pay page, Bills the household's
+// bills. The Bonus toggle under Monthly / Yearly counts the latest bonus after tax in or out (only once a bonus is
+// known). pay: PayStore.headline() (null without pay.js).
+var BONUS_OPTIONS = [{ id: false, label: 'Salary' }, { id: true, label: '+ Bonus' }];
 function CashFlowCard(props) {
     var ui = useUI(), p = props.privacy, per = periodOf(props.period), th = props.pay && props.pay.takeHome;
     var f = cashFlow(props.totals, th, props.period, props.bonus);
     var left = f.left, used = f.inflow > 0 ? Math.min(1, f.out / f.inflow) : null;
-    var row = function (key, label, v, sign, color, opts) {
-        opts = opts || {};
-        var dim = opts.off;
-        var inner = [
-            E('span', { key: 'd', style: { width: 8, height: 8, borderRadius: 2, background: color, marginRight: 8, flexShrink: 0, opacity: dim ? 0.35 : 1 } }),
-            E('span', { key: 'l', style: { flex: 1, color: dim ? ui.C.zinc700 : ui.C.zinc400 } }, label,
-                opts.note && E('span', { style: { color: ui.C.zinc700, marginLeft: 6, fontSize: 12.5 } }, opts.note)),
-            opts.add ? E('span', { key: 'v', style: { color: TEAL, fontSize: 13 } }, 'Add')
-                : E('span', { key: 'v', style: Object.assign(money(ui, 14.5, p, dim ? ui.C.zinc700 : ui.C.zinc400, 500), { textDecoration: dim ? 'line-through' : 'none' }) },
-                    v == null ? '—' : sign + fmtGBP(v)),
-            opts.onOpen ? E(ChevronIcon, { key: 'c', style: { width: 15, height: 15, color: ui.C.zinc700, flexShrink: 0, marginLeft: 6 }, strokeWidth: 2 })
-                : opts.toggle ? E('span', { key: 'c', style: { marginLeft: 10 } }, opts.toggle) : null];
-        var style = { display: 'flex', alignItems: 'center', width: '100%', padding: '10px 0', fontFamily: ui.sys, fontSize: 14.5, background: 'none', border: 'none',
-                      borderTop: opts.first ? 'none' : '1px solid ' + ui.C.border, textAlign: 'left', cursor: opts.onOpen ? 'pointer' : 'default', WebkitTapHighlightColor: 'transparent' };
-        return opts.onOpen ? E('button', { key: key, onClick: opts.onOpen, 'aria-label': label, style: style }, inner) : E('div', { key: key, style: style }, inner);
+    var link = function (label, v, sign, color, onOpen, add) {
+        return E('button', { onClick: onOpen, 'aria-label': label,
+            style: { display: 'flex', alignItems: 'center', gap: 6, background: 'none', border: 'none', padding: '8px 0', cursor: 'pointer', fontFamily: ui.sys, fontSize: 13.5,
+                     color: ui.C.zinc400, WebkitTapHighlightColor: 'transparent' } },
+            E('span', { style: { width: 8, height: 8, borderRadius: 2, background: color, flexShrink: 0 } }),
+            label,
+            add ? E('span', { style: { color: TEAL } }, 'Add') : E('span', { style: money(ui, 13.5, p, ui.C.white, 600) }, v == null ? '—' : sign + fmtGBP(v)),
+            E(ChevronIcon, { style: { width: 13, height: 13, color: ui.C.zinc700, flexShrink: 0, marginLeft: -2 }, strokeWidth: 2 }));
     };
-    return E('div', { style: cardStyle(ui, { padding: '18px 20px 8px' }) },
-        E('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 } },
-            E('span', { style: capsLabel(ui) }, 'Cash flow'),
-            E(Segmented, { options: PERIODS, value: props.period, onChange: props.onPeriod })),
-        E('div', { style: { display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 8 } },
-            E('span', { style: money(ui, 32, p, left != null && left < 0 ? ui.C.rose : ui.C.white) }, left == null ? '—' : (left < 0 ? '−' : '') + fmtGBP(Math.abs(left))),
-            E('span', { style: { fontFamily: ui.sys, fontSize: 15, color: ui.C.zinc600 } }, left == null ? '' : (left < 0 ? 'short ' : 'left ') + per.unit)),
+    return E('div', { style: cardStyle(ui, { padding: '14px 16px 4px' }) },
+        E('div', { style: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 } },
+            E('div', { style: { minWidth: 0 } },
+                E('div', { style: capsLabel(ui) }, 'Cash flow'),
+                E('div', { style: Object.assign(money(ui, 30, p, left != null && left < 0 ? ui.C.rose : ui.C.white), { marginTop: 6, lineHeight: 1.05 }) },
+                    left == null ? '—' : (left < 0 ? '−' : '') + fmtGBP(Math.abs(left))),
+                E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc600, marginTop: 3 } }, left == null ? '' : (left < 0 ? 'short ' : 'left ') + per.unit)),
+            E('div', { style: { display: 'flex', flexDirection: 'column', gap: 6, flexShrink: 0, width: 150 } },
+                E(Segmented, { options: PERIODS, value: props.period, onChange: props.onPeriod, fill: true }),
+                f.bonus != null && E(Segmented, { options: BONUS_OPTIONS, value: !!props.bonus, onChange: props.onBonus, fill: true }))),
         // Money in, split into the part the bills take and what's left.
-        used != null && E('div', { style: { display: 'flex', height: 8, borderRadius: 4, overflow: 'hidden', gap: 2, margin: '14px 0 4px' } },
+        used != null && E('div', { style: { display: 'flex', height: 6, borderRadius: 3, overflow: 'hidden', gap: 2, marginTop: 12 } },
             E('div', { style: { flex: Math.max(used, 0.001), background: ui.C.rose } }),
             used < 1 && E('div', { style: { flex: 1 - used, background: PAY_GREEN, opacity: 0.55 } })),
-        E('div', { style: { marginTop: 8 } },
-            props.pay && row('pay', 'Take-home pay', f.pay, '+', PAY_GREEN, { first: true, onOpen: props.onPay, add: !th }),
-            f.bonus != null && row('bonus', 'Bonus', f.bonus, '+', PAY_GREEN, { off: !props.bonus, note: String(th.bonus.year),
-                toggle: E(Switch, { on: props.bonus, label: 'Count the bonus', onChange: props.onBonus }) }),
-            row('bills', 'Your bills', f.out, '−', ui.C.rose, { first: !props.pay, onOpen: props.onHousehold })));
+        E('div', { style: { display: 'flex', justifyContent: 'space-between', gap: 8, marginTop: 4 } },
+            props.pay ? link('Pay', f.inflow, '+', PAY_GREEN, props.onPay, !th) : E('span'),
+            link('Bills', f.out, '−', ui.C.rose, props.onHousehold)));
 }
 
 // The household's bills (Your bills on the top card opens it): the total, who pays it, and each category.
@@ -1076,8 +1072,7 @@ var WIFE_COLOR = '#e879f9';   // not Mortgage's pink, which sits in the same car
 
 var _sort = 'cost';
 var _openId = null;
-// What Fergus looks at every day comes first (he asked): the cash flow figures, then bills coming up to renewal, then
-// the bills. The household split and categories are a tap away (Your bills), like Pay (Take-home pay).
+// What Fergus looks at every day comes first (he asked): renewal alerts, the cash flow figures, then the bills. The household split and categories are a tap away (Your bills), like Pay (Take-home pay).
 function MainView(props) {
     var ui = useUI();
     var sort = React.useState(_sort), open = React.useState(_openId), period = React.useState(savedPeriod), bonus = React.useState(savedBonus);
@@ -1100,8 +1095,9 @@ function MainView(props) {
     }
     var list = sortBills(bills, sort[0]);
     return E('div', { style: { padding: '12px 16px 0' } },
+        // Alerts always come first, above the figures (Fergus: on every tab).
+        Banner && E(Banner, { source: function (w) { return renewalAlerts(bills, today, w); }, privacy: props.privacy }),
         hero,
-        Banner && E('div', { style: { marginTop: 14, marginBottom: -12 } }, E(Banner, { source: function (w) { return renewalAlerts(bills, today, w); }, privacy: props.privacy })),
         E('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', margin: '22px 4px 8px' } },
             E('span', { style: capsLabel(ui) }, 'Bills'),
             E(SortPicker, { value: sort[0], onChange: function (v) { _sort = v; sort[1](v); } })),
