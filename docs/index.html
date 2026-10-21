@@ -7511,13 +7511,14 @@ function Row({ icon: Icon, iconColor, iconBg, label, sub, right, onClick, isLabe
 }
 
 // The pull request that last changed the app. Bump it in every PR so Settings → App shows which change the phone is
-// running (Fergus asked; the Estate ?v= number only moved when balances.js changed, so it looked stuck).
-const APP_BUILD = 84;
+// running (Fergus asked; the Estate ?v= number only moved when balances.js changed, so it looked stuck). CI checks it
+// matches the PR's number (tests/build.test.cjs): PR #85 forgot, and the phone kept saying PR #84.
+const APP_BUILD = 86;
 
 // Settings → App: pulls the newest index.html, balances.js, lifeadmin.js and pay.js past the browser's cache, then reloads. A Home Screen web app
 // on iOS keeps serving cached files for a while after a deploy, and closing it from the app switcher doesn't clear that.
 // The reload comes back to Settings on the same tab (RELOAD_RETURN_KEY) so the new PR number shows (Fergus asked). When the
-// server still has this PR, nothing reloads: the merge just hasn't finished deploying yet.
+// server still has this PR and the same files, nothing reloads: the merge just hasn't finished deploying yet.
 const RELOAD_RETURN_KEY = 'reload-return';
 let reloadReturnTab = 'investments'; // the app's open tab, kept current by PortfolioApp
 function readReloadReturn() {
@@ -7539,7 +7540,11 @@ function useReloadLatest() {
             if (!res.ok) throw new Error('HTTP ' + res.status);
             const html = await res.text();
             const next = (html.match(/const APP_BUILD = (\d+);/) || [])[1];
-            if (next && +next === APP_BUILD) {
+            // The same PR number with other files (a changed ?v=) is still newer: the PR number alone once hid PR #85.
+            const files = h => [...h.matchAll(/src="((?:balances|lifeadmin|pay)\.js[^"]*)"/g)].map(m => m[1]).join(' ');
+            const running = Array.from(document.querySelectorAll('script[src]')).map(el => el.getAttribute('src'))
+                .filter(src => /^(balances|lifeadmin|pay)\.js/.test(src)).join(' ');
+            if (next && +next === APP_BUILD && files(html) === running) {
                 setMsg('Already on PR #' + APP_BUILD + '. If you just merged, the new version isn\u2019t live yet; try again in a minute.');
                 return;
             }
