@@ -1,6 +1,6 @@
 // ─── Cash Flow screen (pay and bills) ────────────────────────────────────────
-// Money in and out. In: Pay, a line of its own whose page (pay.js) holds the pay history, figures and chart, opened
-// from the line the way the energy bill opens its usage. Out: the monthly bills and outgoings: what each one is, who it's
+// Money in and out. The top card is what's left of take-home pay once Fergus's part of the bills is paid; its Take-home
+// line opens Pay (pay.js: the pay history, figures and chart), its Your bills line the household's bills. Out: the monthly bills and outgoings: what each one is, who it's
 // with, the account or policy number, the login, the website, when the contract ends and what it costs. Opened from
 // the Cash Flow tab in the app's top tab bar, drawn below that bar (its height comes from the --topbar-h CSS variable
 // index.html publishes), like the Estate screen.
@@ -307,6 +307,19 @@ var PERIODS = [{ id: 'month', label: 'Monthly', key: 'monthly', unit: 'a month',
 var PERIOD_KEY = 'lifeadmin_period';
 function savedPeriod() { try { return localStorage.getItem(PERIOD_KEY) === 'year' ? 'year' : 'month'; } catch (e) { return 'month'; } }
 function periodOf(id) { return id === 'year' ? PERIODS[1] : PERIODS[0]; }
+// Count the latest bonus (after tax) in cash flow, or leave it out: a switch on the top card (Fergus asked). Remembered on this phone.
+var BONUS_KEY = 'lifeadmin_bonus';
+function savedBonus() { try { return localStorage.getItem(BONUS_KEY) === '1'; } catch (e) { return false; } }
+// The top card's sums: take-home pay (and the bonus, spread over the year, when switched on) less Fergus's part of the
+// bills, a month or a year. th: PayStore.headline().takeHome (null without pay). Figures he can't have are null.
+function cashFlow(t, th, period, withBonus) {
+    var mult = period === 'year' ? 12 : 1, per = periodOf(period);
+    var pay = th ? th.monthly * mult : null;
+    var bonus = th && th.bonus ? th.bonus.net * mult / 12 : null;
+    var inflow = pay == null ? null : pay + (withBonus && bonus ? bonus : 0);
+    var out = t.mine[per.key];
+    return { pay: pay, bonus: bonus, inflow: inflow, out: out, left: inflow == null ? null : inflow - out };
+}
 var SORTS = [{ id: 'cost', label: 'Biggest' }, { id: 'renews', label: 'Renews' }, { id: 'name', label: 'A–Z' }];
 function sortBills(bills, how) {
     var list = bills.slice();
@@ -805,7 +818,6 @@ function subLine(b, today) {
         var what = b.fromEstate ? 'deal ends' : 'ends';
         parts.push(n < 0 ? (b.fromEstate ? 'deal ended ' : 'ended ') + dayLabel(b.end) : n === 0 ? what + ' today' : n <= 30 ? what + ' in ' + n + (n === 1 ? ' day' : ' days') : what + ' ' + dayLabel(b.end));
     } else if (b.every !== 'month' && b.every !== 'year' && b.amount != null) parts.push(fmtExact(b.amount) + ' ' + EVERY_BY_ID[b.every].unit);
-    else if (!b.provider) parts.push('no end date');
     return { text: parts.join(' · '), soon: soon };
 }
 
@@ -886,42 +898,55 @@ function Header(props) {
         E('div', { style: { fontFamily: ui.sys, fontSize: 17, fontWeight: 700, flex: 1, minWidth: 0, color: ui.C.white } }, props.title));
 }
 
-// Money in and out (Fergus asked, for cash management): take-home pay against his part of the bills, a month or a year.
-// pay: PayStore.headline() (null without pay.js).
+// The top of the page (Fergus asked for the headline figures first): what's left of take-home pay once his part of
+// the bills is paid, a month or a year. Take-home opens Pay, Your bills opens the household's bills; the bonus switch
+// counts the latest bonus after tax in or out. pay: PayStore.headline() (null without pay.js).
 function CashFlowCard(props) {
-    var ui = useUI(), t = props.totals, p = props.privacy, per = periodOf(props.period), th = props.pay && props.pay.takeHome;
-    var mult = props.period === 'year' ? 12 : 1;
-    var inflow = th ? th.monthly * mult : null, out = t.mine[per.key], left = inflow == null ? null : inflow - out;
-    var row = function (label, v, sign, color, sub) {
-        return E('div', { style: { padding: '5px 0', fontFamily: ui.sys } },
-            E('div', { style: { display: 'flex', alignItems: 'center', fontSize: 14, color: ui.C.zinc400 } },
-                E('span', { style: { width: 8, height: 8, borderRadius: 2, background: color, marginRight: 8, flexShrink: 0 } }),
-                E('span', { style: { flex: 1 } }, label),
-                E('span', { style: money(ui, 14, p, ui.C.zinc400, 500) }, v == null ? '—' : sign + fmtGBP(v))),
-            sub && E('div', { style: { fontSize: 11.5, color: ui.C.zinc700, marginLeft: 16, marginTop: 1 } }, sub));
+    var ui = useUI(), p = props.privacy, per = periodOf(props.period), th = props.pay && props.pay.takeHome;
+    var f = cashFlow(props.totals, th, props.period, props.bonus);
+    var left = f.left, used = f.inflow > 0 ? Math.min(1, f.out / f.inflow) : null;
+    var row = function (key, label, v, sign, color, opts) {
+        opts = opts || {};
+        var dim = opts.off;
+        var inner = [
+            E('span', { key: 'd', style: { width: 8, height: 8, borderRadius: 2, background: color, marginRight: 8, flexShrink: 0, opacity: dim ? 0.35 : 1 } }),
+            E('span', { key: 'l', style: { flex: 1, color: dim ? ui.C.zinc700 : ui.C.zinc400 } }, label,
+                opts.note && E('span', { style: { color: ui.C.zinc700, marginLeft: 6, fontSize: 12.5 } }, opts.note)),
+            opts.add ? E('span', { key: 'v', style: { color: TEAL, fontSize: 13 } }, 'Add')
+                : E('span', { key: 'v', style: Object.assign(money(ui, 14.5, p, dim ? ui.C.zinc700 : ui.C.zinc400, 500), { textDecoration: dim ? 'line-through' : 'none' }) },
+                    v == null ? '—' : sign + fmtGBP(v)),
+            opts.onOpen ? E(ChevronIcon, { key: 'c', style: { width: 15, height: 15, color: ui.C.zinc700, flexShrink: 0, marginLeft: 6 }, strokeWidth: 2 })
+                : opts.toggle ? E('span', { key: 'c', style: { marginLeft: 10 } }, opts.toggle) : null];
+        var style = { display: 'flex', alignItems: 'center', width: '100%', padding: '10px 0', fontFamily: ui.sys, fontSize: 14.5, background: 'none', border: 'none',
+                      borderTop: opts.first ? 'none' : '1px solid ' + ui.C.border, textAlign: 'left', cursor: opts.onOpen ? 'pointer' : 'default', WebkitTapHighlightColor: 'transparent' };
+        return opts.onOpen ? E('button', { key: key, onClick: opts.onOpen, 'aria-label': label, style: style }, inner) : E('div', { key: key, style: style }, inner);
     };
-    return E('div', { style: cardStyle(ui, { padding: '18px 20px' }) },
+    return E('div', { style: cardStyle(ui, { padding: '18px 20px 8px' }) },
         E('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 } },
             E('span', { style: capsLabel(ui) }, 'Cash flow'),
             E(Segmented, { options: PERIODS, value: props.period, onChange: props.onPeriod })),
         E('div', { style: { display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 8 } },
-            E('span', { style: money(ui, 32, p, left != null && left < 0 ? ui.C.rose : ui.C.white) }, left == null ? '—' : (left < 0 ? '−' : '') + fmtGBP(left)),
+            E('span', { style: money(ui, 32, p, left != null && left < 0 ? ui.C.rose : ui.C.white) }, left == null ? '—' : (left < 0 ? '−' : '') + fmtGBP(Math.abs(left))),
             E('span', { style: { fontFamily: ui.sys, fontSize: 15, color: ui.C.zinc600 } }, left == null ? '' : (left < 0 ? 'short ' : 'left ') + per.unit)),
-        E('div', { style: { borderTop: '1px solid ' + ui.C.border, marginTop: 12, paddingTop: 6 } },
-            row('Take-home pay', inflow, '+', PAY_GREEN, th ? (th.payslip ? 'From your payslip' : 'After tax, NI and pension' + (th.set ? '' : ' (pension not set)')) : 'Add your pay to see it'),
-            row('Your bills', out, '−', ui.C.rose, t.split ? 'Your part of ' + fmtGBP(t[per.key]) + ' household bills' : null)),
-        th && th.bonus && E('div', { style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.zinc600, marginTop: 8, lineHeight: 1.4 } },
-            'Bonus not included: about ', E('span', { style: { filter: p ? 'blur(6px)' : 'none' } }, fmtGBP(th.bonus.net)), ' after tax when paid.'));
+        // Money in, split into the part the bills take and what's left.
+        used != null && E('div', { style: { display: 'flex', height: 8, borderRadius: 4, overflow: 'hidden', gap: 2, margin: '14px 0 4px' } },
+            E('div', { style: { flex: Math.max(used, 0.001), background: ui.C.rose } }),
+            used < 1 && E('div', { style: { flex: 1 - used, background: PAY_GREEN, opacity: 0.55 } })),
+        E('div', { style: { marginTop: 8 } },
+            props.pay && row('pay', 'Take-home pay', f.pay, '+', PAY_GREEN, { first: true, onOpen: props.onPay, add: !th }),
+            f.bonus != null && row('bonus', 'Bonus', f.bonus, '+', PAY_GREEN, { off: !props.bonus, note: String(th.bonus.year),
+                toggle: E(Switch, { on: props.bonus, label: 'Count the bonus', onChange: props.onBonus }) }),
+            row('bills', 'Your bills', f.out, '−', ui.C.rose, { first: !props.pay, onOpen: props.onHousehold })));
 }
 
-// The household's bills: the total, who pays it, and each category.
+// The household's bills (Your bills on the top card opens it): the total, who pays it, and each category.
 function HouseholdCard(props) {
     var ui = useUI(), t = props.totals, p = props.privacy, per = periodOf(props.period), other = periodOf(props.period === 'year' ? 'month' : 'year');
     var mineShare = t[per.key] ? t.mine[per.key] / t[per.key] : 0;
-    return E('div', { style: cardStyle(ui, { padding: '18px 20px', marginTop: props.showPeriod ? 0 : 14 }) },
+    return E('div', { style: cardStyle(ui, { padding: '18px 20px' }) },
         E('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 } },
             E('span', { style: capsLabel(ui) }, 'Household bills'),
-            props.showPeriod && E(Segmented, { options: PERIODS, value: props.period, onChange: props.onPeriod })),
+            E(Segmented, { options: PERIODS, value: props.period, onChange: props.onPeriod })),
         E('div', { style: { display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 8 } },
             E('span', { style: money(ui, 26, p) }, fmtGBP(t[per.key])),
             E('span', { style: { fontFamily: ui.sys, fontSize: 14, color: ui.C.zinc600 } }, per.unit)),
@@ -940,7 +965,7 @@ function HouseholdCard(props) {
                     E('span', { style: { minWidth: 48, marginLeft: 8, textAlign: 'right', color: ui.C.zinc700, fontVariantNumeric: 'tabular-nums' } }, Math.round(x[3] * 100) + '%'));
             }),
             E('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginTop: 4 } },
-                E('span', { style: { fontSize: 12, color: ui.C.zinc600 } }, t.split ? 'Split bills: you ' + Math.round(t.share * 100) + '%, wife ' + Math.round((1 - t.share) * 100) + '%' : 'Open a bill to split it with your wife'),
+                E('span', { style: { fontSize: 12.5, color: ui.C.zinc600 } }, 'Split bills'),
                 E(Chip, { onClick: props.onShare }, 'Split ' + Math.round(t.share * 100) + '/' + Math.round((1 - t.share) * 100)))),
         t.categories.length > 0 && E('div', { style: { display: 'flex', height: 8, borderRadius: 4, overflow: 'hidden', gap: 2, margin: '16px 0 10px' } },
             t.categories.map(function (c) { return E('div', { key: c.id, style: { flex: Math.max(c.share, 0.01), background: c.color } }); })),
@@ -1029,8 +1054,7 @@ function Details(props) {
 
 function BillRow(props) {
     var ui = useUI(), b = props.bill, c = categoryOf(b.category), Icon = billIcon(b), sub = subLine(b, props.today), p = props.privacy;
-    var who = b.split ? 'split' : null;
-    var per = periodOf(props.period), other = periodOf(props.period === 'year' ? 'month' : 'year');
+    var per = periodOf(props.period), mine = b.split && b[per.key] != null ? b[per.key] * props.share : null;
     return E('div', { style: { borderTop: props.first ? 'none' : '1px solid ' + ui.C.border } },
         E('button', { onClick: props.onToggle, 'aria-expanded': props.open,
             style: { display: 'flex', alignItems: 'center', gap: 12, width: '100%', padding: '12px 14px', background: 'none', border: 'none', textAlign: 'left', cursor: 'pointer', WebkitTapHighlightColor: 'transparent' } },
@@ -1039,69 +1063,45 @@ function BillRow(props) {
             E('div', { style: { flex: 1, minWidth: 0 } },
                 E('div', { style: { fontFamily: ui.sys, fontSize: 15, fontWeight: 600, color: ui.C.white, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, b.name),
                 E('div', { style: { fontFamily: ui.sys, fontSize: 12.5, color: sub.soon ? ui.C.amber : ui.C.zinc600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 1 } },
-                    who && E('span', { style: { color: TEAL } }, who + (sub.text ? ' · ' : '')), sub.text)),
+                    sub.text)),
             E('div', { style: { textAlign: 'right', flexShrink: 0 } },
                 E('div', { style: money(ui, 15, p, ui.C.white, 600) }, b[per.key] == null ? '—' : fmtGBP(b[per.key]) + per.short),
-                E('div', { style: money(ui, 12.5, p, ui.C.zinc700, 500) }, b[other.key] == null ? 'no cost' : fmtGBP(b[other.key]) + other.short))),
+                // A split bill's second figure is Fergus's part of it, what Cash flow counts.
+                mine != null && E('div', { style: money(ui, 12.5, p, TEAL, 500) }, 'you ' + fmtGBP(mine)))),
         props.open && E(Details, { bill: b, share: props.share, hints: props.hints, privacy: p, onSplit: props.onSplit, onEdit: props.onEdit, onUsage: props.onUsage }));
 }
 
-// The Pay line: take-home pay, a month or a year as the switch says (gross total comp until there's a base to work it
-// out from). Tapping it opens the Pay page.
 var PAY_GREEN = '#34d399';
 var WIFE_COLOR = '#e879f9';   // not Mortgage's pink, which sits in the same card
-function PayRow(props) {
-    var ui = useUI(), h = props.headline, th = h.takeHome, l = h.latest, p = props.privacy, Icon = window.PayIcon || BILL_ICONS.other;
-    var per = periodOf(props.period), other = periodOf(props.period === 'year' ? 'month' : 'year');
-    var monthly = th ? th.monthly : null;
-    var sub = th ? 'Take-home ' + th.year + (th.payslip ? ', from payslip' : '') : l ? 'Total comp ' + l.year : 'Salary, bonus and stock by year';
-    var of = function (q) { return q.id === 'year' ? monthly * 12 : monthly; };
-    return E('button', { onClick: props.onOpen, 'aria-label': 'Pay',
-        style: { display: 'flex', alignItems: 'center', gap: 12, width: '100%', padding: '12px 14px', background: 'none', border: 'none', textAlign: 'left', cursor: 'pointer', WebkitTapHighlightColor: 'transparent' } },
-        E('div', { style: { width: 36, height: 36, borderRadius: 10, background: PAY_GREEN + '24', color: PAY_GREEN, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 } },
-            E(Icon, { style: { width: 18, height: 18 }, strokeWidth: 1.8 })),
-        E('div', { style: { flex: 1, minWidth: 0 } },
-            E('div', { style: { fontFamily: ui.sys, fontSize: 15, fontWeight: 600, color: ui.C.white } }, 'Pay'),
-            E('div', { style: { fontFamily: ui.sys, fontSize: 12.5, color: ui.C.zinc600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 1 } }, sub)),
-        monthly == null ? E('span', { style: { fontFamily: ui.sys, fontSize: 13, color: TEAL, flexShrink: 0 } }, l ? '' : 'Add')
-          : E('div', { style: { textAlign: 'right', flexShrink: 0 } },
-                E('div', { style: money(ui, 15, p, ui.C.white, 600) }, fmtGBP(of(per)) + per.short),
-                E('div', { style: money(ui, 12.5, p, ui.C.zinc700, 500) }, fmtGBP(of(other)) + other.short)),
-        E(ChevronIcon, { style: { width: 16, height: 16, color: ui.C.zinc700, flexShrink: 0, marginLeft: -4 }, strokeWidth: 2 }));
-}
 
 var _sort = 'cost';
 var _openId = null;
+// What Fergus looks at every day comes first (he asked): the cash flow figures, then bills coming up to renewal, then
+// the bills. The household split and categories are a tap away (Your bills), like Pay (Take-home pay).
 function MainView(props) {
     var ui = useUI();
-    var sort = React.useState(_sort), open = React.useState(_openId), period = React.useState(savedPeriod);
+    var sort = React.useState(_sort), open = React.useState(_openId), period = React.useState(savedPeriod), bonus = React.useState(savedBonus);
     function setPeriod(v) { try { localStorage.setItem(PERIOD_KEY, v); } catch (e) {} period[1](v); }
+    function setBonus(v) { try { localStorage.setItem(BONUS_KEY, v ? '1' : '0'); } catch (e) {} bonus[1](v); }
     var hints = React.useState(loginHints)[0];
     var bills = props.bills, today = todayISO(), pay = usePayHeadline();
     var t = React.useMemo(function () { return totals(bills, props.share); }, [bills, props.share]);
     var Banner = window.MaturityAlerts && window.MaturityAlerts.Banner;
-    var payLine = pay && E(React.Fragment, null,
-        E('div', { style: Object.assign(capsLabel(ui), { margin: '0 4px 8px' }) }, 'Income'),
-        E('div', { style: cardStyle(ui, { overflow: 'hidden' }) },
-            E(PayRow, { headline: pay, period: period[0], privacy: props.privacy, onOpen: props.onPay })));
+    var hero = E(CashFlowCard, { totals: t, pay: pay, privacy: props.privacy, period: period[0], onPeriod: setPeriod, bonus: bonus[0], onBonus: setBonus,
+                                 onPay: props.onPay, onHousehold: props.onHousehold });
     if (!bills.length) {
         return E('div', { style: { padding: '12px 16px' } },
-            payLine,
+            pay && hero,
             E('div', { style: cardStyle(ui, { padding: '22px 18px', textAlign: 'center', marginTop: pay ? 14 : 0 }) },
-                E('div', { style: { fontFamily: ui.sys, fontSize: 16, color: ui.C.white, fontWeight: 600, marginBottom: 6 } }, 'No bills yet'),
-                E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc600, lineHeight: 1.45, marginBottom: 16 } },
-                    'Copy your bills table out of your spreadsheet and paste it in, or add them one at a time.'),
+                E('div', { style: { fontFamily: ui.sys, fontSize: 16, color: ui.C.white, fontWeight: 600, marginBottom: 16 } }, 'No bills yet'),
                 E('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
                     E('button', { style: buttonStyle(ui, 'primary'), onClick: props.onPaste }, 'Paste from spreadsheet'),
                     E('button', { style: buttonStyle(ui), onClick: function () { props.onEdit(null); } }, '+ Add bill'))));
     }
     var list = sortBills(bills, sort[0]);
     return E('div', { style: { padding: '12px 16px 0' } },
-        Banner && E(Banner, { source: function (w) { return renewalAlerts(bills, today, w); }, privacy: props.privacy }),
-        pay && E(CashFlowCard, { totals: t, pay: pay, privacy: props.privacy, period: period[0], onPeriod: setPeriod }),
-        pay && E('div', { style: { height: 22 } }),
-        payLine,
-        E(HouseholdCard, { totals: t, privacy: props.privacy, period: period[0], onPeriod: setPeriod, showPeriod: !pay, onShare: props.onShare }),
+        hero,
+        Banner && E('div', { style: { marginTop: 14, marginBottom: -12 } }, E(Banner, { source: function (w) { return renewalAlerts(bills, today, w); }, privacy: props.privacy })),
         E('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', margin: '22px 4px 8px' } },
             E('span', { style: capsLabel(ui) }, 'Bills'),
             E(SortPicker, { value: sort[0], onChange: function (v) { _sort = v; sort[1](v); } })),
@@ -1114,9 +1114,16 @@ function MainView(props) {
             })),
         E('div', { style: { display: 'flex', gap: 10, marginTop: 14 } },
             E('button', { style: Object.assign(buttonStyle(ui, 'primary'), { flex: 1 }), onClick: function () { props.onEdit(null); } }, '+ Add bill'),
-            E('button', { style: Object.assign(buttonStyle(ui), { flex: 1 }), onClick: props.onPaste }, 'Paste from sheet')),
-        E('div', { style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.zinc700, lineHeight: 1.45, padding: '14px 4px 0' } },
-            'Bills are kept on this phone and in your encrypted backups. Password hints come from the secrets file (rows ‘hint: <provider>’) and never leave this phone.'));
+            E('button', { style: Object.assign(buttonStyle(ui), { flex: 1 }), onClick: props.onPaste }, 'Paste from sheet')));
+}
+
+// Your bills, opened from the top card: the household's bills, who pays them and by category.
+function HouseholdView(props) {
+    var period = React.useState(savedPeriod);
+    function setPeriod(v) { try { localStorage.setItem(PERIOD_KEY, v); } catch (e) {} period[1](v); }
+    var t = React.useMemo(function () { return totals(props.bills, props.share); }, [props.bills, props.share]);
+    return E('div', { style: { padding: '12px 16px 0' } },
+        E(HouseholdCard, { totals: t, privacy: props.privacy, period: period[0], onPeriod: setPeriod, onShare: props.onShare }));
 }
 
 function Label(props) {
@@ -1258,8 +1265,6 @@ function ShareView(props) {
         props.onDone();
     }
     return E('div', { style: { padding: '16px 16px 0' } },
-        E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc400, lineHeight: 1.5, marginBottom: 14 } },
-            'How much of each split bill is yours; your wife pays the rest. 50 splits them evenly; 100 while she isn’t working, 0 while you aren’t. It applies to every bill switched to Split with wife (open a bill to switch it).'),
         E(Label, { text: 'Your share of split bills (%)' }, E('input', { value: f[0], inputMode: 'decimal', onChange: function (e) { f[1](e.target.value); }, style: inputStyle(ui) })),
         E('div', { style: { display: 'flex', gap: 8, marginBottom: 14 } },
             [0, 50, 60, 75, 100].map(function (n) { return E(Chip, { key: n, onClick: function () { f[1](String(n)); } }, n + '%'); })),
@@ -1737,7 +1742,8 @@ function ScreenInner(props) {
     var inUsage = view.name === 'usageMonth' || view.name === 'usagePaste' || view.name === 'meters' || view.name === 'tariff';
     var inPay = view.name === 'payEdit' || view.name === 'payPaste' || view.name === 'payTakeHome';
     var PayView = window.PayView;
-    var back = view.name === 'main' ? null : inUsage ? toUsage : inPay ? toPay : function () { setView({ name: 'main' }); };
+    var toHousehold = function () { setView({ name: 'household' }); };
+    var back = view.name === 'main' ? null : inUsage ? toUsage : inPay ? toPay : view.name === 'share' ? toHousehold : function () { setView({ name: 'main' }); };
     var bill = view.id ? bills.filter(function (b) { return b.id === view.id; })[0] : null;
     var body;
     if (!_ready) body = E('div', { style: { padding: 32, textAlign: 'center', fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc600 } }, 'Loading…');
@@ -1752,12 +1758,13 @@ function ScreenInner(props) {
     else if (view.name === 'usagePaste' && bill) body = E(UsagePasteView, { bill: bill, state: state });
     else if (view.name === 'meters' && bill) body = E(MetersView, { bill: bill, state: state, onDone: toUsage });
     else if (view.name === 'share') body = E(ShareView, { state: state, onDone: back });
+    else if (view.name === 'household') body = E(HouseholdView, { bills: bills, share: shareOf(state), privacy: props.privacyMode, onShare: function () { setView({ name: 'share' }); } });
     else if ((view.name === 'pay' || inPay) && PayView) body = E(PayView, { page: PAY_PAGES[view.name], id: view.id,
         privacy: props.privacyMode, ui: Object.assign({}, ui, { accent: TEAL }), onDone: toPay,
         onEdit: function (id) { setView({ name: 'payEdit', id: id }); }, onPaste: function () { setView({ name: 'payPaste' }); },
         onTakeHome: function () { setView({ name: 'payTakeHome' }); } });
     else body = E(MainView, { bills: bills, share: shareOf(state), privacy: props.privacyMode, onPaste: function () { setView({ name: 'paste' }); },
-                              onShare: function () { setView({ name: 'share' }); },
+                              onHousehold: toHousehold,
                               onSplit: function (id, v) {
                                   saveState(Object.assign({}, state, { bills: state.bills.map(function (x) { return x.id === id ? Object.assign({}, x, { split: v }) : x; }) })).catch(function () {});
                               },
@@ -1767,7 +1774,7 @@ function ScreenInner(props) {
         : view.name === 'usageMonth' ? (view.month ? monthLabel(view.month) : 'Add month') : view.name === 'usagePaste' ? 'Paste usage'
         : view.name === 'meters' ? 'Meter numbers' : view.name === 'tariff' ? 'Forecast rates'
         : view.name === 'pay' ? 'Pay' : view.name === 'payPaste' ? 'Paste pay' : view.name === 'payEdit' ? (view.id ? 'Edit year' : 'Add year')
-        : view.name === 'payTakeHome' ? 'Take-home pay' : view.name === 'share' ? 'Split bills'
+        : view.name === 'payTakeHome' ? 'Take-home pay' : view.name === 'share' ? 'Split bills' : view.name === 'household' ? 'Your bills'
         : view.id ? 'Edit bill' : 'Add bill';
     return E('div', {
         'data-swipe-tabs': view.name === 'main' ? '' : null, 'data-tab-screen': 'lifeadmin',
@@ -1810,6 +1817,6 @@ window.LifeAdminColor = TEAL;
 window.__lifeAdminInternals = { validateState: validateState, validBill: validBill, validLink: validLink, parsePaste: parsePaste, parseDate: parseDate,
     parseMoney: parseMoney, costFrom: costFrom, mergeBills: mergeBills, resolveBill: resolveBill, resolveAll: resolveAll, totals: totals,
     sortBills: sortBills, renewalAlerts: renewalAlerts, hintFor: hintFor, guessCategory: guessCategory, subLine: subLine,
-    myPart: myPart, shareOf: shareOf,
+    myPart: myPart, shareOf: shareOf, cashFlow: cashFlow,
     validUsage: validUsage, parseUsagePaste: parseUsagePaste, mergeUsage: mergeUsage, usageStats: usageStats, monthCost: monthCost, fuelCost: fuelCost, isEnergyBill: isEnergyBill, m3ToKwh: m3ToKwh };
 })();
