@@ -43,8 +43,9 @@ function loadApp() {
     const inline = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
     const main = inline.reduce((a, b) => (b.length > a.length ? b : a));   // the app itself; the others are boot helpers
     vm.runInContext(fs.readFileSync(path.join(DOCS, 'balances.js'), 'utf8'), ctx, { filename: 'balances.js' });
-    vm.runInContext(fs.readFileSync(path.join(DOCS, 'lifeadmin.js'), 'utf8'), ctx, { filename: 'lifeadmin.js' });
+    // In index.html's order: Cash Flow (lifeadmin.js) uses Pay (pay.js).
     vm.runInContext(fs.readFileSync(path.join(DOCS, 'pay.js'), 'utf8'), ctx, { filename: 'pay.js' });
+    vm.runInContext(fs.readFileSync(path.join(DOCS, 'lifeadmin.js'), 'utf8'), ctx, { filename: 'lifeadmin.js' });
     // The app's script is one try { } block, so its consts and async functions live in that block. A lookup added at the
     // top of the block reaches them for the tests.
     if (!/^\s*try\{/.test(main)) throw new Error('index.html main script no longer starts with try{; update tests/load.cjs');

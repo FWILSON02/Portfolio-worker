@@ -1,4 +1,4 @@
-// Life Admin (docs/lifeadmin.js): bills pasted from a spreadsheet, their costs, the Estate mortgage, renewal alerts.
+// Cash Flow (docs/lifeadmin.js, formerly Life Admin): bills pasted from a spreadsheet, their costs, the Estate mortgage, renewal alerts.
 // Every bill here is made up: the repo is public.
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -143,7 +143,7 @@ test('cloud backup counts bills, so losing them holds the backup back', () => {
     const before = app.cloudBackupCounts({ lifeAdmin: { bills: [{}, {}] } });
     const now = app.cloudBackupCounts({});
     assert.equal(before.bills, 2);
-    assert.match(app.cloudBackupShrink(before, now), /0 Life Admin bills \(the last backup had 2\)/);
+    assert.match(app.cloudBackupShrink(before, now), /0 Cash Flow bills \(the last backup had 2\)/);
 });
 
 // ── Energy usage ──
@@ -315,4 +315,21 @@ test('an energy bill can take its cost from the usage page', () => {
     assert.equal(thin.formula, null);
     assert.equal(thin.annual, 1800);
     assert.equal(L.validBill({ name: 'Energy', costFrom: 'nonsense' }).costFrom, null);
+});
+
+test('bills split with Fergus\'s wife count his share against him; hers count nothing', () => {
+    const bills = L.resolveAll(L.validateState({ myShare: 0.6, bills: [
+        { name: 'Mortgage', amount: 1000, every: 'month', payer: 'split' },
+        { name: 'Gym', amount: 50, every: 'month' },
+        { name: 'Yoga', amount: 30, every: 'month', payer: 'wife' },
+        { name: 'Odd', amount: 10, every: 'month', payer: 'nonsense' }] }), null);
+    assert.deepEqual([...bills.map(b => b.payer)], ['split', 'me', 'wife', 'me']);
+    const t = L.totals(bills, 0.6);
+    assert.equal(Math.round(t.monthly), 1090);
+    assert.equal(Math.round(t.mine.monthly), 660);   // 600 + 50 + 10
+    assert.equal(Math.round(t.wife.monthly), 430);   // 400 + 30
+    assert.equal(t.split, true);
+    assert.equal(L.shareOf(L.validateState({ bills: [], myShare: 0.6 })), 0.6);
+    assert.equal(L.shareOf(L.validateState({ bills: [], myShare: 2 })), 0.5);   // out of range: back to half
+    assert.equal(L.totals(bills).share, 0.5);
 });

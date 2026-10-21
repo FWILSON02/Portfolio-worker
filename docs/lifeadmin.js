@@ -1,19 +1,25 @@
-// ─── Life Admin screen (bills) ───────────────────────────────────────────────
-// Monthly bills and outgoings: what each one is, who it's with, the account or policy number, the login, the website,
-// when the contract ends and what it costs. Opened from the Life Admin tab in the app's top tab bar, drawn below that
-// bar (its height comes from the --topbar-h CSS variable index.html publishes), like the Estate screen.
+// ─── Cash Flow screen (pay and bills) ────────────────────────────────────────
+// Money in and out. In: Pay, a line of its own whose page (pay.js) holds the pay history, figures and chart, opened
+// from the line the way the energy bill opens its usage. Out: the monthly bills and outgoings: what each one is, who it's
+// with, the account or policy number, the login, the website, when the contract ends and what it costs. Opened from
+// the Cash Flow tab in the app's top tab bar, drawn below that bar (its height comes from the --topbar-h CSS variable
+// index.html publishes), like the Estate screen.
 //
-// Loaded by index.html as its own file after balances.js: <script src="lifeadmin.js?v=N">. Bump N there whenever this
-// file changes, so the Home Screen app never pairs a new index.html with a cached old copy of this file.
+// The tab was called Life Admin until Pay moved into it (Fergus asked). The code keeps that name (this file, the tab
+// id 'lifeadmin', window.LifeAdmin*), as do the stored data and backups, so nothing saved under it needs moving.
+//
+// Loaded by index.html as its own file after balances.js and pay.js: <script src="lifeadmin.js?v=N">. Bump N there
+// whenever this file changes, so the Home Screen app never pairs a new index.html with a cached old copy of this file.
 //
 // Exposes:
-//   window.LifeAdminScreen — the Life Admin view (props: onClose, privacyMode, ui)
-//   window.LifeAdminStore  — backupSnapshot() / restore(obj) for the app's JSON backup, plus get/subscribe/deleteAll
+//   window.LifeAdminScreen — the Cash Flow view (props: onClose, privacyMode, ui)
+//   window.LifeAdminStore  — the bills: backupSnapshot() / restore(obj) for the app's JSON backup, plus get/subscribe/deleteAll
 //   window.LifeAdminIcon   — the tab's icon
 //
-// Data lives in its own IndexedDB database ('portfolio-lifeadmin'). It goes into the app's backups (the cloud copy is
-// encrypted on the phone before it is sent). Password hints never do: they come from the secrets file and stay in
-// this browser (estate_login_hints, shared with the Estate tab). No bill is ever written into this file: the repo is public.
+// Bills live in their own IndexedDB database ('portfolio-lifeadmin'), pay in pay.js's. They go into the app's backups
+// (the cloud copy is encrypted on the phone before it is sent). Password hints never do: they come from the secrets
+// file and stay in this browser (estate_login_hints, shared with the Estate tab). No bill is ever written into this
+// file: the repo is public.
 (function () {
 'use strict';
 var E = React.createElement;
@@ -67,7 +73,8 @@ var EVERY_BY_ID = {};
 EVERY.forEach(function (f) { EVERY_BY_ID[f.id] = f; });
 
 // ── Store (IndexedDB, own database) ──────────────────────────────────────────
-// state = { v: 2, bills: [Bill], updatedAt }   (v 2: Subscriptions added)
+// state = { v: 2, bills: [Bill], myShare, updatedAt }   (v 2: Subscriptions added)
+//   myShare: Fergus's part of a split bill, 0.05 to 0.95; missing = half.
 //   Bill = { id, name, provider, category, amount, every, account, username, link, end, notes, estate }
 //          name:     what the bill is ('Energy', 'Council Tax').
 //          amount:   £ paid each `every` (see EVERY); the monthly and yearly figures are worked out from it.
@@ -77,11 +84,17 @@ EVERY.forEach(function (f) { EVERY_BY_ID[f.id] = f; });
 //          end:      'YYYY-MM-DD' when the contract or policy ends or renews; null = rolling.
 //          estate:   id of an Estate mortgage this bill follows: its monthly payment and deal end come from the Estate
 //                    tab (Fergus asked), so the two can't disagree. amount, every and end are then ignored.
+//          payer:    who pays it: 'me' (default), 'split' (shared with Fergus's wife: his part is state.myShare of it) or
+//                    'wife'. Cash Flow counts Fergus's part against his take-home (Fergus asked).
 //          costFrom: 'last12' | 'forecast' | null: an energy bill's yearly cost follows its usage page (the last 12 months'
 //                    use at today's rates, or the 12-month forecast) instead of the amount typed in (Fergus asked). amount stays as the
 //                    fallback until the usage has the figure.
 var COST_FROM = [{ id: 'last12', label: "Last 12 months' use at today's rates" }, { id: 'forecast', label: '12-month forecast' }];
 var COST_FROM_BY_ID = { last12: COST_FROM[0], forecast: COST_FROM[1] };
+var PAYERS = [{ id: 'me', label: 'Me' }, { id: 'split', label: 'Split with my wife' }, { id: 'wife', label: 'My wife' }];
+var PAYER_IDS = { me: true, split: true, wife: true };
+var DEFAULT_SHARE = 0.5;
+function shareOf(state) { return state && typeof state.myShare === 'number' ? state.myShare : DEFAULT_SHARE; }
 var DB_NAME = 'portfolio-lifeadmin';
 var DB_STORE = 'kv';
 var DB_KEY = 'state';
@@ -151,6 +164,7 @@ function validBill(b) {
         estate: text(b.estate, 60) || null,
         usage: validUsage(b.usage),
         costFrom: COST_FROM_BY_ID[b.costFrom] ? b.costFrom : null,
+        payer: PAYER_IDS[b.payer] ? b.payer : 'me',
     };
 }
 // Returns a cleaned copy of a stored or restored state, or null when it is not a Life Admin state at all.
@@ -167,7 +181,9 @@ function validateState(s) {
         seen[c.id] = true;
         bills.push(c);
     });
-    return { v: 2, bills: bills, updatedAt: typeof s.updatedAt === 'number' ? s.updatedAt : null };
+    var out = { v: 2, bills: bills, updatedAt: typeof s.updatedAt === 'number' ? s.updatedAt : null };
+    if (typeof s.myShare === 'number' && s.myShare >= 0.05 && s.myShare <= 0.95) out.myShare = Math.round(s.myShare * 1000) / 1000;
+    return out;
 }
 var _idn = 0;
 function newId() { return 'b' + Date.now().toString(36) + (_idn++).toString(36) + Math.random().toString(36).slice(2, 6); }
@@ -221,6 +237,12 @@ function useStoreState() {
     React.useEffect(function () { return LifeAdminStore.subscribe(function () { st[1](function (n) { return n + 1; }); }); }, []);
     return _state;
 }
+// Pay's state (pay.js), re-read whenever it changes, for the Pay line. null when pay.js didn't load.
+function usePayHeadline() {
+    var st = React.useState(0), store = window.PayStore;
+    React.useEffect(function () { return store && store.subscribe ? store.subscribe(function () { st[1](function (n) { return n + 1; }); }) : undefined; }, [store]);
+    return store && store.headline ? store.headline() : null;
+}
 // The Estate state, re-read whenever it changes (the mortgage bill follows it).
 function useEstateState() {
     var st = React.useState(0), store = window.BalancesStore;
@@ -261,19 +283,26 @@ function resolveBill(b, estate) {
     return out;
 }
 function resolveAll(state, estate) { return ((state && state.bills) || []).map(function (b) { return resolveBill(b, estate); }); }
-// Totals for the top card: per month and per year, and per category (biggest first).
-function totals(bills) {
-    var monthly = 0, annual = 0, by = {}, byYear = {};
+// The part of a bill that is Fergus's: all of it, his share of a split one, none of his wife's.
+function myPart(b, share) { return b.payer === 'wife' ? 0 : b.payer === 'split' ? share : 1; }
+// Totals for the household card: per month and per year, per category (biggest first), and who pays them:
+// mine / wife: { monthly, annual }. share: Fergus's part of a split bill.
+function totals(bills, share) {
+    var monthly = 0, annual = 0, by = {}, byYear = {}, mine = 0;
+    share = share == null ? DEFAULT_SHARE : share;
     bills.forEach(function (b) {
         if (b.annual == null) return;
         annual += b.annual; monthly += b.monthly;
+        mine += b.annual * myPart(b, share);
         by[b.category] = (by[b.category] || 0) + b.monthly;
         byYear[b.category] = (byYear[b.category] || 0) + b.annual;
     });
     var cats = CATEGORIES.filter(function (c) { return by[c.id] > 0; })
         .map(function (c) { return { id: c.id, label: c.label, color: c.color, monthly: by[c.id], annual: byYear[c.id], share: monthly ? by[c.id] / monthly : 0 }; })
         .sort(function (x, y) { return y.monthly - x.monthly; });
-    return { monthly: monthly, annual: annual, count: bills.length, categories: cats };
+    return { monthly: monthly, annual: annual, count: bills.length, categories: cats, share: share,
+             mine: { annual: mine, monthly: mine / 12 }, wife: { annual: annual - mine, monthly: (annual - mine) / 12 },
+             split: bills.some(function (b) { return b.payer !== 'me'; }) };
 }
 // The figures shown across the main view: a month or a year (Fergus asked to see both clearly). Remembered on this phone.
 var PERIODS = [{ id: 'month', label: 'Monthly', key: 'monthly', unit: 'a month', short: '/mo' }, { id: 'year', label: 'Yearly', key: 'annual', unit: 'a year', short: '/yr' }];
@@ -797,6 +826,7 @@ function useUI() { return React.useContext(UICtx); }
 function icon(paths) { return typeof _li === 'function' ? _li(paths) : function () { return null; }; }
 var ListIcon = icon([{ t: 'r', x: 5, y: 3, w: 14, h: 18, rx: 2 }, 'M9 8h6', 'M9 12h6', 'M9 16h4']);
 var BackIcon = icon(['M15 18l-6-6 6-6']);
+var ChevronIcon = icon(['M9 6l6 6-6 6']);
 var OpenIcon = icon(['M14 4h6v6', 'M20 4l-9 9', 'M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5']);
 var BILL_ICONS = {
     home: icon(['M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z']),
@@ -858,17 +888,62 @@ function Header(props) {
         E('div', { style: { fontFamily: ui.sys, fontSize: 17, fontWeight: 700, flex: 1, minWidth: 0, color: ui.C.white } }, props.title));
 }
 
-function Hero(props) {
-    var ui = useUI(), t = props.totals, p = props.privacy, per = periodOf(props.period), other = periodOf(props.period === 'year' ? 'month' : 'year');
+// Money in and out (Fergus asked, for cash management): take-home pay against his part of the bills, a month or a year.
+// pay: PayStore.headline() (null without pay.js).
+function CashFlowCard(props) {
+    var ui = useUI(), t = props.totals, p = props.privacy, per = periodOf(props.period), th = props.pay && props.pay.takeHome;
+    var mult = props.period === 'year' ? 12 : 1;
+    var inflow = th ? th.monthly * mult : null, out = t.mine[per.key], left = inflow == null ? null : inflow - out;
+    var row = function (label, v, sign, color, sub) {
+        return E('div', { style: { padding: '5px 0', fontFamily: ui.sys } },
+            E('div', { style: { display: 'flex', alignItems: 'center', fontSize: 14, color: ui.C.zinc400 } },
+                E('span', { style: { width: 8, height: 8, borderRadius: 2, background: color, marginRight: 8, flexShrink: 0 } }),
+                E('span', { style: { flex: 1 } }, label),
+                E('span', { style: money(ui, 14, p, ui.C.zinc400, 500) }, v == null ? '—' : sign + fmtGBP(v))),
+            sub && E('div', { style: { fontSize: 11.5, color: ui.C.zinc700, marginLeft: 16, marginTop: 1 } }, sub));
+    };
     return E('div', { style: cardStyle(ui, { padding: '18px 20px' }) },
         E('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 } },
-            E('span', { style: capsLabel(ui) }, per.label + ' outgoings'),
+            E('span', { style: capsLabel(ui) }, 'Cash flow'),
             E(Segmented, { options: PERIODS, value: props.period, onChange: props.onPeriod })),
         E('div', { style: { display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 8 } },
-            E('span', { style: money(ui, 32, p) }, fmtGBP(t[per.key])),
-            E('span', { style: { fontFamily: ui.sys, fontSize: 15, color: ui.C.zinc600 } }, per.unit)),
+            E('span', { style: money(ui, 32, p, left != null && left < 0 ? ui.C.rose : ui.C.white) }, left == null ? '—' : (left < 0 ? '−' : '') + fmtGBP(left)),
+            E('span', { style: { fontFamily: ui.sys, fontSize: 15, color: ui.C.zinc600 } }, left == null ? '' : (left < 0 ? 'short ' : 'left ') + per.unit)),
+        E('div', { style: { borderTop: '1px solid ' + ui.C.border, marginTop: 12, paddingTop: 6 } },
+            row('Take-home pay', inflow, '+', PAY_GREEN, th ? (th.payslip ? 'From your payslip' : 'After tax, NI and pension' + (th.set ? '' : ' (pension not set)')) : 'Add your pay to see it'),
+            row('Your bills', out, '−', ui.C.rose, t.split ? 'Your part of ' + fmtGBP(t[per.key]) + ' household bills' : null)),
+        th && th.bonus && E('div', { style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.zinc600, marginTop: 8, lineHeight: 1.4 } },
+            'Bonus not included: about ', E('span', { style: { filter: p ? 'blur(6px)' : 'none' } }, fmtGBP(th.bonus.net)), ' after tax when paid.'));
+}
+
+// The household's bills: the total, who pays it, and each category.
+function HouseholdCard(props) {
+    var ui = useUI(), t = props.totals, p = props.privacy, per = periodOf(props.period), other = periodOf(props.period === 'year' ? 'month' : 'year');
+    var mineShare = t[per.key] ? t.mine[per.key] / t[per.key] : 0;
+    return E('div', { style: cardStyle(ui, { padding: '18px 20px', marginTop: props.showPeriod ? 0 : 14 }) },
+        E('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 } },
+            E('span', { style: capsLabel(ui) }, 'Household bills'),
+            props.showPeriod && E(Segmented, { options: PERIODS, value: props.period, onChange: props.onPeriod })),
+        E('div', { style: { display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 8 } },
+            E('span', { style: money(ui, 26, p) }, fmtGBP(t[per.key])),
+            E('span', { style: { fontFamily: ui.sys, fontSize: 14, color: ui.C.zinc600 } }, per.unit)),
         E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc600, marginTop: 4 } },
             E('span', { style: { filter: p ? 'blur(6px)' : 'none' } }, fmtGBP(t[other.key])), ' ' + other.unit + ' · ' + t.count + (t.count === 1 ? ' bill' : ' bills')),
+        // Who pays: Fergus's contribution against his wife's (Fergus asked).
+        E('div', { style: { margin: '14px 0 4px', fontFamily: ui.sys } },
+            E('div', { style: { display: 'flex', height: 8, borderRadius: 4, overflow: 'hidden', gap: 2 } },
+                E('div', { style: { flex: Math.max(mineShare, 0.001), background: TEAL } }),
+                mineShare < 1 && E('div', { style: { flex: Math.max(1 - mineShare, 0.001), background: WIFE_COLOR } })),
+            [['You', TEAL, t.mine[per.key], mineShare], ['Your wife', WIFE_COLOR, t.wife[per.key], 1 - mineShare]].map(function (x) {
+                return E('div', { key: x[0], style: { display: 'flex', alignItems: 'center', fontSize: 13.5, color: ui.C.zinc400, padding: '4px 0', marginTop: x[0] === 'You' ? 6 : 0 } },
+                    E('span', { style: { width: 8, height: 8, borderRadius: 2, background: x[1], marginRight: 8, flexShrink: 0 } }),
+                    E('span', { style: { flex: 1 } }, x[0]),
+                    E('span', { style: money(ui, 13.5, p, ui.C.zinc400, 500) }, fmtGBP(x[2])),
+                    E('span', { style: { minWidth: 48, marginLeft: 8, textAlign: 'right', color: ui.C.zinc700, fontVariantNumeric: 'tabular-nums' } }, Math.round(x[3] * 100) + '%'));
+            }),
+            E('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginTop: 4 } },
+                E('span', { style: { fontSize: 12, color: ui.C.zinc600 } }, t.split ? 'Split bills: you pay ' + Math.round(t.share * 100) + '%' : 'Mark a bill split or your wife’s from Edit'),
+                E(Chip, { onClick: props.onShare }, 'Split ' + Math.round(t.share * 100) + '/' + Math.round((1 - t.share) * 100)))),
         t.categories.length > 0 && E('div', { style: { display: 'flex', height: 8, borderRadius: 4, overflow: 'hidden', gap: 2, margin: '16px 0 10px' } },
             t.categories.map(function (c) { return E('div', { key: c.id, style: { flex: Math.max(c.share, 0.01), background: c.color } }); })),
         t.categories.map(function (c) {
@@ -925,6 +1000,8 @@ function Details(props) {
           : E('span', { style: money(ui, 14, p, ui.C.white, 500) }, b.amount == null ? 'Not set' : fmtExact(b.amount) + ' ' + EVERY_BY_ID[b.every].unit)));
     if (b.end) rows.push(E(Field, { key: 'end', label: b.fromEstate ? 'Deal ends' : 'Contract ends' }, longDay(b.end)));
     rows.push(E(Field, { key: 'cat', label: 'Category' }, categoryOf(b.category).label));
+    if (b.payer !== 'me' && b.annual != null) rows.push(E(Field, { key: 'who', label: b.payer === 'split' ? 'Your part (' + Math.round(props.share * 100) + '%)' : 'Paid by' },
+        b.payer === 'wife' ? 'Your wife' : E('span', { style: money(ui, 14, p, ui.C.white, 500) }, fmtExact(Math.round(b.monthly * props.share * 100) / 100) + ' a month')));
     if (b.notes) rows.push(E('div', { key: 'notes', style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc400, padding: '10px 0', borderBottom: '1px solid ' + ui.C.border, whiteSpace: 'pre-wrap', lineHeight: 1.45 } }, b.notes));
     return E('div', { style: { padding: '2px 14px 14px', borderTop: '1px solid ' + ui.C.border, background: ui.C.surfaceHigh } },
         rows,
@@ -943,6 +1020,7 @@ function Details(props) {
 
 function BillRow(props) {
     var ui = useUI(), b = props.bill, c = categoryOf(b.category), Icon = billIcon(b), sub = subLine(b, props.today), p = props.privacy;
+    var who = b.payer === 'split' ? 'split' : b.payer === 'wife' ? 'wife pays' : null;
     var per = periodOf(props.period), other = periodOf(props.period === 'year' ? 'month' : 'year');
     return E('div', { style: { borderTop: props.first ? 'none' : '1px solid ' + ui.C.border } },
         E('button', { onClick: props.onToggle, 'aria-expanded': props.open,
@@ -951,27 +1029,56 @@ function BillRow(props) {
                 E(Icon, { style: { width: 18, height: 18 }, strokeWidth: 1.8 })),
             E('div', { style: { flex: 1, minWidth: 0 } },
                 E('div', { style: { fontFamily: ui.sys, fontSize: 15, fontWeight: 600, color: ui.C.white, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, b.name),
-                E('div', { style: { fontFamily: ui.sys, fontSize: 12.5, color: sub.soon ? ui.C.amber : ui.C.zinc600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 1 } }, sub.text)),
+                E('div', { style: { fontFamily: ui.sys, fontSize: 12.5, color: sub.soon ? ui.C.amber : ui.C.zinc600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 1 } },
+                    who && E('span', { style: { color: b.payer === 'wife' ? WIFE_COLOR : TEAL } }, who + (sub.text ? ' · ' : '')), sub.text)),
             E('div', { style: { textAlign: 'right', flexShrink: 0 } },
                 E('div', { style: money(ui, 15, p, ui.C.white, 600) }, b[per.key] == null ? '—' : fmtGBP(b[per.key]) + per.short),
                 E('div', { style: money(ui, 12.5, p, ui.C.zinc700, 500) }, b[other.key] == null ? 'no cost' : fmtGBP(b[other.key]) + other.short))),
-        props.open && E(Details, { bill: b, hints: props.hints, privacy: p, onEdit: props.onEdit, onUsage: props.onUsage }));
+        props.open && E(Details, { bill: b, share: props.share, hints: props.hints, privacy: p, onEdit: props.onEdit, onUsage: props.onUsage }));
+}
+
+// The Pay line: take-home pay, a month or a year as the switch says (gross total comp until there's a base to work it
+// out from). Tapping it opens the Pay page.
+var PAY_GREEN = '#34d399';
+var WIFE_COLOR = '#e879f9';   // not Mortgage's pink, which sits in the same card
+function PayRow(props) {
+    var ui = useUI(), h = props.headline, th = h.takeHome, l = h.latest, p = props.privacy, Icon = window.PayIcon || BILL_ICONS.other;
+    var per = periodOf(props.period), other = periodOf(props.period === 'year' ? 'month' : 'year');
+    var monthly = th ? th.monthly : null;
+    var sub = th ? 'Take-home ' + th.year + (th.payslip ? ', from payslip' : '') : l ? 'Total comp ' + l.year : 'Salary, bonus and stock by year';
+    var of = function (q) { return q.id === 'year' ? monthly * 12 : monthly; };
+    return E('button', { onClick: props.onOpen, 'aria-label': 'Pay',
+        style: { display: 'flex', alignItems: 'center', gap: 12, width: '100%', padding: '12px 14px', background: 'none', border: 'none', textAlign: 'left', cursor: 'pointer', WebkitTapHighlightColor: 'transparent' } },
+        E('div', { style: { width: 36, height: 36, borderRadius: 10, background: PAY_GREEN + '24', color: PAY_GREEN, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 } },
+            E(Icon, { style: { width: 18, height: 18 }, strokeWidth: 1.8 })),
+        E('div', { style: { flex: 1, minWidth: 0 } },
+            E('div', { style: { fontFamily: ui.sys, fontSize: 15, fontWeight: 600, color: ui.C.white } }, 'Pay'),
+            E('div', { style: { fontFamily: ui.sys, fontSize: 12.5, color: ui.C.zinc600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 1 } }, sub)),
+        monthly == null ? E('span', { style: { fontFamily: ui.sys, fontSize: 13, color: TEAL, flexShrink: 0 } }, l ? '' : 'Add')
+          : E('div', { style: { textAlign: 'right', flexShrink: 0 } },
+                E('div', { style: money(ui, 15, p, ui.C.white, 600) }, fmtGBP(of(per)) + per.short),
+                E('div', { style: money(ui, 12.5, p, ui.C.zinc700, 500) }, fmtGBP(of(other)) + other.short)),
+        E(ChevronIcon, { style: { width: 16, height: 16, color: ui.C.zinc700, flexShrink: 0, marginLeft: -4 }, strokeWidth: 2 }));
 }
 
 var _sort = 'cost';
 var _openId = null;
-var _mainScrollTop = 0;
 function MainView(props) {
     var ui = useUI();
     var sort = React.useState(_sort), open = React.useState(_openId), period = React.useState(savedPeriod);
     function setPeriod(v) { try { localStorage.setItem(PERIOD_KEY, v); } catch (e) {} period[1](v); }
     var hints = React.useState(loginHints)[0];
-    var bills = props.bills, today = todayISO();
-    var t = React.useMemo(function () { return totals(bills); }, [bills]);
+    var bills = props.bills, today = todayISO(), pay = usePayHeadline();
+    var t = React.useMemo(function () { return totals(bills, props.share); }, [bills, props.share]);
     var Banner = window.MaturityAlerts && window.MaturityAlerts.Banner;
+    var payLine = pay && E(React.Fragment, null,
+        E('div', { style: Object.assign(capsLabel(ui), { margin: '0 4px 8px' }) }, 'Income'),
+        E('div', { style: cardStyle(ui, { overflow: 'hidden' }) },
+            E(PayRow, { headline: pay, period: period[0], privacy: props.privacy, onOpen: props.onPay })));
     if (!bills.length) {
         return E('div', { style: { padding: '12px 16px' } },
-            E('div', { style: cardStyle(ui, { padding: '22px 18px', textAlign: 'center' }) },
+            payLine,
+            E('div', { style: cardStyle(ui, { padding: '22px 18px', textAlign: 'center', marginTop: pay ? 14 : 0 }) },
                 E('div', { style: { fontFamily: ui.sys, fontSize: 16, color: ui.C.white, fontWeight: 600, marginBottom: 6 } }, 'No bills yet'),
                 E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc600, lineHeight: 1.45, marginBottom: 16 } },
                     'Copy your bills table out of your spreadsheet and paste it in, or add them one at a time.'),
@@ -982,13 +1089,16 @@ function MainView(props) {
     var list = sortBills(bills, sort[0]);
     return E('div', { style: { padding: '12px 16px 0' } },
         Banner && E(Banner, { source: function (w) { return renewalAlerts(bills, today, w); }, privacy: props.privacy }),
-        E(Hero, { totals: t, privacy: props.privacy, period: period[0], onPeriod: setPeriod }),
+        pay && E(CashFlowCard, { totals: t, pay: pay, privacy: props.privacy, period: period[0], onPeriod: setPeriod }),
+        pay && E('div', { style: { height: 22 } }),
+        payLine,
+        E(HouseholdCard, { totals: t, privacy: props.privacy, period: period[0], onPeriod: setPeriod, showPeriod: !pay, onShare: props.onShare }),
         E('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', margin: '22px 4px 8px' } },
             E('span', { style: capsLabel(ui) }, 'Bills'),
             E(SortPicker, { value: sort[0], onChange: function (v) { _sort = v; sort[1](v); } })),
         E('div', { style: cardStyle(ui, { overflow: 'hidden' }) },
             list.map(function (b, i) {
-                return E(BillRow, { key: b.id, bill: b, first: i === 0, today: today, hints: hints, privacy: props.privacy, period: period[0], open: open[0] === b.id,
+                return E(BillRow, { key: b.id, bill: b, share: t.share, first: i === 0, today: today, hints: hints, privacy: props.privacy, period: period[0], open: open[0] === b.id,
                     onToggle: function () { var v = open[0] === b.id ? null : b.id; _openId = v; open[1](v); },
                     onEdit: function () { props.onEdit(b.id); }, onUsage: function () { props.onUsage(b.id); } });
             })),
@@ -1015,7 +1125,7 @@ function EditView(props) {
         var b = existing || {};
         return { name: b.name || '', provider: b.provider || '', category: b.category || '', amount: b.amount == null ? '' : String(b.amount),
                  every: b.every || 'month', account: b.account || '', username: b.username || '', link: b.link || '', end: b.end || '',
-                 notes: b.notes || '', estate: b.estate || '', costFrom: b.costFrom || '' };
+                 notes: b.notes || '', estate: b.estate || '', costFrom: b.costFrom || '', payer: b.payer || 'me' };
     });
     var form = f[0], err = React.useState(null), del = React.useState(false);
     function set(k, v) { var n = Object.assign({}, form); n[k] = v; f[1](n); }
@@ -1026,7 +1136,7 @@ function EditView(props) {
         var bill = validBill({ id: existing ? existing.id : null, name: form.name, provider: form.provider, category: form.category || guessCategory(form.name),
                                amount: amount, every: form.every, account: form.account, username: form.username, link: form.link, end: form.end,
                                notes: form.notes, estate: form.estate || null, usage: existing ? existing.usage : null,
-                               costFrom: form.costFrom || null });
+                               costFrom: form.costFrom || null, payer: form.payer });
         if (!bill) return err[1]('Give the bill a name.');
         var bills = existing ? props.state.bills.map(function (b) { return b.id === bill.id ? bill : b; }) : props.state.bills.concat([bill]);
         saveState(Object.assign({}, props.state, { bills: bills })).catch(function () {});
@@ -1054,6 +1164,7 @@ function EditView(props) {
         E(Label, { text: 'Bill' }, input('name', { placeholder: 'Energy', autoCapitalize: 'words' })),
         E(Label, { text: 'Provider' }, input('provider', { placeholder: 'Who it’s with', autoCapitalize: 'words' })),
         E(Label, { text: 'Category' }, select('category', [{ id: '', label: 'Pick from the name' }].concat(CATEGORIES))),
+        E(Label, { text: 'Who pays' }, select('payer', PAYERS)),
         mortgages.length > 0 && E(Label, { text: 'Cost and end date' },
             select('estate', [{ id: '', label: 'Entered here' }].concat(mortgages.map(function (a) { return { id: a.id, label: 'From Estate: ' + a.name }; })))),
         canFormula && E(Label, { text: 'Cost from' }, select('costFrom', [{ id: '', label: 'Amount typed in' }].concat(COST_FROM.map(function (c) { return { id: c.id, label: 'Formula: ' + c.label }; })))),
@@ -1122,6 +1233,26 @@ function PasteView(props) {
                 'Add ' + preview.length + (preview.length === 1 ? ' bill' : ' bills'))),
         txt[0].trim() && !preview.length && E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.amber, marginTop: 12 } },
             'No bills found. Copy the rows straight from the spreadsheet so the columns stay separate.'));
+}
+
+// Fergus's part of the bills marked split (the rest is his wife's).
+function ShareView(props) {
+    var ui = useUI();
+    var f = React.useState(String(Math.round(shareOf(props.state) * 100))), err = React.useState(null);
+    function save() {
+        var v = parseMoney(f[0]);
+        if (v == null || v < 5 || v > 95) return err[1]('Give your share as a percentage between 5 and 95.');
+        saveState(Object.assign({}, props.state, { myShare: Math.round(v * 10) / 1000 })).catch(function () {});
+        props.onDone();
+    }
+    return E('div', { style: { padding: '16px 16px 0' } },
+        E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc400, lineHeight: 1.5, marginBottom: 14 } },
+            'How much of each split bill is yours. 50 splits them evenly; set it higher if you cover more. Choose who pays each bill from Edit on the bill.'),
+        E(Label, { text: 'Your share of split bills (%)' }, E('input', { value: f[0], inputMode: 'decimal', onChange: function (e) { f[1](e.target.value); }, style: inputStyle(ui) })),
+        E('div', { style: { display: 'flex', gap: 8, marginBottom: 14 } },
+            [50, 60, 67, 75].map(function (n) { return E(Chip, { key: n, onClick: function () { f[1](String(n)); } }, n + '%'); })),
+        err[0] && E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.rose, marginBottom: 10 } }, err[0]),
+        E('button', { style: Object.assign(buttonStyle(ui, 'primary'), { width: '100%' }), onClick: save }, 'Save'));
 }
 
 // ── Energy usage page ────────────────────────────────────────────────────────
@@ -1574,19 +1705,27 @@ function MetersView(props) {
         E('button', { style: Object.assign(buttonStyle(ui, 'primary'), { width: '100%' }), onClick: save }, 'Save'));
 }
 
+var PAY_PAGES = { pay: 'main', payEdit: 'edit', payPaste: 'paste', payTakeHome: 'takehome' };
+var SCROLL_KEPT = { main: true, pay: true };
+var _scrollTops = { main: 0, pay: 0 };
 function ScreenInner(props) {
     var ui = useUI();
     var state = useStoreState(), estate = useEstateState();
     var v = React.useState({ name: 'main' }), view = v[0], setView = v[1];
     var bills = React.useMemo(function () { return resolveAll(state, estate); }, [state, estate]);
     var scrollRef = React.useRef(null);
+    // The list comes back where it was scrolled to (from its forms and from another tab), the Pay page from its forms.
     React.useLayoutEffect(function () {
-        if (view.name === 'main' && _ready && scrollRef.current) scrollRef.current.scrollTo({ top: _mainScrollTop, behavior: 'instant' });
+        var top = _scrollTops[view.name];
+        if (top != null && _ready && scrollRef.current) scrollRef.current.scrollTo({ top: top, behavior: 'instant' });
     }, [view.name, _ready]);
-    // The usage page's own forms go back to it; everything else goes back to the bills.
+    // The usage and Pay pages' own forms go back to them; everything else goes back to the list.
     var toUsage = function () { setView({ name: 'usage', id: view.id }); };
+    var toPay = function () { setView({ name: 'pay' }); };
     var inUsage = view.name === 'usageMonth' || view.name === 'usagePaste' || view.name === 'meters' || view.name === 'tariff';
-    var back = view.name === 'main' ? null : inUsage ? toUsage : function () { setView({ name: 'main' }); };
+    var inPay = view.name === 'payEdit' || view.name === 'payPaste' || view.name === 'payTakeHome';
+    var PayView = window.PayView;
+    var back = view.name === 'main' ? null : inUsage ? toUsage : inPay ? toPay : function () { setView({ name: 'main' }); };
     var bill = view.id ? bills.filter(function (b) { return b.id === view.id; })[0] : null;
     var body;
     if (!_ready) body = E('div', { style: { padding: 32, textAlign: 'center', fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc600 } }, 'Loading…');
@@ -1600,18 +1739,28 @@ function ScreenInner(props) {
     else if (view.name === 'usageMonth' && bill) body = E(UsageMonthView, { bill: bill, month: view.month, state: state, onDone: toUsage });
     else if (view.name === 'usagePaste' && bill) body = E(UsagePasteView, { bill: bill, state: state });
     else if (view.name === 'meters' && bill) body = E(MetersView, { bill: bill, state: state, onDone: toUsage });
-    else body = E(MainView, { bills: bills, privacy: props.privacyMode, onPaste: function () { setView({ name: 'paste' }); },
-                              onEdit: function (id) { setView({ name: 'edit', id: id }); }, onUsage: function (id) { setView({ name: 'usage', id: id }); } });
+    else if (view.name === 'share') body = E(ShareView, { state: state, onDone: back });
+    else if ((view.name === 'pay' || inPay) && PayView) body = E(PayView, { page: PAY_PAGES[view.name], id: view.id,
+        privacy: props.privacyMode, ui: Object.assign({}, ui, { accent: TEAL }), onDone: toPay,
+        onEdit: function (id) { setView({ name: 'payEdit', id: id }); }, onPaste: function () { setView({ name: 'payPaste' }); },
+        onTakeHome: function () { setView({ name: 'payTakeHome' }); } });
+    else body = E(MainView, { bills: bills, share: shareOf(state), privacy: props.privacyMode, onPaste: function () { setView({ name: 'paste' }); },
+                              onShare: function () { setView({ name: 'share' }); },
+                              onEdit: function (id) { setView({ name: 'edit', id: id }); }, onUsage: function (id) { setView({ name: 'usage', id: id }); },
+                              onPay: function () { _scrollTops.pay = 0; setView({ name: 'pay' }); } });
     var title = view.name === 'paste' ? 'Paste bills' : view.name === 'usage' ? (bill ? bill.name : '') + ' usage'
         : view.name === 'usageMonth' ? (view.month ? monthLabel(view.month) : 'Add month') : view.name === 'usagePaste' ? 'Paste usage'
-        : view.name === 'meters' ? 'Meter numbers' : view.name === 'tariff' ? 'Forecast rates' : view.id ? 'Edit bill' : 'Add bill';
+        : view.name === 'meters' ? 'Meter numbers' : view.name === 'tariff' ? 'Forecast rates'
+        : view.name === 'pay' ? 'Pay' : view.name === 'payPaste' ? 'Paste pay' : view.name === 'payEdit' ? (view.id ? 'Edit year' : 'Add year')
+        : view.name === 'payTakeHome' ? 'Take-home pay' : view.name === 'share' ? 'Split bills'
+        : view.id ? 'Edit bill' : 'Add bill';
     return E('div', {
         'data-swipe-tabs': view.name === 'main' ? '' : null, 'data-tab-screen': 'lifeadmin',
         style: { position: 'fixed', top: 'var(--topbar-h, 0px)', left: 0, right: 0, bottom: 0, zIndex: 9995, background: ui.C.bg, display: 'flex', flexDirection: 'column', WebkitTapHighlightColor: 'transparent' }
     },
         back && E(Header, { title: title, onBack: back }),
         _loadError && E('div', { style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.rose, padding: '8px 16px' } }, 'Storage problem: ' + _loadError),
-        E('div', { key: view.name, ref: scrollRef, onScroll: view.name === 'main' ? function (e) { _mainScrollTop = e.currentTarget.scrollTop; } : null,
+        E('div', { key: view.name, ref: scrollRef, onScroll: SCROLL_KEPT[view.name] ? function (e) { _scrollTops[view.name] = e.currentTarget.scrollTop; } : null,
                    className: 'ios-scroll', style: { flex: 1, minWidth: 0, overflowY: 'auto', overflowX: 'hidden', paddingBottom: 'max(env(safe-area-inset-bottom), 28px)' } },
             body));
 }
@@ -1620,14 +1769,14 @@ function ScreenInner(props) {
 class Boundary extends React.Component {
     constructor(p) { super(p); this.state = { error: null }; }
     static getDerivedStateFromError(error) { return { error: error }; }
-    componentDidCatch(error, info) { console.error('Life Admin screen error:', error, info); }
+    componentDidCatch(error, info) { console.error('Cash Flow screen error:', error, info); }
     render() {
         if (!this.state.error) return this.props.children;
         var ui = this.props.ui;
         return E('div', { style: { position: 'fixed', top: 'var(--topbar-h, 0px)', left: 0, right: 0, bottom: 0, zIndex: 9995, background: ui.C.bg, padding: '40px 20px', fontFamily: ui.sys } },
-            E('div', { style: { color: ui.C.rose, fontSize: 16, fontWeight: 600, marginBottom: 8 } }, 'Life Admin hit a problem'),
+            E('div', { style: { color: ui.C.rose, fontSize: 16, fontWeight: 600, marginBottom: 8 } }, 'Cash Flow hit a problem'),
             E('div', { style: { color: ui.C.zinc600, fontSize: 13, marginBottom: 20, lineHeight: 1.5 } },
-                String(this.state.error && this.state.error.message || this.state.error) + '. Your saved bills are untouched.'),
+                String(this.state.error && this.state.error.message || this.state.error) + '. Your saved bills and pay are untouched.'),
             E('button', { onClick: this.props.onClose, style: buttonStyle(ui) }, 'Back to Investments'));
     }
 }
@@ -1646,5 +1795,6 @@ window.LifeAdminColor = TEAL;
 window.__lifeAdminInternals = { validateState: validateState, validBill: validBill, validLink: validLink, parsePaste: parsePaste, parseDate: parseDate,
     parseMoney: parseMoney, costFrom: costFrom, mergeBills: mergeBills, resolveBill: resolveBill, resolveAll: resolveAll, totals: totals,
     sortBills: sortBills, renewalAlerts: renewalAlerts, hintFor: hintFor, guessCategory: guessCategory, subLine: subLine,
+    myPart: myPart, shareOf: shareOf,
     validUsage: validUsage, parseUsagePaste: parseUsagePaste, mergeUsage: mergeUsage, usageStats: usageStats, monthCost: monthCost, fuelCost: fuelCost, isEnergyBill: isEnergyBill, m3ToKwh: m3ToKwh };
 })();
