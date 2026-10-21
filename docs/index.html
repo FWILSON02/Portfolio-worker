@@ -212,10 +212,10 @@ window.HelpCircle=_li([{t:'c',cx:12,cy:12,r:10},'M9.09 9a3 3 0 0 1 5.83 1c0 2-3 
 <!-- Balances screen lives in its own file. Bump ?v= whenever balances.js changes so the Home Screen app never mixes versions. -->
 <script src="balances.js?v=50"></script>
 <!-- Pay (salary, bonus, stock awards) lives in its own file too: the Pay line on the Cash Flow tab opens it. Bump ?v= on change. -->
-<script src="pay.js?v=5"></script>
+<script src="pay.js?v=6"></script>
 <!-- Cash Flow (pay and bills; formerly Life Admin) lives in its own file as well, loaded after balances.js (it uses the Estate
      mortgage and alert banner) and pay.js. Bump ?v= on change. -->
-<script src="lifeadmin.js?v=17"></script>
+<script src="lifeadmin.js?v=18"></script>
 <script>
 try{"use strict";
 // ─── Lightweight SVG chart components (replaces Recharts) ──────────────────
@@ -7556,7 +7556,7 @@ function Row({ icon: Icon, iconColor, iconBg, label, sub, right, onClick, isLabe
 // The pull request that last changed the app. Bump it in every PR so Settings → App shows which change the phone is
 // running (Fergus asked; the Estate ?v= number only moved when balances.js changed, so it looked stuck). CI checks it
 // matches the PR's number (tests/build.test.cjs): PR #85 forgot, and the phone kept saying PR #84.
-const APP_BUILD = 93;
+const APP_BUILD = 94;
 
 // Settings → App: pulls the newest index.html, balances.js, lifeadmin.js and pay.js past the browser's cache, then reloads. A Home Screen web app
 // on iOS keeps serving cached files for a while after a deploy, and closing it from the app switcher doesn't clear that.
