@@ -335,3 +335,18 @@ test('a bill switched to split counts Fergus\'s share against him; the rest he p
     assert.equal(Math.round(L.totals(bills, 1).mine.monthly), 1060);
     assert.equal(L.totals(bills).share, 0.5);
 });
+
+test('cashFlow: take-home less his part of the bills, the bonus only when switched on', () => {
+    const t = { mine: { monthly: 1000, annual: 12000 } };
+    const th = { monthly: 5000, bonus: { year: 2025, net: 12000 } };
+    let f = L.cashFlow(t, th, 'month', false);
+    assert.equal(f.pay, 5000); assert.equal(f.bonus, 1000); assert.equal(f.inflow, 5000); assert.equal(f.left, 4000);
+    f = L.cashFlow(t, th, 'month', true);
+    assert.equal(f.inflow, 6000); assert.equal(f.left, 5000);
+    f = L.cashFlow(t, th, 'year', true);
+    assert.equal(f.pay, 60000); assert.equal(f.bonus, 12000); assert.equal(f.left, 60000);
+    // No bonus known yet: the switch changes nothing. No pay: nothing left to show.
+    assert.equal(L.cashFlow(t, { monthly: 5000, bonus: null }, 'month', true).left, 4000);
+    f = L.cashFlow(t, null, 'month', true);
+    assert.equal(f.inflow, null); assert.equal(f.left, null); assert.equal(f.out, 1000);
+});
