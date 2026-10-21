@@ -907,16 +907,7 @@ function CashFlowCard(props) {
     var ui = useUI(), p = props.privacy, per = periodOf(props.period), th = props.pay && props.pay.takeHome;
     var f = cashFlow(props.totals, th, props.period, props.bonus);
     var left = f.left, used = f.inflow > 0 ? Math.min(1, f.out / f.inflow) : null;
-    var link = function (label, v, sign, color, onOpen, add) {
-        return E('button', { onClick: onOpen, 'aria-label': label,
-            style: { display: 'flex', alignItems: 'center', gap: 6, background: 'none', border: 'none', padding: '8px 0', cursor: 'pointer', fontFamily: ui.sys, fontSize: 13.5,
-                     color: ui.C.zinc400, WebkitTapHighlightColor: 'transparent' } },
-            E('span', { style: { width: 8, height: 8, borderRadius: 2, background: color, flexShrink: 0 } }),
-            label,
-            add ? E('span', { style: { color: TEAL } }, 'Add') : E('span', { style: money(ui, 13.5, p, ui.C.white, 600) }, v == null ? '—' : sign + fmtGBP(v)),
-            E(ChevronIcon, { style: { width: 13, height: 13, color: ui.C.zinc700, flexShrink: 0, marginLeft: -2 }, strokeWidth: 2 }));
-    };
-    return E('div', { style: cardStyle(ui, { padding: '14px 16px 4px' }) },
+    return E('div', { style: cardStyle(ui, { padding: '14px 16px' }) },
         E('div', { style: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 } },
             E('div', { style: { minWidth: 0 } },
                 E('div', { style: capsLabel(ui) }, 'Cash flow'),
@@ -930,9 +921,23 @@ function CashFlowCard(props) {
         used != null && E('div', { style: { display: 'flex', height: 6, borderRadius: 3, overflow: 'hidden', gap: 2, marginTop: 12 } },
             E('div', { style: { flex: Math.max(used, 0.001), background: ui.C.rose } }),
             used < 1 && E('div', { style: { flex: 1 - used, background: PAY_GREEN, opacity: 0.55 } })),
-        E('div', { style: { display: 'flex', justifyContent: 'space-between', gap: 8, marginTop: 4 } },
-            props.pay ? link('Pay', f.inflow, '+', PAY_GREEN, props.onPay, !th) : E('span'),
-            link('Bills', f.out, '−', ui.C.rose, props.onHousehold)));
+        // Pay and Bills open whole pages, so they're drawn as buttons (Fergus: plain links didn't look tappable).
+        E('div', { style: { display: 'flex', gap: 8, marginTop: 12 } },
+            props.pay && E(OpenButton, { label: 'Pay', color: PAY_GREEN, value: f.inflow, sign: '+', add: !th, privacy: p, onOpen: props.onPay }),
+            E(OpenButton, { label: 'Bills', color: ui.C.rose, value: f.out, sign: '−', privacy: p, onOpen: props.onHousehold })));
+}
+// A button on the cash flow card that opens a page: colour key, name, figure and a chevron.
+function OpenButton(props) {
+    var ui = useUI();
+    return E('button', { onClick: props.onOpen, 'aria-label': props.label,
+        style: { flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 7, height: 44, padding: '0 10px 0 12px', borderRadius: 12, cursor: 'pointer',
+                 background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.12)', fontFamily: ui.sys, fontSize: 14, color: ui.C.zinc400,
+                 WebkitTapHighlightColor: 'transparent' } },
+        E('span', { style: { width: 8, height: 8, borderRadius: 2, background: props.color, flexShrink: 0 } }),
+        E('span', { style: { flex: 1, textAlign: 'left' } }, props.label),
+        props.add ? E('span', { style: { color: TEAL } }, 'Add')
+            : E('span', { style: money(ui, 14, props.privacy, ui.C.white, 600) }, props.value == null ? '—' : props.sign + fmtGBP(props.value)),
+        E(ChevronIcon, { style: { width: 15, height: 15, color: ui.C.zinc500, flexShrink: 0 }, strokeWidth: 2.2 }));
 }
 
 // The household's bills (Your bills on the top card opens it): the total, who pays it, and each category.
