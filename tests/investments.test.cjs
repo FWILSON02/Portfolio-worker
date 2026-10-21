@@ -72,3 +72,53 @@ test('contribution ranges in £: each holding\'s gain net of what was put in, th
     assert.equal(Math.round(two.total), -150);
     assert.ok(Math.abs(two.other) < 0.01);
 });
+
+// 21 Oct 2026: stored history ended 19 Oct for every LSE line (that day's refresh failed for them), so the chart priced
+// 20 Oct at the 19 Oct close and the 1W chart's last segment showed SMGB.L -1.1% on a +1.2% day.
+test('withLiveTail: completed sessions missing from stored history come from the daily closes, then the live quote', () => {
+    const stored = [{ date: '2026-10-16', close: 75.81 }, { date: '2026-10-19', close: 77.40 }];
+    const daily = { 'SMGB.L': [
+        { date: '2026-10-19', close: 77.40, status: 'verified' },
+        { date: '2026-10-20', close: 75.58, status: 'verified' },
+        { date: '2026-10-21', close: 76.52, status: 'yahoo-only' },   // today's partial bar: the live quote owns it
+    ] };
+    const out = plain(app.withLiveTail(stored, 'smgb.l', '2026-10-21', 76.57, daily));
+    assert.deepEqual(out, [{ date: '2026-10-16', close: 75.81 }, { date: '2026-10-19', close: 77.40 },
+                           { date: '2026-10-20', close: 75.58 }, { date: '2026-10-21', close: 76.57 }]);
+    assert.ok(out[3].close / out[2].close - 1 > 0.012, 'the last segment is the same move Today shows');
+    assert.equal(stored.length, 2, 'the stored series is not mutated');
+});
+
+test('withLiveTail: replaces a same-day point, skips conflicts and weekend stubs, never goes backwards', () => {
+    const stored = [{ date: '2026-10-15', close: 10 }, { date: '2026-10-16', close: 11 }];
+    const daily = { 'EQGB.L': [
+        { date: '2026-10-17', close: 11.5 },                           // Saturday stub on an exchange shut at weekends
+        { date: '2026-10-19', close: 12, status: 'conflict' },         // sources disagree: never used
+        { date: '2026-10-20', close: 13 },                             // no status (restored from an older backup)
+    ] };
+    assert.deepEqual(plain(app.withLiveTail(stored, 'EQGB.L', '2026-10-21', 14, daily)).map(r => r.date),
+        ['2026-10-15', '2026-10-16', '2026-10-20', '2026-10-21']);
+    assert.deepEqual(plain(app.withLiveTail(stored, 'EQGB.L', '2026-10-16', 12, daily)),
+        [{ date: '2026-10-15', close: 10 }, { date: '2026-10-16', close: 12 }]);
+    assert.deepEqual(plain(app.withLiveTail(stored, 'EQGB.L', '2026-10-14', 12, daily)), stored, 'retrograde live date');
+    assert.deepEqual(plain(app.withLiveTail(stored, 'EQGB.L', null, 12, daily)), stored, 'stale quote: no tail at all');
+    assert.deepEqual(plain(app.withLiveTail([], 'X.L', '2026-10-21', 5, {})), [{ date: '2026-10-21', close: 5 }]);
+    // A backup exported before this fix carries today's live point straight after the stale close: still bridged.
+    const restored = [...stored, { date: '2026-10-21', close: 13.9 }];
+    assert.deepEqual(plain(app.withLiveTail(restored, 'EQGB.L', '2026-10-21', 14, daily)).map(r => [r.date, r.close]),
+        [['2026-10-15', 10], ['2026-10-16', 11], ['2026-10-20', 13], ['2026-10-21', 14]]);
+});
+
+test('history refresh: tickers that failed stay pending for a retry the same day', () => {
+    const noon = Date.parse('2026-10-21T11:00:00Z');
+    app.localStorage.clear();
+    assert.equal(app.historyRefreshDue(noon), true);
+    app.markHistoryRefreshed(noon, ['SMGB.L', 'EQGB.L']);
+    assert.equal(app.historyRefreshDue(noon), false);
+    assert.deepEqual(plain(app.historyRefreshPending(noon)), ['EQGB.L', 'SMGB.L']);
+    app.markHistoryRefreshed(noon + 36e5, []);
+    assert.deepEqual(plain(app.historyRefreshPending(noon + 36e5)), []);
+    // Next London day: a full refresh is due, nothing is left pending from yesterday.
+    assert.equal(app.historyRefreshDue(noon + DAY), true);
+    assert.deepEqual(plain(app.historyRefreshPending(noon + DAY)), []);
+});

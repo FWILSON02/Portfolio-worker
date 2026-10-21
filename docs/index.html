@@ -1320,6 +1320,38 @@ function getEffectiveDateForTicker(ticker, liveQuoteSessionDates, candidateSessi
     return globalFallbackDate || null;
 }
 
+// ── Live tail of a stored price series ────────────────────────────────────────
+// Stored history holds completed sessions up to its last refresh; the live layer owns everything after that. That is
+// today's live quote AND any completed session the stored history does not have yet. History is refreshed once a day
+// and a refresh can fail for some tickers, but liveDailyCloses (the live pass's own daily closes, the ones Today's
+// previous close is taken from) already has those sessions. Appending the live quote straight after an older close made
+// the chart's last segment measure a different move from Today: on 21 Oct 2026 every LSE line priced 20 Oct at its
+// 19 Oct close, so the 1W chart showed the portfolio -0.24% on a +0.3% day.
+// Raw daily closes meet adjusted history cleanly for the same reason the live quote does (adjusted = raw after the latest
+// ex-date). Bridged rows are strictly after the series' last date and before liveDate; rows the sources disagree on, and
+// weekend stubs on exchanges that don't trade weekends, are skipped. A liveDate before the series' last date is ignored.
+function withLiveTail(series, ticker, liveDate, livePx, dailyCloses) {
+    const rows = (series || []).slice();
+    if (!liveDate || !(Number(livePx) > 0)) return rows;
+    if (rows.length && liveDate < String(rows[rows.length - 1].date).slice(0, 10)) return rows;
+    // A point already on liveDate (a series restored from a backup carries the live quote it was exported with) is
+    // replaced, and the bridge is measured from the stored close before it.
+    const kept = rows.filter(r => String(r.date).slice(0, 10) < liveDate);
+    const last = kept.length ? String(kept[kept.length - 1].date).slice(0, 10) : '';
+    const tk = _dcUp(ticker);
+    const daily = dailyCloses && (dailyCloses[tk] ?? Object.entries(dailyCloses).find(([k]) => _dcUp(k) === tk)?.[1]);
+    const prof = dailyCheckProfileFor(tk);
+    const spec = prof.calendar ? EXCHANGE_CALENDARS[prof.calendar] : null;
+    const isWeekend = ds => { const g = new Date(ds + 'T12:00:00Z').getUTCDay(); return g === 0 || g === 6; };
+    const bridge = (Array.isArray(daily) ? daily : [])
+        .filter(r => r && r.date && Number(r.close) > 0 && r.status !== 'conflict')
+        .map(r => ({ date: String(r.date).slice(0, 10), close: Number(r.close) }))
+        .filter(r => r.date > last && r.date < liveDate && !(spec && !spec.everyDay && isWeekend(r.date)))
+        .sort((a, b) => a.date.localeCompare(b.date))
+        .filter((r, i, a) => i === 0 || a[i - 1].date !== r.date);
+    return kept.concat(bridge, [{ date: liveDate, close: Number(livePx) }]);
+}
+
 // ── Latest-session rule for Today figures ─────────────────────────────────────
 // Each holding's Today move is tagged with the trading session it was measured on (todaySessionDate). Moves from
 // different sessions must never be blended: on a Monday morning in London the LSE holdings carry Monday's move while
@@ -5168,15 +5200,26 @@ function backfillHistoryGapsFromSecondSource(rows, ticker) {
 // History holds completed sessions only, so one refresh per London calendar
 // day is enough (today is covered by the live quote). HISTORY_SCHEMA_VERSION
 // forces a full refresh the first time a new storage format is installed.
+// Tickers whose refresh failed are kept as `pending` and retried on their own
+// later the same day. (The day used to be marked done as soon as ANY ticker
+// refreshed, so a run where FX refreshed but the LSE lines failed left those
+// lines a session behind until the next day.)
 const HISTORY_SCHEMA_VERSION = 2;   // v2: exchange-local dates, Friday-dated weekly bars, completed bars only
 const HISTORY_REFRESH_KEY    = 'history_refresh_state';
 function londonDateStr(nowMs) { return exchangeLocalDate(Math.floor((nowMs || Date.now()) / 1000), 'Europe/London', 0); }
-function historyRefreshDue(nowMs) {
+function _historyRefreshToday(nowMs) {
     const o = _dcLoad(HISTORY_REFRESH_KEY);
-    return !(o && o.schema === HISTORY_SCHEMA_VERSION && o.day === londonDateStr(nowMs));
+    return (o && o.schema === HISTORY_SCHEMA_VERSION && o.day === londonDateStr(nowMs)) ? o : null;
 }
-function markHistoryRefreshed(nowMs) {
-    _dcSave(HISTORY_REFRESH_KEY, { schema: HISTORY_SCHEMA_VERSION, day: londonDateStr(nowMs), at: nowMs || Date.now() });
+function historyRefreshDue(nowMs) { return !_historyRefreshToday(nowMs); }
+// Tickers still waiting for today's refresh (empty when a full refresh is due instead).
+function historyRefreshPending(nowMs) {
+    const o = _historyRefreshToday(nowMs);
+    return (o && Array.isArray(o.pending)) ? o.pending.slice() : [];
+}
+function markHistoryRefreshed(nowMs, pending) {
+    _dcSave(HISTORY_REFRESH_KEY, { schema: HISTORY_SCHEMA_VERSION, day: londonDateStr(nowMs), at: nowMs || Date.now(),
+        pending: Array.isArray(pending) ? pending.slice().sort() : [] });
 }
 
 // Recent daily closes straight from Yahoo's chart endpoint, as { date, close }
@@ -7513,7 +7556,7 @@ function Row({ icon: Icon, iconColor, iconBg, label, sub, right, onClick, isLabe
 // The pull request that last changed the app. Bump it in every PR so Settings → App shows which change the phone is
 // running (Fergus asked; the Estate ?v= number only moved when balances.js changed, so it looked stuck). CI checks it
 // matches the PR's number (tests/build.test.cjs): PR #85 forgot, and the phone kept saying PR #84.
-const APP_BUILD = 86;
+const APP_BUILD = 87;
 
 // Settings → App: pulls the newest index.html, balances.js, lifeadmin.js and pay.js past the browser's cache, then reloads. A Home Screen web app
 // on iOS keeps serving cached files for a while after a deploy, and closing it from the app switcher doesn't clear that.
@@ -13495,7 +13538,8 @@ function PortfolioApp() {
             return cumulativeUnits > 0.001;
         }, [enriched, today]);
 
-        const fetchAllPrices = useCallback(async () => {
+        // onlyTickers: retry just these (today's pending tickers); anything else, e.g. a click event, means all.
+        const fetchAllPrices = useCallback(async (onlyTickers) => {
             // Fix 5: use allPriceTickers (HL + comp + custody) so employer-only tickers
             // like C and HSBA.L are fetched even without an HL transaction for them.
             const hasTickers = allPriceTickers.filter(t => t !== 'GBPUSD=X').length > 0;
@@ -13504,7 +13548,9 @@ function PortfolioApp() {
 
             setLoading(true);
             try {
-                const allTickers = [...allPriceTickers, '^GSPC'];
+                const retryOnly  = Array.isArray(onlyTickers) ? new Set(onlyTickers) : null;
+                const allTickers = [...allPriceTickers, '^GSPC'].filter(t => !retryOnly || retryOnly.has(t));
+                if (allTickers.length === 0) { markHistoryRefreshed(Date.now(), []); return; }
                 // Tickers declared as Yahoo symbols in the equity-plan / custody files.
                 // These are real listings even without an exchange suffix (e.g. "C").
                 const declaredMarketTickers = new Set([
@@ -13519,8 +13565,9 @@ function PortfolioApp() {
                 const currentPrices = pricesRef.current;
 
                 // Mark all tickers as loading in a single upfront write
-                setLoadStatus(Object.fromEntries(allTickers.map(t => [t, 'loading'])));
-                setFetchDebug({});
+                const loadingStatus = Object.fromEntries(allTickers.map(t => [t, 'loading']));
+                if (retryOnly) setLoadStatus(prev => Object.assign({}, prev, loadingStatus));
+                else { setLoadStatus(loadingStatus); setFetchDebug({}); }
 
                 // ── Phase 1: fetch every ticker in parallel (pure results, no shared writes) ──
                 // Full refresh every time: weekly closes from inception plus a 90-day daily
@@ -13556,17 +13603,23 @@ function PortfolioApp() {
                         try { daily = await fetchPriceSeries(ticker, ninetyDaysAgo, toDate, 'daily', opts); }
                         catch (e) { dailyErr = (e.attempts && e.attempts[0] && e.attempts[0].msg) || e.message; }
                     }
+                    // Weekly alone would replace the stored 90-day daily tail with Friday bars, so with a stored series
+                    // a failed daily fetch is a failed refresh: keep the series and retry later today.
+                    if (dailyErr && existing?.length) {
+                        return { ticker, prices: existing, refreshed: false, status: 'ok', source: loadSource[ticker] || 'yahoo',
+                            debug: [{ src: 'yahoo-daily', result: 'fail', msg: `refresh failed (${dailyErr}) — keeping ${existing.length} stored pts` }] };
+                    }
                     const merged = mergeHistorySeries(existing, weekly.data, daily ? daily.data : []);
                     const alt    = cachedSecondSourceRows(ticker);
                     const clean  = cleanHistorySeries(merged, dailyCheckProfileFor(ticker), alt.rows, alt.name);
                     const filled = backfillHistoryGapsFromSecondSource(clean.rows, ticker);
                     const debug  = [{ src: 'yahoo', result: 'ok', msg: `${weekly.data.length} weekly + ${daily ? daily.data.length : 0} daily pts` }];
-                    if (dailyErr) debug.push({ src: 'yahoo-daily', result: 'fail', msg: dailyErr + ' — weekly only until next refresh' });
+                    if (dailyErr) debug.push({ src: 'yahoo-daily', result: 'fail', msg: dailyErr + ' — weekly only until the retry' });
                     if (clean.dropped.length) debug.push({ src: 'quality', result: 'fail',
                         msg: 'dropped ' + clean.dropped.map(d => d.date + ' ' + d.reason).join(', ') });
                     if (filled.filled.length) debug.push({ src: alt.name || 'second-source', result: 'ok',
                         msg: 'filled Yahoo gap: ' + filled.filled.join(', ') });
-                    return { ticker, prices: filled.rows, status: 'ok', source: 'yahoo', debug, refreshed: true };
+                    return { ticker, prices: filled.rows, status: 'ok', source: 'yahoo', debug, refreshed: !dailyErr };
                 }));
 
                 // ── Phase 2: reduce into immutable state maps ──────────────────────
@@ -13580,16 +13633,18 @@ function PortfolioApp() {
                 const finalStatus = tickerResults.reduce((acc, r) => { acc[r.ticker] = r.status; return acc; }, {});
                 const finalSource = tickerResults.reduce((acc, r) => { acc[r.ticker] = r.source; return acc; }, Object.assign({}, loadSource));
                 const finalDebug  = tickerResults.reduce((acc, r) => { acc[r.ticker] = r.debug;  return acc; }, {});
+                // Every ticker that was meant to refresh and didn't stays pending for a retry later today.
+                const pending = tickerResults.filter(r => !r.refreshed && r.source !== 'synthetic').map(r => r.ticker);
 
                 // ── Phase 3: single atomic state commit ───────────────────────────
                 // React 18 batches these into one render pass — the UI never sees
                 // partially-updated data between setters.
                 setPrices(finalPrices);
-                setLoadStatus(finalStatus);
+                setLoadStatus(retryOnly ? prev => Object.assign({}, prev, finalStatus) : finalStatus);
                 setLoadSource(finalSource);
-                setFetchDebug(finalDebug);
+                setFetchDebug(retryOnly ? prev => Object.assign({}, prev, finalDebug) : finalDebug);
                 if (finalPrices['GBPUSD=X']) setFxGBPUSD(finalPrices['GBPUSD=X']);
-                if (tickerResults.some(r => r.refreshed)) markHistoryRefreshed(Date.now());
+                markHistoryRefreshed(Date.now(), pending);
             } finally {
                 setLoading(false);
             }
@@ -13954,16 +14009,23 @@ function PortfolioApp() {
                     // 1. History: refreshed once per London day, and whenever none is stored
                     //    or the storage format changed, or a held ticker has none. History holds completed sessions only
                     //    (today comes from the live quote), so daily is always enough. A failed
-                    //    attempt is retried on the next pipeline run after 30 minutes.
+                    //    attempt, or just the tickers that failed in it, is retried on the next
+                    //    pipeline run after 30 minutes.
                     const nowMs = Date.now();
                     const noHistory = Object.keys(pricesRef.current).length === 0;
                     // ...or when an open, listed holding has none stored (see tickersMissingHistory). The 30-minute
                     // attempt guard below still applies, so this can never turn into a fetch loop.
                     const newTickerNoHistory = tickersMissingHistory(allPriceTickers, pricesRef.current, checkAssetOpenInLast3M,
                         tk => isListedTicker(tk, configCurrencyMap)).length > 0;
-                    if ((noHistory || newTickerNoHistory || historyRefreshDue(nowMs)) && nowMs - historyAttemptAtRef.current > 30 * 60000) {
-                        historyAttemptAtRef.current = nowMs;
-                        await fetchAllPrices();
+                    const pendingTickers = historyRefreshPending(nowMs);
+                    if (nowMs - historyAttemptAtRef.current > 30 * 60000) {
+                        if (noHistory || newTickerNoHistory || historyRefreshDue(nowMs)) {
+                            historyAttemptAtRef.current = nowMs;
+                            await fetchAllPrices();
+                        } else if (pendingTickers.length) {
+                            historyAttemptAtRef.current = nowMs;
+                            await fetchAllPrices(pendingTickers);
+                        }
                     }
 
                     // 2. Immediate live/EOD quote pass — always runs so the latest close
@@ -14461,6 +14523,8 @@ function PortfolioApp() {
             // ── Inject live intraday prices ──────────────────────────────────────
             // Override (or append) the latest data point with the real-time quote
             // so holdings valuation reflects the current price, not last week's close.
+            // Completed sessions the stored history lacks are bridged from
+            // liveDailyCloses first (withLiveTail).
             //
             // Per-ticker injection using actual market-session dates from liveQuoteSessionDates.
             // Falls back to global effective date for tickers without liveDailyCloses data.
@@ -14476,16 +14540,10 @@ function PortfolioApp() {
                 const existingKey = Object.keys(map).find(k => k.toUpperCase().trim() === normTk) || normTk;
                 const existing = map[existingKey];
                 if (!existing || existing.length === 0) continue;
-                const last = existing[existing.length - 1];
-                const livePoint = { date: tickerInjectDate, close: px };
-                if (last.date === tickerInjectDate) {
-                    map[existingKey] = [...existing.slice(0, -1), livePoint];
-                } else {
-                    map[existingKey] = [...existing, livePoint];
-                }
+                map[existingKey] = withLiveTail(existing, normTk, tickerInjectDate, px, liveDailyCloses);
             }
             return { resolvedPricesMap: map, proxyMeta: meta };
-        }, [prices, enriched, livePrices, liveAt, liveQuoteSessionDates, tickerCurrencyMap]);
+        }, [prices, enriched, livePrices, liveAt, liveDailyCloses, liveQuoteSessionDates, tickerCurrencyMap]);
         // Build portfolio value timeline
         const portfolioTimeline = useMemo(() => {
             if (weeklyDates.length === 0 || Object.keys(resolvedPricesMap).length === 0)
@@ -14783,17 +14841,10 @@ function PortfolioApp() {
                 const existingKey = Object.keys(patchedPrices).find(
                     k => k.toUpperCase().trim() === normTk
                 ) || normTk;
-                const existing = patchedPrices[existingKey] || [];
-                const livePoint = { date: rLiveDate, close: Number(px) };
-                const last = existing.length > 0 ? existing[existing.length - 1] : null;
-                if (last && last.date === rLiveDate) {
-                    patchedPrices[existingKey] = [...existing.slice(0, -1), livePoint];
-                } else {
-                    patchedPrices[existingKey] = [...existing, livePoint];
-                }
+                patchedPrices[existingKey] = withLiveTail(patchedPrices[existingKey], normTk, rLiveDate, px, liveDailyCloses);
             }
             return buildRestrictedTimeline(compConfigs, weeklyDates, patchedPrices, tickerCurrencyMap, gbpusdRate);
-        }, [compConfigs, weeklyDates, prices, livePrices, liveAt, liveQuoteSessionDates, tickerCurrencyMap, gbpusdRate]);
+        }, [compConfigs, weeklyDates, prices, livePrices, liveAt, liveDailyCloses, liveQuoteSessionDates, tickerCurrencyMap, gbpusdRate]);
 
         // 2 of 3 — Merge ledger timeline with compensation overlay.
         // Source: portfolioTimeline (pure ledger, always carries portfolioValue).
@@ -16829,15 +16880,9 @@ function PortfolioApp() {
                     var sessionDate = (liveQuoteSessionDates && liveQuoteSessionDates[ticker])
                         || pnlSessionDate;
                     if (!sessionDate) return;
-                    var series = pricesForExport[ticker] || [];
-                    var last   = series.length ? series[series.length - 1] : null;
-                    var pt     = { date: sessionDate, close: px };
-                    if (last && last.date === sessionDate) {
-                        pricesForExport[ticker] = series.slice(0, -1).concat([pt]);
-                    } else if (!last || last.date < sessionDate) {
-                        pricesForExport[ticker] = series.concat([pt]);
-                    }
-                    // Do not inject if sessionDate < last.date (would create retrograde entry)
+                    // withLiveTail also bridges completed sessions the stored history is missing, and does not inject
+                    // when sessionDate < last.date (would create a retrograde entry).
+                    pricesForExport[ticker] = withLiveTail(pricesForExport[ticker], ticker, sessionDate, px, liveDailyCloses);
                 });
 
                 // ── Frozen Today P&L snapshot ────────────────────────────────────────
