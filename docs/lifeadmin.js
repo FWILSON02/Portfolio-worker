@@ -1,19 +1,25 @@
-// ─── Life Admin screen (bills) ───────────────────────────────────────────────
-// Monthly bills and outgoings: what each one is, who it's with, the account or policy number, the login, the website,
-// when the contract ends and what it costs. Opened from the Life Admin tab in the app's top tab bar, drawn below that
-// bar (its height comes from the --topbar-h CSS variable index.html publishes), like the Estate screen.
+// ─── Cash Flow screen (pay and bills) ────────────────────────────────────────
+// Money in and out. In: Pay, a line of its own whose page (pay.js) holds the pay history, figures and chart, opened
+// from the line the way the energy bill opens its usage. Out: the monthly bills and outgoings: what each one is, who it's
+// with, the account or policy number, the login, the website, when the contract ends and what it costs. Opened from
+// the Cash Flow tab in the app's top tab bar, drawn below that bar (its height comes from the --topbar-h CSS variable
+// index.html publishes), like the Estate screen.
 //
-// Loaded by index.html as its own file after balances.js: <script src="lifeadmin.js?v=N">. Bump N there whenever this
-// file changes, so the Home Screen app never pairs a new index.html with a cached old copy of this file.
+// The tab was called Life Admin until Pay moved into it (Fergus asked). The code keeps that name (this file, the tab
+// id 'lifeadmin', window.LifeAdmin*), as do the stored data and backups, so nothing saved under it needs moving.
+//
+// Loaded by index.html as its own file after balances.js and pay.js: <script src="lifeadmin.js?v=N">. Bump N there
+// whenever this file changes, so the Home Screen app never pairs a new index.html with a cached old copy of this file.
 //
 // Exposes:
-//   window.LifeAdminScreen — the Life Admin view (props: onClose, privacyMode, ui)
-//   window.LifeAdminStore  — backupSnapshot() / restore(obj) for the app's JSON backup, plus get/subscribe/deleteAll
+//   window.LifeAdminScreen — the Cash Flow view (props: onClose, privacyMode, ui)
+//   window.LifeAdminStore  — the bills: backupSnapshot() / restore(obj) for the app's JSON backup, plus get/subscribe/deleteAll
 //   window.LifeAdminIcon   — the tab's icon
 //
-// Data lives in its own IndexedDB database ('portfolio-lifeadmin'). It goes into the app's backups (the cloud copy is
-// encrypted on the phone before it is sent). Password hints never do: they come from the secrets file and stay in
-// this browser (estate_login_hints, shared with the Estate tab). No bill is ever written into this file: the repo is public.
+// Bills live in their own IndexedDB database ('portfolio-lifeadmin'), pay in pay.js's. They go into the app's backups
+// (the cloud copy is encrypted on the phone before it is sent). Password hints never do: they come from the secrets
+// file and stay in this browser (estate_login_hints, shared with the Estate tab). No bill is ever written into this
+// file: the repo is public.
 (function () {
 'use strict';
 var E = React.createElement;
@@ -220,6 +226,12 @@ function useStoreState() {
     var st = React.useState(0);
     React.useEffect(function () { return LifeAdminStore.subscribe(function () { st[1](function (n) { return n + 1; }); }); }, []);
     return _state;
+}
+// Pay's state (pay.js), re-read whenever it changes, for the Pay line. null when pay.js didn't load.
+function usePayHeadline() {
+    var st = React.useState(0), store = window.PayStore;
+    React.useEffect(function () { return store && store.subscribe ? store.subscribe(function () { st[1](function (n) { return n + 1; }); }) : undefined; }, [store]);
+    return store && store.headline ? store.headline() : null;
 }
 // The Estate state, re-read whenever it changes (the mortgage bill follows it).
 function useEstateState() {
@@ -797,6 +809,7 @@ function useUI() { return React.useContext(UICtx); }
 function icon(paths) { return typeof _li === 'function' ? _li(paths) : function () { return null; }; }
 var ListIcon = icon([{ t: 'r', x: 5, y: 3, w: 14, h: 18, rx: 2 }, 'M9 8h6', 'M9 12h6', 'M9 16h4']);
 var BackIcon = icon(['M15 18l-6-6 6-6']);
+var ChevronIcon = icon(['M9 6l6 6-6 6']);
 var OpenIcon = icon(['M14 4h6v6', 'M20 4l-9 9', 'M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5']);
 var BILL_ICONS = {
     home: icon(['M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z']),
@@ -958,19 +971,47 @@ function BillRow(props) {
         props.open && E(Details, { bill: b, hints: props.hints, privacy: p, onEdit: props.onEdit, onUsage: props.onUsage }));
 }
 
+// The Pay line: the latest year's total comp, a month or a year as the switch says. Tapping it opens the Pay page.
+var PAY_GREEN = '#34d399';
+function fmtChange(v) { return (v > 0 ? '+' : v < 0 ? '−' : '') + (Math.abs(v) * 100).toLocaleString('en-GB', { maximumFractionDigits: 1 }) + '%'; }
+function PayRow(props) {
+    var ui = useUI(), h = props.headline, l = h.latest, p = props.privacy, Icon = window.PayIcon || BILL_ICONS.other;
+    var per = periodOf(props.period), other = periodOf(props.period === 'year' ? 'month' : 'year');
+    var div = function (q) { return q.id === 'year' ? 1 : 12; };
+    var sub = l ? 'Total comp ' + l.year + (l.yoy != null ? ' · ' + fmtChange(l.yoy) + ' on ' + (l.year - 1) : '')
+        : h.current ? h.current.year + ' base, bonus not known yet' : 'Salary, bonus and stock by year';
+    var amount = l ? l.tc : h.current ? h.current.base : null;
+    return E('button', { onClick: props.onOpen, 'aria-label': 'Pay',
+        style: { display: 'flex', alignItems: 'center', gap: 12, width: '100%', padding: '12px 14px', background: 'none', border: 'none', textAlign: 'left', cursor: 'pointer', WebkitTapHighlightColor: 'transparent' } },
+        E('div', { style: { width: 36, height: 36, borderRadius: 10, background: PAY_GREEN + '24', color: PAY_GREEN, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 } },
+            E(Icon, { style: { width: 18, height: 18 }, strokeWidth: 1.8 })),
+        E('div', { style: { flex: 1, minWidth: 0 } },
+            E('div', { style: { fontFamily: ui.sys, fontSize: 15, fontWeight: 600, color: ui.C.white } }, 'Pay'),
+            E('div', { style: { fontFamily: ui.sys, fontSize: 12.5, color: ui.C.zinc600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 1 } }, sub)),
+        amount == null ? E('span', { style: { fontFamily: ui.sys, fontSize: 13, color: TEAL, flexShrink: 0 } }, 'Add')
+          : E('div', { style: { textAlign: 'right', flexShrink: 0 } },
+                E('div', { style: money(ui, 15, p, ui.C.white, 600) }, fmtGBP(amount / div(per)) + per.short),
+                E('div', { style: money(ui, 12.5, p, ui.C.zinc700, 500) }, fmtGBP(amount / div(other)) + other.short)),
+        E(ChevronIcon, { style: { width: 16, height: 16, color: ui.C.zinc700, flexShrink: 0, marginLeft: -4 }, strokeWidth: 2 }));
+}
+
 var _sort = 'cost';
 var _openId = null;
-var _mainScrollTop = 0;
 function MainView(props) {
     var ui = useUI();
     var sort = React.useState(_sort), open = React.useState(_openId), period = React.useState(savedPeriod);
     function setPeriod(v) { try { localStorage.setItem(PERIOD_KEY, v); } catch (e) {} period[1](v); }
     var hints = React.useState(loginHints)[0];
-    var bills = props.bills, today = todayISO();
+    var bills = props.bills, today = todayISO(), pay = usePayHeadline();
     var t = React.useMemo(function () { return totals(bills); }, [bills]);
     var Banner = window.MaturityAlerts && window.MaturityAlerts.Banner;
+    var payLine = pay && E(React.Fragment, null,
+        E('div', { style: Object.assign(capsLabel(ui), { margin: '0 4px 8px' }) }, 'Income'),
+        E('div', { style: cardStyle(ui, { overflow: 'hidden', marginBottom: 14 }) },
+            E(PayRow, { headline: pay, period: period[0], privacy: props.privacy, onOpen: props.onPay })));
     if (!bills.length) {
         return E('div', { style: { padding: '12px 16px' } },
+            payLine,
             E('div', { style: cardStyle(ui, { padding: '22px 18px', textAlign: 'center' }) },
                 E('div', { style: { fontFamily: ui.sys, fontSize: 16, color: ui.C.white, fontWeight: 600, marginBottom: 6 } }, 'No bills yet'),
                 E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc600, lineHeight: 1.45, marginBottom: 16 } },
@@ -982,6 +1023,7 @@ function MainView(props) {
     var list = sortBills(bills, sort[0]);
     return E('div', { style: { padding: '12px 16px 0' } },
         Banner && E(Banner, { source: function (w) { return renewalAlerts(bills, today, w); }, privacy: props.privacy }),
+        payLine,
         E(Hero, { totals: t, privacy: props.privacy, period: period[0], onPeriod: setPeriod }),
         E('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', margin: '22px 4px 8px' } },
             E('span', { style: capsLabel(ui) }, 'Bills'),
@@ -1574,19 +1616,26 @@ function MetersView(props) {
         E('button', { style: Object.assign(buttonStyle(ui, 'primary'), { width: '100%' }), onClick: save }, 'Save'));
 }
 
+var SCROLL_KEPT = { main: true, pay: true };
+var _scrollTops = { main: 0, pay: 0 };
 function ScreenInner(props) {
     var ui = useUI();
     var state = useStoreState(), estate = useEstateState();
     var v = React.useState({ name: 'main' }), view = v[0], setView = v[1];
     var bills = React.useMemo(function () { return resolveAll(state, estate); }, [state, estate]);
     var scrollRef = React.useRef(null);
+    // The list comes back where it was scrolled to (from its forms and from another tab), the Pay page from its forms.
     React.useLayoutEffect(function () {
-        if (view.name === 'main' && _ready && scrollRef.current) scrollRef.current.scrollTo({ top: _mainScrollTop, behavior: 'instant' });
+        var top = _scrollTops[view.name];
+        if (top != null && _ready && scrollRef.current) scrollRef.current.scrollTo({ top: top, behavior: 'instant' });
     }, [view.name, _ready]);
-    // The usage page's own forms go back to it; everything else goes back to the bills.
+    // The usage and Pay pages' own forms go back to them; everything else goes back to the list.
     var toUsage = function () { setView({ name: 'usage', id: view.id }); };
+    var toPay = function () { setView({ name: 'pay' }); };
     var inUsage = view.name === 'usageMonth' || view.name === 'usagePaste' || view.name === 'meters' || view.name === 'tariff';
-    var back = view.name === 'main' ? null : inUsage ? toUsage : function () { setView({ name: 'main' }); };
+    var inPay = view.name === 'payEdit' || view.name === 'payPaste';
+    var PayView = window.PayView;
+    var back = view.name === 'main' ? null : inUsage ? toUsage : inPay ? toPay : function () { setView({ name: 'main' }); };
     var bill = view.id ? bills.filter(function (b) { return b.id === view.id; })[0] : null;
     var body;
     if (!_ready) body = E('div', { style: { padding: 32, textAlign: 'center', fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc600 } }, 'Loading…');
@@ -1600,18 +1649,24 @@ function ScreenInner(props) {
     else if (view.name === 'usageMonth' && bill) body = E(UsageMonthView, { bill: bill, month: view.month, state: state, onDone: toUsage });
     else if (view.name === 'usagePaste' && bill) body = E(UsagePasteView, { bill: bill, state: state });
     else if (view.name === 'meters' && bill) body = E(MetersView, { bill: bill, state: state, onDone: toUsage });
+    else if ((view.name === 'pay' || inPay) && PayView) body = E(PayView, { page: view.name === 'payEdit' ? 'edit' : view.name === 'payPaste' ? 'paste' : 'main', id: view.id,
+        privacy: props.privacyMode, ui: Object.assign({}, ui, { accent: TEAL }), onDone: toPay,
+        onEdit: function (id) { setView({ name: 'payEdit', id: id }); }, onPaste: function () { setView({ name: 'payPaste' }); } });
     else body = E(MainView, { bills: bills, privacy: props.privacyMode, onPaste: function () { setView({ name: 'paste' }); },
-                              onEdit: function (id) { setView({ name: 'edit', id: id }); }, onUsage: function (id) { setView({ name: 'usage', id: id }); } });
+                              onEdit: function (id) { setView({ name: 'edit', id: id }); }, onUsage: function (id) { setView({ name: 'usage', id: id }); },
+                              onPay: function () { _scrollTops.pay = 0; setView({ name: 'pay' }); } });
     var title = view.name === 'paste' ? 'Paste bills' : view.name === 'usage' ? (bill ? bill.name : '') + ' usage'
         : view.name === 'usageMonth' ? (view.month ? monthLabel(view.month) : 'Add month') : view.name === 'usagePaste' ? 'Paste usage'
-        : view.name === 'meters' ? 'Meter numbers' : view.name === 'tariff' ? 'Forecast rates' : view.id ? 'Edit bill' : 'Add bill';
+        : view.name === 'meters' ? 'Meter numbers' : view.name === 'tariff' ? 'Forecast rates'
+        : view.name === 'pay' ? 'Pay' : view.name === 'payPaste' ? 'Paste pay' : view.name === 'payEdit' ? (view.id ? 'Edit year' : 'Add year')
+        : view.id ? 'Edit bill' : 'Add bill';
     return E('div', {
         'data-swipe-tabs': view.name === 'main' ? '' : null, 'data-tab-screen': 'lifeadmin',
         style: { position: 'fixed', top: 'var(--topbar-h, 0px)', left: 0, right: 0, bottom: 0, zIndex: 9995, background: ui.C.bg, display: 'flex', flexDirection: 'column', WebkitTapHighlightColor: 'transparent' }
     },
         back && E(Header, { title: title, onBack: back }),
         _loadError && E('div', { style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.rose, padding: '8px 16px' } }, 'Storage problem: ' + _loadError),
-        E('div', { key: view.name, ref: scrollRef, onScroll: view.name === 'main' ? function (e) { _mainScrollTop = e.currentTarget.scrollTop; } : null,
+        E('div', { key: view.name, ref: scrollRef, onScroll: SCROLL_KEPT[view.name] ? function (e) { _scrollTops[view.name] = e.currentTarget.scrollTop; } : null,
                    className: 'ios-scroll', style: { flex: 1, minWidth: 0, overflowY: 'auto', overflowX: 'hidden', paddingBottom: 'max(env(safe-area-inset-bottom), 28px)' } },
             body));
 }
@@ -1620,14 +1675,14 @@ function ScreenInner(props) {
 class Boundary extends React.Component {
     constructor(p) { super(p); this.state = { error: null }; }
     static getDerivedStateFromError(error) { return { error: error }; }
-    componentDidCatch(error, info) { console.error('Life Admin screen error:', error, info); }
+    componentDidCatch(error, info) { console.error('Cash Flow screen error:', error, info); }
     render() {
         if (!this.state.error) return this.props.children;
         var ui = this.props.ui;
         return E('div', { style: { position: 'fixed', top: 'var(--topbar-h, 0px)', left: 0, right: 0, bottom: 0, zIndex: 9995, background: ui.C.bg, padding: '40px 20px', fontFamily: ui.sys } },
-            E('div', { style: { color: ui.C.rose, fontSize: 16, fontWeight: 600, marginBottom: 8 } }, 'Life Admin hit a problem'),
+            E('div', { style: { color: ui.C.rose, fontSize: 16, fontWeight: 600, marginBottom: 8 } }, 'Cash Flow hit a problem'),
             E('div', { style: { color: ui.C.zinc600, fontSize: 13, marginBottom: 20, lineHeight: 1.5 } },
-                String(this.state.error && this.state.error.message || this.state.error) + '. Your saved bills are untouched.'),
+                String(this.state.error && this.state.error.message || this.state.error) + '. Your saved bills and pay are untouched.'),
             E('button', { onClick: this.props.onClose, style: buttonStyle(ui) }, 'Back to Investments'));
     }
 }

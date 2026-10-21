@@ -211,10 +211,11 @@ window.MinusCircle=_li([{t:'c',cx:12,cy:12,r:10},'M8 12h8']);
 window.HelpCircle=_li([{t:'c',cx:12,cy:12,r:10},'M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3',{t:'l',x1:12,y1:17,x2:12.01,y2:17}]);</script>
 <!-- Balances screen lives in its own file. Bump ?v= whenever balances.js changes so the Home Screen app never mixes versions. -->
 <script src="balances.js?v=50"></script>
-<!-- Life Admin (bills) lives in its own file too, loaded after balances.js (it uses the Estate mortgage and alert banner). Bump ?v= on change. -->
-<script src="lifeadmin.js?v=11"></script>
-<!-- Pay (salary, bonus, stock awards) lives in its own file as well. Bump ?v= on change. -->
-<script src="pay.js?v=3"></script>
+<!-- Pay (salary, bonus, stock awards) lives in its own file too: the Pay line on the Cash Flow tab opens it. Bump ?v= on change. -->
+<script src="pay.js?v=4"></script>
+<!-- Cash Flow (pay and bills; formerly Life Admin) lives in its own file as well, loaded after balances.js (it uses the Estate
+     mortgage and alert banner) and pay.js. Bump ?v= on change. -->
+<script src="lifeadmin.js?v=12"></script>
 <script>
 try{"use strict";
 // ─── Lightweight SVG chart components (replaces Recharts) ──────────────────
@@ -1855,7 +1856,7 @@ function applyLoginHints(hints) {
     try { map = JSON.parse(localStorage.getItem(LOGIN_HINTS_KEY) || '{}') || {}; } catch {}
     const accounts = (window.BalancesStore && window.BalancesStore.get().accounts) || [];
     const names = new Set(accounts.map(a => _akNorm(a.name)));
-    // Life Admin (lifeadmin.js) finds a bill's hint by its provider or its name.
+    // Cash Flow (lifeadmin.js) finds a bill's hint by its provider or its name.
     const bills = (window.LifeAdminStore && window.LifeAdminStore.get().bills) || [];
     bills.forEach(b => { names.add(_akNorm(b.name)); if (b.provider) names.add(_akNorm(b.provider)); });
     for (const h of hints) {
@@ -4399,7 +4400,7 @@ function cloudBackupCounts(payload) {
     const usage = (Array.isArray(la.bills) ? la.bills : []).reduce((s, x) => s + n(x && x.usage && x.usage.months), 0);
     return { trades: n(p.transactions), plans: n(p.compConfigs), accounts: n(b.accounts), entries: n(b.snapshots), bills: n(la.bills), usage, payYears: n(pay.years) };
 }
-const CLOUD_BACKUP_COUNT_LABELS = { trades: 'trades', plans: 'equity plans', accounts: 'Estate accounts', entries: 'Estate entries', bills: 'Life Admin bills', usage: 'energy usage months', payYears: 'Pay years' };
+const CLOUD_BACKUP_COUNT_LABELS = { trades: 'trades', plans: 'equity plans', accounts: 'Estate accounts', entries: 'Estate entries', bills: 'Cash Flow bills', usage: 'energy usage months', payYears: 'years of pay' };
 // What `now` has fewer of than `before`, e.g. "3 trades (the last backup had 120)". null = nothing lost.
 function cloudBackupShrink(before, now) {
     if (!before) return null;
@@ -4421,7 +4422,7 @@ async function runCloudBackup(jsonString, force) {
         const bal = p.balances ? Object.assign({}, p.balances, { lastExportAt: null, updatedAt: null }) : p.balances;
         const la = p.lifeAdmin ? Object.assign({}, p.lifeAdmin, { updatedAt: null }) : null;
         const pay = p.pay ? Object.assign({}, p.pay, { updatedAt: null }) : null;
-        // Life Admin and Pay go last and only when they hold something, so backups made before they existed hash the same as before.
+        // Bills and pay (Cash Flow) go last and only when they hold something, so backups made before they existed hash the same as before.
         const hash = await cbSha256Hex(JSON.stringify([p.transactions, p.compConfigs, p.externalHoldings, bal, p.loadSource].concat(la ? [la] : [], pay ? [{ pay }] : [])));
         const counts = cloudBackupCounts(p);
         const since = st.at ? Date.now() - st.at : Infinity;
@@ -7622,7 +7623,15 @@ function EstateDeleteGroup() {
     );
 }
 
-// Settings → Life Admin: wipes every bill on this phone (tap twice). Password hints stay: they belong to the secrets file.
+// Settings → Cash Flow's line: '3 years of pay · 24 bills'.
+function cashFlowSummary(bills, payYears) {
+    const parts = [];
+    if (payYears) parts.push(payYears + (payYears === 1 ? ' year of pay' : ' years of pay'));
+    if (bills) parts.push(bills + (bills === 1 ? ' bill' : ' bills'));
+    return parts.length ? parts.join(' · ') : 'No pay or bills yet';
+}
+
+// Settings → Cash Flow: wipes every bill on this phone (tap twice). Password hints stay: they belong to the secrets file.
 function LifeAdminDeleteGroup() {
     const store = window.LifeAdminStore;
     const [, tick] = React.useState(0);
@@ -7639,7 +7648,7 @@ function LifeAdminDeleteGroup() {
     );
 }
 
-// Settings → Pay: wipes every year of pay on this phone (tap twice).
+// Settings → Cash Flow: wipes every year of pay on this phone (tap twice).
 function PayDeleteGroup() {
     const store = window.PayStore;
     const [, tick] = React.useState(0);
@@ -10255,15 +10264,11 @@ function MoreTab(props) {
                 React.createElement(SettingsSection, { id: 'estate', icon: Wallet, color: '#a78bfa', title: 'Estate', summary: estateSummary.text, attention: estateSummary.attention, open: openSection === 'estate', onToggle: toggleSection },
                     React.createElement(EstateDeleteGroup)
                 ),
-                window.LifeAdminStore && React.createElement(SettingsSection, { id: 'lifeadmin', icon: window.LifeAdminIcon, color: window.LifeAdminColor, title: 'Life Admin',
-                    summary: (n => n ? n + (n === 1 ? ' bill' : ' bills') : 'No bills yet')(window.LifeAdminStore.get().bills.length), attention: false,
+                window.LifeAdminStore && React.createElement(SettingsSection, { id: 'lifeadmin', icon: window.LifeAdminIcon, color: window.LifeAdminColor, title: 'Cash Flow',
+                    summary: cashFlowSummary(window.LifeAdminStore.get().bills.length, window.PayStore ? window.PayStore.get().years.length : 0), attention: false,
                     open: openSection === 'lifeadmin', onToggle: toggleSection },
+                    React.createElement(PayDeleteGroup),
                     React.createElement(LifeAdminDeleteGroup)
-                ),
-                window.PayStore && React.createElement(SettingsSection, { id: 'pay', icon: window.PayIcon, color: window.PayColor, title: 'Pay',
-                    summary: (n => n ? n + (n === 1 ? ' year' : ' years') : 'No pay yet')(window.PayStore.get().years.length), attention: false,
-                    open: openSection === 'pay', onToggle: toggleSection },
-                    React.createElement(PayDeleteGroup)
                 ),
                 React.createElement(SettingsSection, { id: 'alerts', icon: Bell, color: '#fb923c', title: 'Alerts', summary: 'Days before and after each alert', attention: false, open: openSection === 'alerts', onToggle: toggleSection },
                     React.createElement(AlertsGroup)
@@ -10274,7 +10279,7 @@ function MoreTab(props) {
                         React.createElement(Row, {
                             icon: Download, iconColor: '#a78bfa',
                             label: 'Export JSON Backup',
-                            sub: 'Everything: trades, prices, plans, Estate and Life Admin · SHA-256 signed',
+                            sub: 'Everything: trades, prices, plans, Estate and Cash Flow · SHA-256 signed',
                             onClick: exportPricesJson,
                         }),
                         React.createElement(Row, {
@@ -16872,7 +16877,7 @@ function PortfolioApp() {
                     giltPriceHistory: { v: 1, snaps: loadGyCache().snaps },
                     // Balances screen data (balances.js); null when it holds nothing or the file did not load.
                     balances: window.BalancesStore ? window.BalancesStore.backupSnapshot() : null,
-                    // Life Admin bills (lifeadmin.js); null when there are none. Password hints are never in here.
+                    // Cash Flow bills (lifeadmin.js); null when there are none. Password hints are never in here.
                     lifeAdmin: window.LifeAdminStore ? window.LifeAdminStore.backupSnapshot() : null,
                     // Pay (pay.js): salary, bonus and stock awards by year; null when there are none.
                     pay: window.PayStore ? window.PayStore.backupSnapshot() : null,
@@ -17411,19 +17416,19 @@ function PortfolioApp() {
         const [sheetSort, setSheetSort] = React.useState('value'); // 'value'|'today'|'total'
         // After Settings → Reload Latest Version, come back on Settings and the same tab (see useReloadLatest).
         const [showSettings, setShowSettings] = React.useState(() => !!readReloadReturn());
-        // Top tab bar: 'markets' | 'investments' | 'estate' | 'lifeadmin' | 'pay'. Markets is read-only and does not feed portfolio
+        // Top tab bar: 'markets' | 'investments' | 'estate' | 'lifeadmin'. Markets is read-only and does not feed portfolio
         // valuation; Estate (balances.js) tracks account balances month by month, separate from the portfolio valuation;
-        // Life Admin (lifeadmin.js) lists the monthly bills; Pay (pay.js) tracks salary and bonus year by year.
+        // Cash Flow (lifeadmin.js, id 'lifeadmin' from when it was Life Admin) has Pay (pay.js) and the monthly bills.
         const [activeTab, setActiveTab] = React.useState(() => {
             const t = (readReloadReturn() || {}).tab;
-            return t === 'markets' || t === 'estate' || t === 'lifeadmin' || t === 'pay' ? t : 'investments';
+            // 'pay': a reload started on the old Pay tab, now the Pay line on Cash Flow.
+            return t === 'markets' || t === 'estate' || t === 'lifeadmin' ? t : t === 'pay' ? 'lifeadmin' : 'investments';
         });
         React.useEffect(() => { reloadReturnTab = activeTab; }, [activeTab]);
         // Swipe left or right to move between the tabs (Fergus asked). See swipeAllowed for where a swipe may start.
         const tabOrderRef = React.useRef([]);
         tabOrderRef.current = ['markets', 'investments'].concat(typeof window.BalancesScreen === 'function' ? ['estate'] : [],
-                                                                typeof window.LifeAdminScreen === 'function' ? ['lifeadmin'] : [],
-                                                                typeof window.PayScreen === 'function' ? ['pay'] : []);
+                                                                typeof window.LifeAdminScreen === 'function' ? ['lifeadmin'] : []);
         // A swiped- or tapped-to screen slides in from the side it came from (Fergus: an instant switch felt too abrupt).
         const swipeDirRef = React.useRef(0);
         // Tapping a tab: another tab slides in like a swipe; the tab already open scrolls smoothly back to its top.
@@ -17475,8 +17480,6 @@ function PortfolioApp() {
         const showBalances = activeTab === 'estate' && hasBalances;
         const hasLifeAdmin = typeof window.LifeAdminScreen === 'function';
         const showLifeAdmin = activeTab === 'lifeadmin' && hasLifeAdmin;
-        const hasPay = typeof window.PayScreen === 'function';
-        const showPay = activeTab === 'pay' && hasPay;
         // The tab list scrolls sideways; fades mark an edge with more tabs past it, and the open tab is kept in view.
         const tabListRef = React.useRef(null);
         const [tabFade, setTabFade] = React.useState({ l: false, r: false });
@@ -18070,9 +18073,9 @@ function PortfolioApp() {
                 seen = now;
                 schedule(5000);
             }) : null;
-            // And when a bill is added, changed or deleted on the Life Admin tab.
+            // And when a bill is added, changed or deleted on the Cash Flow tab.
             const unsubBills = window.LifeAdminStore ? window.LifeAdminStore.subscribe(() => schedule(5000)) : null;
-            // And when a year of pay is added, changed or deleted on the Pay tab.
+            // And when a year of pay is added, changed or deleted (Cash Flow → Pay).
             const unsubPay = window.PayStore ? window.PayStore.subscribe(() => schedule(5000)) : null;
             const iv = setInterval(() => schedule(1000), 30 * 60 * 1000);
             return () => { clearTimeout(timer); clearInterval(iv); document.removeEventListener('visibilitychange', onVis); if (unsub) unsub(); if (unsubBills) unsubBills(); if (unsubPay) unsubPay(); };
@@ -18288,7 +18291,7 @@ function PortfolioApp() {
                     React.createElement('span', { style: { color: C.violet } }, `${jsonImportPending.summary.estate.accounts} accounts \u00b7 ${jsonImportPending.summary.estate.entries} entries` +
                         (jsonImportPending.summary.estate.latest ? ` \u00b7 latest ${new Date(jsonImportPending.summary.estate.latest + 'T12:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}` : ''))),
                 jsonImportPending.summary.lifeAdmin && React.createElement('div', null,
-                    React.createElement('span', { style: { color: C.zinc500 } }, 'Life Admin: '),
+                    React.createElement('span', { style: { color: C.zinc500 } }, 'Cash Flow: '),
                     React.createElement('span', { style: { color: C.violet } }, `${jsonImportPending.summary.lifeAdmin.bills} bills`)),
                 jsonImportPending.summary.pay && React.createElement('div', null,
                     React.createElement('span', { style: { color: C.zinc500 } }, 'Pay: '),
@@ -18322,8 +18325,8 @@ function PortfolioApp() {
                             if (jsonImportPending.summary.equityPlans > 0) parts.push('equity plans');
                             if (jsonImportPending.summary.custodyPositions > 0) parts.push('custody positions');
                             if (jsonImportPending.summary.estate) parts.push('Estate');
-                            if (jsonImportPending.summary.lifeAdmin) parts.push('Life Admin');
-                            if (jsonImportPending.summary.pay) parts.push('Pay');
+                            if (jsonImportPending.summary.lifeAdmin) parts.push('bills');
+                            if (jsonImportPending.summary.pay) parts.push('pay');
                             return 'Full restore: ' + parts.join(', ');
                         })())
                     )
@@ -18393,15 +18396,8 @@ function PortfolioApp() {
             ui:          { C, sys, rounded },
         }),
 
-        // ── Life Admin screen (lifeadmin.js): bills and outgoings.
+        // ── Cash Flow screen (lifeadmin.js): Pay (pay.js) and the bills.
         showLifeAdmin && React.createElement(window.LifeAdminScreen, {
-            onClose:     () => setActiveTab('investments'),
-            privacyMode,
-            ui:          { C, sys, rounded },
-        }),
-
-        // ── Pay screen (pay.js): salary, bonus and stock awards by year.
-        showPay && React.createElement(window.PayScreen, {
             onClose:     () => setActiveTab('investments'),
             privacyMode,
             ui:          { C, sys, rounded },
@@ -18489,7 +18485,7 @@ function PortfolioApp() {
                 style: { position: 'sticky', top: 0, zIndex: 60, background: C.surface, borderBottom: '1px solid ' + C.border,
                          paddingLeft: 12, paddingRight: 14, display: 'flex', alignItems: 'flex-end', gap: 6, flexShrink: 0 }
             },
-                // The tabs scroll sideways when they don't all fit (Fergus asked, with Pay making five); the edge that hides
+                // The tabs scroll sideways when they don't all fit (Fergus asked, when Pay made five); the edge that hides
                 // more tabs fades out. The bar sits 1px over the border below so the open tab joins its screen.
                 React.createElement('div', { role: 'tablist', ref: tabListRef, className: 'tab-scroll', onScroll: updateTabFade,
                     style: { position: 'relative', display: 'flex', alignItems: 'flex-end', gap: 2, minWidth: 0, flex: '1 1 auto', marginBottom: -1,
@@ -18508,10 +18504,8 @@ function PortfolioApp() {
                           icon: React.createElement(TrendingUp, { style: { width: 13, height: 13, flexShrink: 0 }, strokeWidth: 2 }) },
                         hasBalances && { id: 'estate', label: 'Estate', color: C.violet,
                           icon: window.BalancesIcon ? React.createElement(window.BalancesIcon, { style: { width: 13, height: 13, flexShrink: 0 }, strokeWidth: 2 }) : null },
-                        hasLifeAdmin && { id: 'lifeadmin', label: 'Life Admin', color: window.LifeAdminColor || C.emerald,
+                        hasLifeAdmin && { id: 'lifeadmin', label: 'Cash Flow', color: window.LifeAdminColor || C.emerald,
                           icon: window.LifeAdminIcon ? React.createElement(window.LifeAdminIcon, { style: { width: 13, height: 13, flexShrink: 0 }, strokeWidth: 2 }) : null },
-                        hasPay && { id: 'pay', label: 'Pay', color: window.PayColor || C.amber,
-                          icon: window.PayIcon ? React.createElement(window.PayIcon, { style: { width: 13, height: 13, flexShrink: 0 }, strokeWidth: 2 }) : null },
                     ].filter(Boolean).map(t => {
                         const on = activeTab === t.id;
                         return React.createElement('button', {

@@ -1,20 +1,23 @@
-// ─── Pay screen (salary, bonus, redundancy) ──────────────────────────────────
+// ─── Pay (salary, bonus, redundancy) ─────────────────────────────────────────
 // Pay year by year: base salary, the discretionary bonus and any redundancy payment, with total compensation,
 // year-on-year growth, bonus against base and a 3-year average, and a stacked bar chart. Each year also keeps what its
 // row on Fergus's sheet holds besides: the cash bonus payment and shares awarded that year, and the sales credits (EV)
-// generated. Everything stays on the year its row is for (Fergus asked): nothing moves between years. Opened from the Pay tab in the app's top tab bar, drawn below
-// that bar (its height comes from the --topbar-h CSS variable index.html publishes), like the Life Admin screen.
+// generated. Everything stays on the year its row is for (Fergus asked): nothing moves between years.
+// Pay is the Pay line on the Cash Flow tab (lifeadmin.js), not a tab of its own (Fergus asked): Cash Flow lists it,
+// opens its page and owns the header, Back and scrolling; this file draws the page's content.
 //
-// Loaded by index.html as its own file: <script src="pay.js?v=N">. Bump N there whenever this file changes, so the Home
-// Screen app never pairs a new index.html with a cached old copy of this file.
+// Loaded by index.html as its own file, before lifeadmin.js: <script src="pay.js?v=N">. Bump N there whenever this file
+// changes, so the Home Screen app never pairs a new index.html with a cached old copy of this file.
 //
 // Exposes:
-//   window.PayScreen — the Pay view (props: onClose, privacyMode, ui)
-//   window.PayStore  — backupSnapshot() / restore(obj) for the app's JSON backup, plus get/subscribe/deleteAll
-//   window.PayIcon   — the tab's icon
+//   window.PayView  — one Pay page (props: page 'main' | 'edit' | 'paste', id, privacy, ui, onEdit(id), onPaste(), onDone())
+//   window.PayStore — backupSnapshot() / restore(obj) for the app's JSON backup, headline() for the Cash Flow line, plus
+//                     get/subscribe/deleteAll
+//   window.PayIcon  — Pay's icon
 //
-// Data lives in its own IndexedDB database ('portfolio-pay') and goes into the app's backups (the cloud copy is
-// encrypted on the phone before it is sent). No pay figure is ever written into this file: the repo is public.
+// Data lives in its own IndexedDB database ('portfolio-pay', kept from when Pay was a tab: renaming it would strand saved
+// pay) and goes into the app's backups (the cloud copy is encrypted on the phone before it is sent). No pay figure is
+// ever written into this file: the repo is public.
 (function () {
 'use strict';
 var E = React.createElement;
@@ -174,6 +177,9 @@ var PayStore = {
         return true;
     },
     deleteAll: function () { return saveState(emptyState()); },
+    // The Cash Flow line: the latest year with its bonus known (with how it compares to the year before), and the year
+    // under way after it. Both null when there is no pay yet.
+    headline: function () { var s = summary(computeYears(_state.years)); return { latest: s.latest, current: s.current, count: _state.years.length }; },
 };
 
 function useStoreState() {
@@ -366,7 +372,6 @@ function fmtPrice(n, cur) { return n == null ? '—' : (cur === 'GBP' ? '£' : '
 function axisText(v) { return v >= 1000 ? '£' + (v / 1000).toLocaleString('en-GB', { maximumFractionDigits: 1 }) + 'k' : '£' + Math.round(v); }
 
 // ── UI ───────────────────────────────────────────────────────────────────────
-var ORANGE = '#fb923c';
 // Chart series (checked for colour-blind separation against the app's dark surface).
 var SERIES = [
     { id: 'base',       label: 'Base',       color: '#3b82f6' },
@@ -381,13 +386,13 @@ var DEFAULT_UI = {
          zinc400: '#cbd5e1', zinc500: '#a1a1aa', zinc600: '#9da5b4', zinc700: '#888894', white: '#ffffff' },
     sys: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif',
     rounded: 'ui-rounded, "SF Pro Rounded", -apple-system, BlinkMacSystemFont, sans-serif',
+    accent: '#2dd4bf',   // the buttons' colour: Cash Flow's teal, which Cash Flow passes in
 };
 var UICtx = React.createContext(DEFAULT_UI);
 function useUI() { return React.useContext(UICtx); }
 
 function icon(paths) { return typeof _li === 'function' ? _li(paths) : function () { return null; }; }
 var PayIcon = icon([{ t: 'r', x: 2, y: 6, w: 20, h: 12, rx: 2 }, { t: 'c', cx: 12, cy: 12, r: 2.5 }, 'M6 12h.01', 'M18 12h.01']);
-var BackIcon = icon(['M15 18l-6-6 6-6']);
 
 function cardStyle(ui, extra) {
     return Object.assign({ background: 'linear-gradient(180deg, ' + ui.C.surfaceHigh + ' 0%, ' + ui.C.surface + ' 100%)',
@@ -398,26 +403,23 @@ function moneyStyle(ui, size, privacy, color, weight) {
     return { fontFamily: ui.rounded, fontVariantNumeric: 'tabular-nums', fontSize: size, fontWeight: weight || 700, color: color || ui.C.white,
              whiteSpace: 'nowrap', filter: privacy ? 'blur(7px)' : 'none' };
 }
+// '#2dd4bf' at 40% → 'rgba(45,212,191,0.4)'.
+function tint(hex, a) {
+    var n = parseInt(String(hex).slice(1), 16);
+    return 'rgba(' + (n >> 16 & 255) + ',' + (n >> 8 & 255) + ',' + (n & 255) + ',' + a + ')';
+}
 function buttonStyle(ui, kind) {
     var primary = kind === 'primary', danger = kind === 'danger';
     return { minHeight: 44, borderRadius: 12, padding: '0 14px', fontFamily: ui.sys, fontSize: 14, fontWeight: 600, cursor: 'pointer',
-             background: primary ? 'rgba(251,146,60,0.14)' : danger ? 'rgba(248,113,113,0.10)' : 'rgba(39,39,42,0.6)',
-             border: '1px solid ' + (primary ? 'rgba(251,146,60,0.4)' : danger ? 'rgba(248,113,113,0.3)' : ui.C.border),
-             color: primary ? ORANGE : danger ? ui.C.rose : ui.C.zinc400,
+             background: primary ? tint(ui.accent, 0.14) : danger ? 'rgba(248,113,113,0.10)' : 'rgba(39,39,42,0.6)',
+             border: '1px solid ' + (primary ? tint(ui.accent, 0.4) : danger ? 'rgba(248,113,113,0.3)' : ui.C.border),
+             color: primary ? ui.accent : danger ? ui.C.rose : ui.C.zinc400,
              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 };
 }
 function inputStyle(ui, extra) {
     return Object.assign({ display: 'block', width: '100%', boxSizing: 'border-box', minWidth: 0, background: 'rgba(0,0,0,0.35)',
                            border: '1px solid ' + ui.C.border, borderRadius: 10, color: ui.C.white, fontFamily: ui.sys, fontSize: 16,
                            padding: '0 10px', height: 40, outline: 'none', WebkitAppearance: 'none', appearance: 'none' }, extra || {});
-}
-function Header(props) {
-    var ui = useUI();
-    return E('div', { style: { padding: '6px 16px 6px 8px', background: 'rgba(13,18,24,0.98)', borderBottom: '1px solid ' + ui.C.border, flexShrink: 0,
-                                display: 'flex', alignItems: 'center', gap: 6, minHeight: 44, boxSizing: 'border-box' } },
-        E('button', { onClick: props.onBack, 'aria-label': 'Back', style: { background: 'none', border: 'none', color: ORANGE, display: 'flex', alignItems: 'center', padding: '6px 4px', cursor: 'pointer', fontFamily: ui.sys, fontSize: 15 } },
-            E(BackIcon, { style: { width: 18, height: 18 }, strokeWidth: 2 }), 'Back'),
-        E('div', { style: { fontFamily: ui.sys, fontSize: 17, fontWeight: 700, flex: 1, minWidth: 0, color: ui.C.white } }, props.title));
 }
 function Field(props) {
     var ui = useUI();
@@ -583,7 +585,6 @@ function YearRow(props) {
 }
 
 var _openYear = null;
-var _mainScrollTop = 0;
 function MainView(props) {
     var ui = useUI(), rows = props.rows;
     var open = React.useState(_openYear);
@@ -733,60 +734,31 @@ function PasteView(props) {
             'No years found. Copy the rows straight from the spreadsheet so the columns stay separate, with the year in the first column.'));
 }
 
-function ScreenInner(props) {
+// One Pay page, drawn inside the Cash Flow screen (which gives it the header, Back and the scrolling).
+//   page 'main':  the summary, chart and years; 'edit': add (id null) or change one year; 'paste': paste from the sheet.
+function PayPage(props) {
     var ui = useUI();
     var state = useStoreState();
-    var v = React.useState({ name: 'main' }), view = v[0], setView = v[1];
     var rows = React.useMemo(function () { return computeYears(state.years); }, [state]);
-    var scrollRef = React.useRef(null);
-    React.useLayoutEffect(function () {
-        if (view.name === 'main' && _ready && scrollRef.current) scrollRef.current.scrollTo({ top: _mainScrollTop, behavior: 'instant' });
-    }, [view.name, _ready]);
-    var back = view.name === 'main' ? null : function () { setView({ name: 'main' }); };
     var body;
     if (!_ready) body = E('div', { style: { padding: 32, textAlign: 'center', fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc600 } }, 'Loading…');
-    else if (view.name === 'edit') body = E(EditView, { id: view.id, state: state, onDone: back });
-    else if (view.name === 'paste') body = E(PasteView, { state: state, privacy: props.privacyMode });
-    else body = E(MainView, { rows: rows, privacy: props.privacyMode, onPaste: function () { setView({ name: 'paste' }); },
-                              onEdit: function (id) { setView({ name: 'edit', id: id }); } });
-    var title = view.name === 'paste' ? 'Paste pay' : view.id ? 'Edit year' : 'Add year';
-    return E('div', {
-        'data-swipe-tabs': view.name === 'main' ? '' : null, 'data-tab-screen': 'pay',
-        style: { position: 'fixed', top: 'var(--topbar-h, 0px)', left: 0, right: 0, bottom: 0, zIndex: 9995, background: ui.C.bg, display: 'flex', flexDirection: 'column', WebkitTapHighlightColor: 'transparent' }
-    },
-        back && E(Header, { title: title, onBack: back }),
-        _loadError && E('div', { style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.rose, padding: '8px 16px' } }, 'Storage problem: ' + _loadError),
-        E('div', { key: view.name, ref: scrollRef, onScroll: view.name === 'main' ? function (e) { _mainScrollTop = e.currentTarget.scrollTop; } : null,
-                   className: 'ios-scroll', style: { flex: 1, minWidth: 0, overflowY: 'auto', overflowX: 'hidden', paddingBottom: 'max(env(safe-area-inset-bottom), 28px)' } },
-            body));
+    else if (props.page === 'edit') body = E(EditView, { id: props.id, state: state, onDone: props.onDone });
+    else if (props.page === 'paste') body = E(PasteView, { state: state, privacy: props.privacy });
+    else body = E(MainView, { rows: rows, privacy: props.privacy, onPaste: props.onPaste, onEdit: props.onEdit });
+    return E(React.Fragment, null,
+        _loadError && E('div', { style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.rose, padding: '8px 16px' } }, 'Pay storage problem: ' + _loadError),
+        body);
 }
 
-// Keeps a bug in this screen from taking down the rest of the app.
-class Boundary extends React.Component {
-    constructor(p) { super(p); this.state = { error: null }; }
-    static getDerivedStateFromError(error) { return { error: error }; }
-    componentDidCatch(error, info) { console.error('Pay screen error:', error, info); }
-    render() {
-        if (!this.state.error) return this.props.children;
-        var ui = this.props.ui;
-        return E('div', { style: { position: 'fixed', top: 'var(--topbar-h, 0px)', left: 0, right: 0, bottom: 0, zIndex: 9995, background: ui.C.bg, padding: '40px 20px', fontFamily: ui.sys } },
-            E('div', { style: { color: ui.C.rose, fontSize: 16, fontWeight: 600, marginBottom: 8 } }, 'Pay hit a problem'),
-            E('div', { style: { color: ui.C.zinc600, fontSize: 13, marginBottom: 20, lineHeight: 1.5 } },
-                String(this.state.error && this.state.error.message || this.state.error) + '. Your saved pay is untouched.'),
-            E('button', { onClick: this.props.onClose, style: buttonStyle(ui) }, 'Back to Investments'));
-    }
-}
-
-function PayScreen(props) {
+function PayView(props) {
     var ui = Object.assign({}, DEFAULT_UI, props.ui || {});
     ui.C = Object.assign({}, DEFAULT_UI.C, (props.ui && props.ui.C) || {});
-    return E(UICtx.Provider, { value: ui }, E(Boundary, { ui: ui, onClose: props.onClose }, E(ScreenInner, props)));
+    return E(UICtx.Provider, { value: ui }, E(PayPage, props));
 }
 
-window.PayScreen = PayScreen;
+window.PayView = PayView;
 window.PayStore = PayStore;
 window.PayIcon = PayIcon;
-window.PayColor = ORANGE;
 // For tests only: the pure parts, no UI.
 window.__payInternals = { validateState: validateState, validYear: validYear, parsePaste: parsePaste, mergeYears: mergeYears, computeYears: computeYears,
     summary: summary, fxFor: fxFor, headerKey: headerKey, stockNameOf: stockNameOf };

@@ -1,4 +1,4 @@
-// Life Admin (docs/lifeadmin.js): bills pasted from a spreadsheet, their costs, the Estate mortgage, renewal alerts.
+// Cash Flow (docs/lifeadmin.js, formerly Life Admin): bills pasted from a spreadsheet, their costs, the Estate mortgage, renewal alerts.
 // Every bill here is made up: the repo is public.
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -143,7 +143,7 @@ test('cloud backup counts bills, so losing them holds the backup back', () => {
     const before = app.cloudBackupCounts({ lifeAdmin: { bills: [{}, {}] } });
     const now = app.cloudBackupCounts({});
     assert.equal(before.bills, 2);
-    assert.match(app.cloudBackupShrink(before, now), /0 Life Admin bills \(the last backup had 2\)/);
+    assert.match(app.cloudBackupShrink(before, now), /0 Cash Flow bills \(the last backup had 2\)/);
 });
 
 // ── Energy usage ──

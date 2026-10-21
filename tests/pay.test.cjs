@@ -1,10 +1,10 @@
-// Pay (docs/pay.js): a pay sheet pasted in, the figures worked out from it, backups.
+// Pay (docs/pay.js, the Pay line on Cash Flow): a pay sheet pasted in, the figures worked out from it, backups.
 // Every figure here is made up: the repo is public.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { loadApp } = require('./load.cjs');
 
-const { pay: P, app } = loadApp();
+const { pay: P, app, ctx } = loadApp();
 const plain = x => JSON.parse(JSON.stringify(x));
 const round = (v, dp = 4) => (v == null ? v : Math.round(v * 10 ** dp) / 10 ** dp);
 
@@ -117,5 +117,22 @@ test('Pay is in the cloud backup counts, so a backup that lost years is held bac
     const before = app.cloudBackupCounts({ pay: { years: [{}, {}, {}] } });
     const now = app.cloudBackupCounts({ pay: { years: [{}] } });
     assert.equal(before.payYears, 3);
-    assert.match(app.cloudBackupShrink(before, now), /1 Pay years \(the last backup had 3\)/);
+    assert.match(app.cloudBackupShrink(before, now), /1 years of pay \(the last backup had 3\)/);
+});
+
+test('the Cash Flow Pay line shows the latest year with its bonus known, and the year under way', () => {
+    const store = ctx.PayStore;
+    assert.deepEqual(plain(store.headline()), { latest: null, current: null, count: 0 });
+    assert.equal(store.restore({ v: 2, years: [{ year: 2024, base: 100000, bonus: 20000 }, { year: 2025, base: 110000, bonus: 30000, redundancy: 5000 },
+                                               { year: 2026, base: 120000 }] }), true);
+    const h = store.headline();
+    assert.deepEqual([h.latest.year, h.latest.tc, round(h.latest.yoy), h.current.year, h.current.base, h.count], [2025, 145000, round(145000 / 120000 - 1), 2026, 120000, 3]);
+    store.restore({ v: 2, years: [{ year: 2026, base: 120000 }] });
+    assert.deepEqual([store.headline().latest, store.headline().current.year], [null, 2026]);
+});
+
+test('Settings sums up Cash Flow as pay and bills', () => {
+    assert.equal(app.cashFlowSummary(0, 0), 'No pay or bills yet');
+    assert.equal(app.cashFlowSummary(1, 1), '1 year of pay · 1 bill');
+    assert.equal(app.cashFlowSummary(24, 0), '24 bills');
 });
