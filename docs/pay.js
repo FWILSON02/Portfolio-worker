@@ -10,7 +10,8 @@
 // changes, so the Home Screen app never pairs a new index.html with a cached old copy of this file.
 //
 // Exposes:
-//   window.PayView  — one Pay page (props: page 'main' | 'edit' | 'paste', id, privacy, ui, onEdit(id), onPaste(), onDone())
+//   window.PayView  — one Pay page (props: page 'main' | 'edit' | 'paste' | 'takehome', id, privacy, ui, onEdit(id), onPaste(),
+//                     onTakeHome(), onDone())
 //   window.PayStore — backupSnapshot() / restore(obj) for the app's JSON backup, headline() for the Cash Flow line, plus
 //                     get/subscribe/deleteAll
 //   window.PayIcon  — Pay's icon
@@ -34,6 +35,12 @@ var E = React.createElement;
 //          shares:     shares awarded in this year, at `price` a share in `currency` (USD or GBP), named stockName ('Citi').
 //          ev:         sales credits generated in the year (EV), $; null = none recorded.
 //          fx:         US$ per £1 for the year, to set pay against EV; null = the year's average from USD_PER_GBP.
+//   takeHome (optional) = { pct, scheme, onBonus, payslip }: what's needed to work out take-home pay (see netPay).
+//          pct:     pension contribution, a share of pay (0.05 = 5%).
+//          scheme:  'sacrifice' (salary sacrifice: before tax and NI), 'netpay' (before tax, not NI) or 'ras' (relief at
+//                   source: taken from pay after tax, the pension adds basic-rate relief).
+//          onBonus: the contribution is taken from the bonus too.
+//          payslip: the monthly take-home on the latest payslip, £; when set, Cash Flow uses it instead of the worked-out one.
 //   v 1 kept cash, shares and price on the bonus year (the year before the one they were paid in); v 2 keeps them on
 //   the year paid, as the sheet does. Loading a v 1 state moves them back once.
 var DB_NAME = 'portfolio-pay';
@@ -110,7 +117,17 @@ function validateState(s) {
         byYear[c.year] = c;
     });
     var years = Object.keys(byYear).map(function (k) { return byYear[k]; }).sort(function (a, b) { return a.year - b.year; });
-    return { v: 2, years: years, updatedAt: typeof s.updatedAt === 'number' ? s.updatedAt : null };
+    var out = { v: 2, years: years, updatedAt: typeof s.updatedAt === 'number' ? s.updatedAt : null };
+    var th = validTakeHome(s.takeHome);
+    if (th) out.takeHome = th;
+    return out;
+}
+var SCHEMES = [{ id: 'sacrifice', label: 'Salary sacrifice' }, { id: 'netpay', label: 'Net pay (before tax)' }, { id: 'ras', label: 'Relief at source' }];
+function validTakeHome(t) {
+    if (!t || typeof t !== 'object') return null;
+    var pct = typeof t.pct === 'number' && t.pct >= 0 && t.pct <= 0.6 ? Math.round(t.pct * 10000) / 10000 : 0;
+    return { pct: pct, scheme: SCHEMES.some(function (x) { return x.id === t.scheme; }) ? t.scheme : 'sacrifice', onBonus: t.onBonus === true,
+             payslip: positive(money(t.payslip)) };
 }
 // A v 1 state's years with each cash payment, shares and price moved from the bonus year to the year after (when they
 // were paid), where the sheet has them. A year that only gets them gains a row.
@@ -177,9 +194,12 @@ var PayStore = {
         return true;
     },
     deleteAll: function () { return saveState(emptyState()); },
-    // The Cash Flow line: the latest year with its bonus known (with how it compares to the year before), and the year
-    // under way after it. Both null when there is no pay yet.
-    headline: function () { var s = summary(computeYears(_state.years)); return { latest: s.latest, current: s.current, count: _state.years.length }; },
+    // The Cash Flow line: the latest year with its bonus known (with how it compares to the year before), the year under
+    // way after it, and take-home pay (takeHomeOf). All null when there is no pay yet.
+    headline: function () {
+        var rows = computeYears(_state.years), s = summary(rows);
+        return { latest: s.latest, current: s.current, count: _state.years.length, takeHome: takeHomeOf(_state, rows) };
+    },
 };
 
 function useStoreState() {
@@ -246,6 +266,52 @@ function summary(rows) {
     if (first && latest && latest.year > first.year && first.earned > 0)
         cagr = Math.pow(latest.earned / first.earned, 1 / (latest.year - first.year)) - 1;
     return { latest: latest, current: current, first: first, cagr: cagr };
+}
+
+// ── Take-home pay ────────────────────────────────────────────────────────────
+// UK (outside Scotland) income tax and employee National Insurance for 2026/27. The thresholds are frozen, so these are
+// the 2025/26 figures too. Worked out over the year, as PAYE evens out by the year's end; a bonus month's payslip will
+// differ, the year won't. Relief at source includes the higher-rate relief claimed back through self assessment, so
+// payslips show a little less. Not covered: student loan, Scottish rates, taxable benefits: the payslip figure is there
+// for those.
+var TAX = { allowance: 12570, taperFrom: 100000, basicBand: 37700, additionalFrom: 125140, basic: 0.2, higher: 0.4, additional: 0.45,
+            niFrom: 12570, niUpper: 50270, niMain: 0.08, niUpperRate: 0.02 };
+// Income tax on a year's taxable pay. ani: adjusted net income, which sets how much of the personal allowance is left;
+// band: extra basic-rate band (relief at source widens it by the gross contribution).
+function incomeTax(taxable, ani, band) {
+    var pa = Math.max(0, TAX.allowance - Math.max(0, ani - TAX.taperFrom) / 2);
+    var above = Math.max(0, taxable - pa);
+    var basic = Math.min(above, TAX.basicBand + (band || 0));
+    var additional = Math.max(0, taxable - TAX.additionalFrom);
+    return basic * TAX.basic + Math.max(0, above - basic - additional) * TAX.higher + additional * TAX.additional;
+}
+function nationalInsurance(pay) {
+    return Math.max(0, Math.min(pay, TAX.niUpper) - TAX.niFrom) * TAX.niMain + Math.max(0, pay - TAX.niUpper) * TAX.niUpperRate;
+}
+// A year's pay → { gross, pension, tax, ni, net }. pension: what comes out of pay for it (relief at source: 80% of the
+// contribution, the pension adding the other 20%).
+function netPay(base, bonus, th) {
+    th = th || validTakeHome({});
+    var gross = (base || 0) + (bonus || 0);
+    var contrib = th.pct * ((base || 0) + (th.onBonus ? bonus || 0 : 0));
+    var taxable = gross, niPay = gross, fromPay = contrib, ani = gross, band = 0;
+    if (th.scheme === 'sacrifice') { taxable = gross - contrib; niPay = gross - contrib; ani = taxable; }
+    else if (th.scheme === 'netpay') { taxable = gross - contrib; ani = taxable; }
+    else { fromPay = contrib * 0.8; ani = gross - contrib; band = contrib; }
+    var tax = incomeTax(taxable, ani, band), ni = nationalInsurance(niPay);
+    return { gross: gross, pension: fromPay, tax: tax, ni: ni, net: gross - fromPay - tax - ni };
+}
+// Take-home for Cash Flow: the base salary of the year under way (else the latest year), a month at a time, and the
+// latest known bonus after tax and pension on top of it (paid once, so kept out of the monthly figure).
+function takeHomeOf(state, rows) {
+    var s = summary(rows), y = s.current || s.latest;
+    if (!y || !(y.base > 0)) return null;
+    var th = state.takeHome || validTakeHome({}), year = netPay(y.base, 0, th);
+    var lastBonus = rows.filter(function (r) { return r.bonus > 0; }).pop() || null;
+    var bonus = lastBonus ? { year: lastBonus.year, gross: lastBonus.bonus, net: netPay(y.base, lastBonus.bonus, th).net - year.net } : null;
+    var worked = year.net / 12;
+    return { year: y.year, base: y.base, annual: year, worked: worked, payslip: th.payslip, monthly: th.payslip || worked,
+             settings: th, set: !!state.takeHome, bonus: bonus };
 }
 
 // ── Paste from a spreadsheet ─────────────────────────────────────────────────
@@ -584,6 +650,43 @@ function YearRow(props) {
         props.open && E(Details, { row: r, prev: props.prev, privacy: p, onEdit: props.onEdit }));
 }
 
+// Take-home: a month of the base salary after pension, income tax and NI, and the latest bonus after them.
+function TakeHomeCard(props) {
+    var ui = useUI(), t = props.takeHome, p = props.privacy;
+    if (!t) return null;
+    var a = t.annual, m = function (v) { return v / 12; };
+    var line = function (label, v, minus, strong) {
+        return E('div', { key: label, style: { display: 'flex', justifyContent: 'space-between', gap: 12, padding: '4px 0', fontFamily: ui.sys, fontSize: strong ? 14 : 13,
+                                               color: strong ? ui.C.white : ui.C.zinc400, fontWeight: strong ? 600 : 400, borderTop: strong ? '1px solid ' + ui.C.border : 'none', marginTop: strong ? 4 : 0, paddingTop: strong ? 8 : 4 } },
+            E('span', null, label), E('span', { style: moneyStyle(ui, strong ? 14 : 13, p, strong ? ui.C.white : ui.C.zinc400, strong ? 650 : 500) }, (minus ? '−' : '') + fmtGBP(v)));
+    };
+    var sch = SCHEMES.filter(function (x) { return x.id === t.settings.scheme; })[0];
+    var diff = t.payslip ? t.payslip - t.worked : null;
+    return E('div', { style: cardStyle(ui, { padding: '16px 18px', marginTop: 14 }) },
+        E('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 } },
+            E('span', { style: capsLabel(ui) }, 'Take-home ' + t.year),
+            E('button', { onClick: props.onEdit, style: { fontFamily: ui.sys, fontSize: 12, color: ui.accent, background: 'none', border: '1px solid ' + tint(ui.accent, 0.4), borderRadius: 999, padding: '3px 10px', cursor: 'pointer' } }, 'Edit')),
+        E('div', { style: { display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 8 } },
+            E('span', { style: moneyStyle(ui, 28, p) }, fmtGBP(t.monthly)),
+            E('span', { style: { fontFamily: ui.sys, fontSize: 14, color: ui.C.zinc600 } }, t.payslip ? 'a month, from your payslip' : 'a month')),
+        t.payslip && E('div', { style: { fontFamily: ui.sys, fontSize: 12.5, color: ui.C.zinc600, marginTop: 2 } },
+            'Worked out: ', E('span', { style: { filter: p ? 'blur(6px)' : 'none' } }, fmtGBP(t.worked)), Math.abs(diff) >= 1 ? ' (payslip ' + (diff > 0 ? '+' : '−') : '',
+            Math.abs(diff) >= 1 && E('span', { style: { filter: p ? 'blur(6px)' : 'none' } }, fmtGBP(Math.abs(diff))), Math.abs(diff) >= 1 ? ')' : ''),
+        E('div', { style: { marginTop: 10 } },
+            line('Base salary', m(a.gross)),
+            line('Pension' + (t.settings.pct ? ' ' + fmtPct(t.settings.pct) + ', ' + sch.label.toLowerCase() : ''), m(a.pension), a.pension > 0),
+            line('Income tax', m(a.tax), true),
+            line('National Insurance', m(a.ni), true),
+            line('Take-home', m(a.net), false, true)),
+        t.bonus && E('div', { style: { fontFamily: ui.sys, fontSize: 12.5, color: ui.C.zinc600, marginTop: 8, lineHeight: 1.45 } },
+            'Bonus: ', E('span', { style: { filter: p ? 'blur(6px)' : 'none' } }, fmtGBP(t.bonus.gross)), ' (' + t.bonus.year + ') is about ',
+            E('span', { style: { filter: p ? 'blur(6px)' : 'none', color: ui.C.zinc400 } }, fmtGBP(t.bonus.net)), ' after tax' + (t.settings.onBonus && t.settings.pct ? ' and pension' : '') + ', on top, when paid.'),
+        !t.set && E('div', { style: { fontFamily: ui.sys, fontSize: 12.5, color: ui.C.amber, marginTop: 8, lineHeight: 1.45 } },
+            'Pension not set yet, so none is taken off. Tap Edit to add it.'),
+        E('div', { style: { fontFamily: ui.sys, fontSize: 11.5, color: ui.C.zinc700, marginTop: 8, lineHeight: 1.4 } },
+            '2026/27 UK tax and NI on ' + t.year + '’s base, over the year. No student loan, Scottish rates or benefits: add your payslip figure if they apply.'));
+}
+
 var _openYear = null;
 function MainView(props) {
     var ui = useUI(), rows = props.rows;
@@ -603,6 +706,7 @@ function MainView(props) {
     rows.forEach(function (r) { byYear[r.year] = r; });
     return E('div', { style: { padding: '12px 16px 0' } },
         E(Hero, { summary: s, prev: s.latest ? byYear[s.latest.year - 1] : null, privacy: props.privacy }),
+        E(TakeHomeCard, { takeHome: props.takeHome, privacy: props.privacy, onEdit: props.onTakeHome }),
         E(ChartCard, { rows: rows, summary: s, privacy: props.privacy }),
         E('div', { style: { margin: '22px 4px 8px' } }, E('span', { style: capsLabel(ui) }, 'Years')),
         E('div', { style: cardStyle(ui, { overflow: 'hidden' }) },
@@ -695,6 +799,36 @@ function EditView(props) {
             existing && E('button', { style: buttonStyle(ui, 'danger'), onClick: remove }, del[0] ? 'Tap again to delete' : 'Delete year')));
 }
 
+// The pension and payslip figures take-home is worked out from.
+function TakeHomeView(props) {
+    var ui = useUI(), th = props.state.takeHome || validTakeHome({});
+    var f = React.useState(function () {
+        return { pct: th.pct ? String(Math.round(th.pct * 10000) / 100) : '', scheme: th.scheme, onBonus: th.onBonus ? 'yes' : 'no', payslip: th.payslip == null ? '' : String(th.payslip) };
+    });
+    var form = f[0], err = React.useState(null);
+    function set(k, v) { var n = Object.assign({}, form); n[k] = v; f[1](n); }
+    function save() {
+        var pct = form.pct.trim() === '' ? 0 : parseNum(form.pct), slip = form.payslip.trim() === '' ? null : parseNum(form.payslip);
+        if (pct == null || pct < 0 || pct > 60) return err[1]('The pension should be a percentage, e.g. 5.');
+        if (form.payslip.trim() !== '' && !(slip > 0)) return err[1]('The payslip take-home should be an amount in pounds.');
+        saveState(Object.assign({}, props.state, { takeHome: { pct: pct / 100, scheme: form.scheme, onBonus: form.onBonus === 'yes', payslip: slip } })).catch(function () {});
+        props.onDone();
+    }
+    var select = function (k, options) {
+        return E('select', { value: form[k], onChange: function (e) { set(k, e.target.value); }, style: inputStyle(ui) },
+            options.map(function (o) { return E('option', { key: o.id, value: o.id }, o.label); }));
+    };
+    return E('div', { style: { padding: '16px 16px 0' } },
+        E('div', { style: { display: 'flex', gap: 10 } },
+            E(Label, { text: 'Your pension (%)', flex: 1 }, E('input', { value: form.pct, inputMode: 'decimal', placeholder: '0', onChange: function (e) { set('pct', e.target.value); }, style: inputStyle(ui) })),
+            E(Label, { text: 'From bonus too', flex: 1 }, select('onBonus', [{ id: 'no', label: 'No' }, { id: 'yes', label: 'Yes' }]))),
+        E(Label, { text: 'How it’s taken', hint: 'Salary sacrifice comes off before tax and NI; net pay before tax only; relief at source after tax, with 20% added by the pension. Your payslip or pension portal says which.' }, select('scheme', SCHEMES)),
+        E(Label, { text: 'Take-home on your latest payslip (£ a month)', hint: 'Optional. When set, Cash Flow uses it instead of the worked-out figure: use it if you have a student loan, benefits or a different tax code.' },
+            E('input', { value: form.payslip, inputMode: 'decimal', placeholder: 'Worked out', onChange: function (e) { set('payslip', e.target.value); }, style: inputStyle(ui) })),
+        err[0] && E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.rose, marginBottom: 10 } }, err[0]),
+        E('button', { style: Object.assign(buttonStyle(ui, 'primary'), { width: '100%' }), onClick: save }, 'Save'));
+}
+
 // Paste rows copied out of a spreadsheet, check them, then add them.
 function PasteView(props) {
     var ui = useUI(), p = props.privacy;
@@ -735,7 +869,8 @@ function PasteView(props) {
 }
 
 // One Pay page, drawn inside the Cash Flow screen (which gives it the header, Back and the scrolling).
-//   page 'main':  the summary, chart and years; 'edit': add (id null) or change one year; 'paste': paste from the sheet.
+//   page 'main':  the summary, take-home, chart and years; 'edit': add (id null) or change one year; 'paste': paste from
+//   the sheet; 'takehome': the pension and payslip figures take-home is worked out from.
 function PayPage(props) {
     var ui = useUI();
     var state = useStoreState();
@@ -744,7 +879,8 @@ function PayPage(props) {
     if (!_ready) body = E('div', { style: { padding: 32, textAlign: 'center', fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc600 } }, 'Loading…');
     else if (props.page === 'edit') body = E(EditView, { id: props.id, state: state, onDone: props.onDone });
     else if (props.page === 'paste') body = E(PasteView, { state: state, privacy: props.privacy });
-    else body = E(MainView, { rows: rows, privacy: props.privacy, onPaste: props.onPaste, onEdit: props.onEdit });
+    else if (props.page === 'takehome') body = E(TakeHomeView, { state: state, onDone: props.onDone });
+    else body = E(MainView, { rows: rows, takeHome: takeHomeOf(state, rows), privacy: props.privacy, onPaste: props.onPaste, onEdit: props.onEdit, onTakeHome: props.onTakeHome });
     return E(React.Fragment, null,
         _loadError && E('div', { style: { fontFamily: ui.sys, fontSize: 12, color: ui.C.rose, padding: '8px 16px' } }, 'Pay storage problem: ' + _loadError),
         body);
@@ -760,6 +896,7 @@ window.PayView = PayView;
 window.PayStore = PayStore;
 window.PayIcon = PayIcon;
 // For tests only: the pure parts, no UI.
-window.__payInternals = { validateState: validateState, validYear: validYear, parsePaste: parsePaste, mergeYears: mergeYears, computeYears: computeYears,
+window.__payInternals = { netPay: netPay, incomeTax: incomeTax, nationalInsurance: nationalInsurance, takeHomeOf: takeHomeOf, validTakeHome: validTakeHome,
+    validateState: validateState, validYear: validYear, parsePaste: parsePaste, mergeYears: mergeYears, computeYears: computeYears,
     summary: summary, fxFor: fxFor, headerKey: headerKey, stockNameOf: stockNameOf };
 })();

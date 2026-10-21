@@ -122,7 +122,7 @@ test('Pay is in the cloud backup counts, so a backup that lost years is held bac
 
 test('the Cash Flow Pay line shows the latest year with its bonus known, and the year under way', () => {
     const store = ctx.PayStore;
-    assert.deepEqual(plain(store.headline()), { latest: null, current: null, count: 0 });
+    assert.deepEqual(plain(store.headline()), { latest: null, current: null, count: 0, takeHome: null });
     assert.equal(store.restore({ v: 2, years: [{ year: 2024, base: 100000, bonus: 20000 }, { year: 2025, base: 110000, bonus: 30000, redundancy: 5000 },
                                                { year: 2026, base: 120000 }] }), true);
     const h = store.headline();
@@ -135,4 +135,41 @@ test('Settings sums up Cash Flow as pay and bills', () => {
     assert.equal(app.cashFlowSummary(0, 0), 'No pay or bills yet');
     assert.equal(app.cashFlowSummary(1, 1), '1 year of pay · 1 bill');
     assert.equal(app.cashFlowSummary(24, 0), '24 bills');
+});
+
+test('take-home: 2026/27 UK income tax and NI, with the personal allowance tapered over £100k', () => {
+    const t = g => { const r = P.netPay(g, 0, null); return [Math.round(r.tax), Math.round(r.ni)]; };
+    assert.deepEqual(t(30000), [3486, 1394]);
+    assert.deepEqual(t(60000), [11432, 3211]);
+    assert.deepEqual(t(100000), [27432, 4011]);
+    assert.deepEqual(t(125140), [42516, 4513]);    // no allowance left
+    assert.deepEqual(t(200000), [76203, 6011]);    // 45% above £125,140
+});
+
+test('take-home: the pension comes off before tax and NI (sacrifice), before tax (net pay) or after tax with relief (relief at source)', () => {
+    const sac = P.netPay(130000, 0, P.validTakeHome({ pct: 0.05, scheme: 'sacrifice' }));
+    assert.deepEqual([sac.pension, Math.round(sac.tax), Math.round(sac.ni)], [6500, Math.round(P.incomeTax(123500, 123500)), Math.round(P.nationalInsurance(123500))]);
+    const net = P.netPay(130000, 0, P.validTakeHome({ pct: 0.05, scheme: 'netpay' }));
+    assert.equal(Math.round(net.ni), Math.round(P.nationalInsurance(130000)));
+    const ras = P.netPay(130000, 0, P.validTakeHome({ pct: 0.05, scheme: 'ras' }));
+    assert.equal(ras.pension, 5200);               // 80% from pay, the pension adds the basic-rate 20%
+    assert.equal(Math.round(ras.tax), 43075);      // allowance from adjusted net income £123,500; basic band £6,500 wider
+    assert.ok(sac.net > ras.net && ras.net > 0);
+    const bonusIn = P.netPay(100000, 20000, P.validTakeHome({ pct: 0.1, onBonus: true }));
+    assert.equal(bonusIn.pension, 12000);
+});
+
+test('take-home for Cash Flow: the base of the year under way a month at a time, the latest bonus after tax on top, a payslip figure overrides', () => {
+    const years = [{ year: 2025, base: 120000, bonus: 30000 }, { year: 2026, base: 130000 }].map(y => P.validYear(y));
+    const state = { years, takeHome: P.validTakeHome({ pct: 0.05, scheme: 'sacrifice' }) };
+    const th = P.takeHomeOf(state, P.computeYears(years));
+    assert.equal(th.year, 2026);
+    assert.equal(round(th.worked, 2), round(P.netPay(130000, 0, state.takeHome).net / 12, 2));
+    assert.equal(th.monthly, th.worked);
+    assert.equal(round(th.bonus.net, 2), round(P.netPay(130000, 30000, state.takeHome).net - P.netPay(130000, 0, state.takeHome).net, 2));
+    assert.ok(th.bonus.net < 30000 * 0.55);        // 45% tax + 2% NI on top of £130k
+    const slip = P.takeHomeOf(Object.assign({}, state, { takeHome: P.validTakeHome({ pct: 0.05, payslip: 6000 }) }), P.computeYears(years));
+    assert.deepEqual([slip.monthly, slip.payslip, slip.set], [6000, 6000, true]);
+    assert.equal(P.takeHomeOf({ years: [] }, []), null);
+    assert.equal(P.validateState({ years, takeHome: { pct: 0.05, scheme: 'nonsense' } }).takeHome.scheme, 'sacrifice');
 });
