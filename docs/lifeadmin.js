@@ -921,53 +921,23 @@ function CashFlowCard(props) {
         used != null && E('div', { style: { display: 'flex', height: 6, borderRadius: 3, overflow: 'hidden', gap: 2, marginTop: 12 } },
             E('div', { style: { flex: Math.max(used, 0.001), background: ui.C.rose } }),
             used < 1 && E('div', { style: { flex: 1 - used, background: PAY_GREEN, opacity: 0.55 } })),
-        // Pay and Bills open whole pages, so they look like doors: a tile each with a preview of what's behind it
-        // (Fergus: he'd forget they were there behind plain links).
+        // Pay and Bills open whole pages, so they're drawn as buttons (Fergus: plain links didn't look tappable).
         E('div', { style: { display: 'flex', gap: 8, marginTop: 12 } },
-            props.pay && E(Tile, { label: 'Pay', icon: window.PayIcon, color: PAY_GREEN, value: f.inflow, sign: '+', add: !th, privacy: p, onOpen: props.onPay,
-                                     meta: props.pay.count ? props.pay.count + (props.pay.count === 1 ? ' year' : ' years') : null },
-                E(PayPreview, { history: props.pay.history || [], privacy: p })),
-            E(Tile, { label: 'Bills', icon: ListIcon, color: ui.C.rose, value: f.out, sign: '−', privacy: p, onOpen: props.onHousehold,
-                           meta: props.totals.count + (props.totals.count === 1 ? ' bill' : ' bills') },
-                E(BillsPreview, { totals: props.totals }))));
+            props.pay && E(OpenButton, { label: 'Pay', color: PAY_GREEN, value: f.inflow, sign: '+', add: !th, privacy: p, onOpen: props.onPay }),
+            E(OpenButton, { label: 'Bills', color: ui.C.rose, value: f.out, sign: '−', privacy: p, onOpen: props.onHousehold })));
 }
-// A tappable tile on the cash flow card: icon, name and a chevron, a small preview, then the figure and how much is behind it.
-function Tile(props) {
-    var ui = useUI(), Icon = props.icon || BILL_ICONS.other;
+// A button on the cash flow card that opens a page: colour key, name, figure and a chevron.
+function OpenButton(props) {
+    var ui = useUI();
     return E('button', { onClick: props.onOpen, 'aria-label': props.label,
-        style: { flex: 1, minWidth: 0, display: 'block', textAlign: 'left', padding: '9px 10px 10px', borderRadius: 14, cursor: 'pointer',
-                 background: 'rgba(255,255,255,0.04)', border: '1px solid ' + ui.C.border, WebkitTapHighlightColor: 'transparent' } },
-        E('div', { style: { display: 'flex', alignItems: 'center', gap: 6, fontFamily: ui.sys } },
-            E('span', { style: { width: 22, height: 22, borderRadius: 6, background: props.color + '24', color: props.color, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 } },
-                E(Icon, { style: { width: 13, height: 13 }, strokeWidth: 2 })),
-            E('span', { style: { fontSize: 13.5, fontWeight: 600, color: ui.C.white, flex: 1 } }, props.label),
-            E(ChevronIcon, { style: { width: 14, height: 14, color: ui.C.zinc600, flexShrink: 0 }, strokeWidth: 2.2 })),
-        E('div', { style: { margin: '8px 0 6px' } }, props.children),
-        props.add ? E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: TEAL } }, 'Add your pay')
-            : E('div', { style: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 6 } },
-                E('span', { style: money(ui, 15, props.privacy, ui.C.white, 600) }, props.value == null ? '—' : props.sign + fmtGBP(props.value)),
-                props.meta && E('span', { style: { fontFamily: ui.sys, fontSize: 11.5, color: ui.C.zinc700, whiteSpace: 'nowrap' } }, props.meta)));
-}
-// Pay's preview: the last few years as small stacked bars, coloured as the Pay page's chart.
-function PayPreview(props) {
-    var h = props.history, S = window.PaySeries || [], color = function (id) { var x = S.filter(function (s) { return s.id === id; })[0]; return x ? x.color : '#888894'; };
-    var max = Math.max.apply(null, h.map(function (y) { return y.base + y.bonus + y.redundancy; }).concat([1]));
-    return E('div', { style: { display: 'flex', alignItems: 'flex-end', gap: 3, height: 26, filter: props.privacy ? 'blur(3px)' : 'none' } },
-        h.length ? h.map(function (y) {
-            return E('div', { key: y.year, style: { flex: 1, maxWidth: 14, display: 'flex', flexDirection: 'column-reverse', height: '100%' } },
-                ['base', 'bonus', 'redundancy'].map(function (k) { return y[k] > 0 && E('div', { key: k, style: { height: (y[k] / max * 100) + '%', background: color(k), borderRadius: 1.5, marginTop: 1 } }); }));
-        }) : E('div', { style: { flex: 1, height: 2, background: 'rgba(255,255,255,0.08)' } }));
-}
-// Bills' preview: who pays them over what they're for, as on the Your bills page.
-function BillsPreview(props) {
-    var t = props.totals, mine = t.monthly ? t.mine.monthly / t.monthly : 0;
-    return E('div', { style: { display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', gap: 4, height: 26 } },
-        E('div', { style: { display: 'flex', height: 5, borderRadius: 3, overflow: 'hidden', gap: 2 } },
-            E('div', { style: { flex: Math.max(mine, 0.001), background: TEAL } }),
-            mine < 1 && E('div', { style: { flex: 1 - mine, background: WIFE_COLOR } })),
-        E('div', { style: { display: 'flex', height: 7, borderRadius: 3, overflow: 'hidden', gap: 2 } },
-            t.categories.length ? t.categories.map(function (c) { return E('div', { key: c.id, style: { flex: Math.max(c.share, 0.01), background: c.color } }); })
-                : E('div', { style: { flex: 1, background: 'rgba(255,255,255,0.08)' } })));
+        style: { flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 7, height: 44, padding: '0 10px 0 12px', borderRadius: 12, cursor: 'pointer',
+                 background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.12)', fontFamily: ui.sys, fontSize: 14, color: ui.C.zinc400,
+                 WebkitTapHighlightColor: 'transparent' } },
+        E('span', { style: { width: 8, height: 8, borderRadius: 2, background: props.color, flexShrink: 0 } }),
+        E('span', { style: { flex: 1, textAlign: 'left' } }, props.label),
+        props.add ? E('span', { style: { color: TEAL } }, 'Add')
+            : E('span', { style: money(ui, 14, props.privacy, ui.C.white, 600) }, props.value == null ? '—' : props.sign + fmtGBP(props.value)),
+        E(ChevronIcon, { style: { width: 15, height: 15, color: ui.C.zinc500, flexShrink: 0 }, strokeWidth: 2.2 }));
 }
 
 // The household's bills (Your bills on the top card opens it): the total, who pays it, and each category.

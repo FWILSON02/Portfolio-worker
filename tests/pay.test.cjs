@@ -122,13 +122,11 @@ test('Pay is in the cloud backup counts, so a backup that lost years is held bac
 
 test('the Cash Flow Pay line shows the latest year with its bonus known, and the year under way', () => {
     const store = ctx.PayStore;
-    assert.deepEqual(plain(store.headline()), { latest: null, current: null, count: 0, takeHome: null, history: [] });
+    assert.deepEqual(plain(store.headline()), { latest: null, current: null, count: 0, takeHome: null });
     assert.equal(store.restore({ v: 2, years: [{ year: 2024, base: 100000, bonus: 20000 }, { year: 2025, base: 110000, bonus: 30000, redundancy: 5000 },
                                                { year: 2026, base: 120000 }] }), true);
     const h = store.headline();
     assert.deepEqual([h.latest.year, h.latest.tc, round(h.latest.yoy), h.current.year, h.current.base, h.count], [2025, 145000, round(145000 / 120000 - 1), 2026, 120000, 3]);
-    // The Pay tile's mini chart: each year's base, bonus and redundancy, oldest first.
-    assert.deepEqual(plain(h.history.map(y => [y.year, y.base, y.bonus, y.redundancy])), [[2024, 100000, 20000, 0], [2025, 110000, 30000, 5000], [2026, 120000, 0, 0]]);
     store.restore({ v: 2, years: [{ year: 2026, base: 120000 }] });
     assert.deepEqual([store.headline().latest, store.headline().current.year], [null, 2026]);
 });

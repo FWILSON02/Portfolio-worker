@@ -206,12 +206,10 @@ var PayStore = {
     },
     deleteAll: function () { return saveState(emptyState()); },
     // The Cash Flow line: the latest year with its bonus known (with how it compares to the year before), the year under
-    // way after it, take-home pay (takeHomeOf) and the last six years (history). All null / empty when there is no pay yet.
+    // way after it, and take-home pay (takeHomeOf). All null when there is no pay yet.
     headline: function () {
         var rows = computeYears(_state.years), s = summary(rows);
-        // history: the last six years' base, bonus and redundancy, for the mini chart on Cash Flow's Pay tile.
-        var history = rows.slice(-6).map(function (r) { return { year: r.year, base: r.base || 0, bonus: r.bonus || 0, redundancy: r.redundancy || 0 }; });
-        return { latest: s.latest, current: s.current, count: _state.years.length, takeHome: takeHomeOf(_state, rows), history: history };
+        return { latest: s.latest, current: s.current, count: _state.years.length, takeHome: takeHomeOf(_state, rows) };
     },
 };
 
@@ -942,7 +940,6 @@ function PayView(props) {
 
 window.PayView = PayView;
 window.PayStore = PayStore;
-window.PaySeries = SERIES;   // the chart's colours, for Cash Flow's Pay tile
 window.PayIcon = PayIcon;
 // For tests only: the pure parts, no UI.
 window.__payInternals = { netPay: netPay, incomeTax: incomeTax, nationalInsurance: nationalInsurance, takeHomeOf: takeHomeOf, validTakeHome: validTakeHome,
