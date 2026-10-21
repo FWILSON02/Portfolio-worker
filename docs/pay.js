@@ -41,6 +41,9 @@ var E = React.createElement;
 //                   source: taken from pay after tax, the pension adds basic-rate relief).
 //          onBonus: the contribution is taken from the bonus too.
 //          payslip: the monthly take-home on the latest payslip, £; when set, Cash Flow uses it instead of the worked-out one.
+//          deductions: the payslip's other deductions, [{ id, name, monthly (£), kind }] (Fergus asked). kind: 'sacrifice'
+//                   (pre-tax, before tax and NI: salary sacrifice such as cycle to work or an electric car), 'pretax'
+//                   (before tax but not NI, such as Give As You Earn) or 'post' (taken after tax, such as Sharesave).
 //   v 1 kept cash, shares and price on the bonus year (the year before the one they were paid in); v 2 keeps them on
 //   the year paid, as the sheet does. Loading a v 1 state moves them back once.
 var DB_NAME = 'portfolio-pay';
@@ -123,11 +126,19 @@ function validateState(s) {
     return out;
 }
 var SCHEMES = [{ id: 'sacrifice', label: 'Salary sacrifice' }, { id: 'netpay', label: 'Net pay (before tax)' }, { id: 'ras', label: 'Relief at source' }];
+var DEDUCTION_SHORT = { sacrifice: 'pre-tax', pretax: 'pre-tax, not NI', post: 'post-tax' };
+var DEDUCTION_KINDS = [{ id: 'sacrifice', label: 'Pre-tax, before NI too', short: 'pre-tax' }, { id: 'pretax', label: 'Pre-tax, not before NI', short: 'pre-tax, not NI' },
+                       { id: 'post', label: 'Post-tax', short: 'post-tax' }];
 function validTakeHome(t) {
     if (!t || typeof t !== 'object') return null;
     var pct = typeof t.pct === 'number' && t.pct >= 0 && t.pct <= 0.6 ? Math.round(t.pct * 10000) / 10000 : 0;
+    var deductions = (Array.isArray(t.deductions) ? t.deductions : []).map(function (d) {
+        if (!d || typeof d !== 'object' || !text(d.name, 40) || !positive(money(d.monthly))) return null;
+        return { id: text(d.id, 40) || newId(), name: text(d.name, 40), monthly: money(d.monthly),
+                 kind: DEDUCTION_KINDS.some(function (k) { return k.id === d.kind; }) ? d.kind : 'sacrifice' };
+    }).filter(Boolean).slice(0, 20);
     return { pct: pct, scheme: SCHEMES.some(function (x) { return x.id === t.scheme; }) ? t.scheme : 'sacrifice', onBonus: t.onBonus === true,
-             payslip: positive(money(t.payslip)) };
+             payslip: positive(money(t.payslip)), deductions: deductions };
 }
 // A v 1 state's years with each cash payment, shares and price moved from the bonus year to the year after (when they
 // were paid), where the sheet has them. A year that only gets them gains a row.
@@ -288,18 +299,23 @@ function incomeTax(taxable, ani, band) {
 function nationalInsurance(pay) {
     return Math.max(0, Math.min(pay, TAX.niUpper) - TAX.niFrom) * TAX.niMain + Math.max(0, pay - TAX.niUpper) * TAX.niUpperRate;
 }
-// A year's pay → { gross, pension, tax, ni, net }. pension: what comes out of pay for it (relief at source: 80% of the
-// contribution, the pension adding the other 20%).
+// A year's pay → { gross, pension, tax, ni, deductions, net }. pension: what comes out of pay for it (relief at source:
+// 80% of the contribution, the pension adding the other 20%). deductions: the payslip's others over the year, each
+// { name, kind, annual }; pre-tax ones come off before tax (and NI, for 'sacrifice'), post-tax ones after.
 function netPay(base, bonus, th) {
     th = th || validTakeHome({});
     var gross = (base || 0) + (bonus || 0);
     var contrib = th.pct * ((base || 0) + (th.onBonus ? bonus || 0 : 0));
-    var taxable = gross, niPay = gross, fromPay = contrib, ani = gross, band = 0;
-    if (th.scheme === 'sacrifice') { taxable = gross - contrib; niPay = gross - contrib; ani = taxable; }
-    else if (th.scheme === 'netpay') { taxable = gross - contrib; ani = taxable; }
-    else { fromPay = contrib * 0.8; ani = gross - contrib; band = contrib; }
+    var deductions = (th.deductions || []).map(function (d) { return { name: d.name, kind: d.kind, annual: d.monthly * 12 }; });
+    var sum = function (kind) { return deductions.reduce(function (t, d) { return t + (d.kind === kind ? d.annual : 0); }, 0); };
+    var sac = sum('sacrifice'), pre = sum('pretax'), post = sum('post');
+    var taxable = gross - sac - pre, niPay = gross - sac, fromPay = contrib, ani = taxable, band = 0;
+    if (th.scheme === 'sacrifice') { taxable -= contrib; niPay -= contrib; ani = taxable; }
+    else if (th.scheme === 'netpay') { taxable -= contrib; ani = taxable; }
+    else { fromPay = contrib * 0.8; ani = taxable - contrib; band = contrib; }
+    taxable = Math.max(0, taxable); niPay = Math.max(0, niPay);
     var tax = incomeTax(taxable, ani, band), ni = nationalInsurance(niPay);
-    return { gross: gross, pension: fromPay, tax: tax, ni: ni, net: gross - fromPay - tax - ni };
+    return { gross: gross, pension: fromPay, tax: tax, ni: ni, deductions: deductions, net: gross - fromPay - tax - ni - sac - pre - post };
 }
 // Take-home for Cash Flow: the base salary of the year under way (else the latest year), a month at a time, and the
 // latest known bonus after tax and pension on top of it (paid once, so kept out of the monthly figure).
@@ -675,8 +691,14 @@ function TakeHomeCard(props) {
         E('div', { style: { marginTop: 10 } },
             line('Base salary', m(a.gross)),
             line('Pension' + (t.settings.pct ? ' ' + fmtPct(t.settings.pct) + ', ' + sch.label.toLowerCase() : ''), m(a.pension), a.pension > 0),
+            a.deductions.filter(function (d) { return d.kind !== 'post'; }).map(function (d, i) {
+                return E(React.Fragment, { key: 'pre' + i }, line(d.name + ' (' + DEDUCTION_SHORT[d.kind] + ')', m(d.annual), true));
+            }),
             line('Income tax', m(a.tax), true),
             line('National Insurance', m(a.ni), true),
+            a.deductions.filter(function (d) { return d.kind === 'post'; }).map(function (d, i) {
+                return E(React.Fragment, { key: 'post' + i }, line(d.name + ' (post-tax)', m(d.annual), true));
+            }),
             line('Take-home', m(a.net), false, true)),
         t.bonus && E('div', { style: { fontFamily: ui.sys, fontSize: 12.5, color: ui.C.zinc600, marginTop: 8, lineHeight: 1.45 } },
             'Bonus: ', E('span', { style: { filter: p ? 'blur(6px)' : 'none' } }, fmtGBP(t.bonus.gross)), ' (' + t.bonus.year + ') is about ',
@@ -684,7 +706,7 @@ function TakeHomeCard(props) {
         !t.set && E('div', { style: { fontFamily: ui.sys, fontSize: 12.5, color: ui.C.amber, marginTop: 8, lineHeight: 1.45 } },
             'Pension not set yet, so none is taken off. Tap Edit to add it.'),
         E('div', { style: { fontFamily: ui.sys, fontSize: 11.5, color: ui.C.zinc700, marginTop: 8, lineHeight: 1.4 } },
-            '2026/27 UK tax and NI on ' + t.year + '’s base, over the year. No student loan, Scottish rates or benefits: add your payslip figure if they apply.'));
+            '2026/27 UK tax and NI on ' + t.year + '’s base, over the year, with your payslip deductions. No student loan, Scottish rates or benefits: add your payslip figure if they apply.'));
 }
 
 var _openYear = null;
@@ -803,15 +825,22 @@ function EditView(props) {
 function TakeHomeView(props) {
     var ui = useUI(), th = props.state.takeHome || validTakeHome({});
     var f = React.useState(function () {
-        return { pct: th.pct ? String(Math.round(th.pct * 10000) / 100) : '', scheme: th.scheme, onBonus: th.onBonus ? 'yes' : 'no', payslip: th.payslip == null ? '' : String(th.payslip) };
+        return { pct: th.pct ? String(Math.round(th.pct * 10000) / 100) : '', scheme: th.scheme, onBonus: th.onBonus ? 'yes' : 'no', payslip: th.payslip == null ? '' : String(th.payslip),
+                 deductions: th.deductions.map(function (d) { return { id: d.id, name: d.name, monthly: String(d.monthly), kind: d.kind }; }) };
     });
     var form = f[0], err = React.useState(null);
     function set(k, v) { var n = Object.assign({}, form); n[k] = v; f[1](n); }
+    function setDed(i, k, v) { var list = form.deductions.slice(); list[i] = Object.assign({}, list[i]); list[i][k] = v; set('deductions', list); }
     function save() {
         var pct = form.pct.trim() === '' ? 0 : parseNum(form.pct), slip = form.payslip.trim() === '' ? null : parseNum(form.payslip);
         if (pct == null || pct < 0 || pct > 60) return err[1]('The pension should be a percentage, e.g. 5.');
         if (form.payslip.trim() !== '' && !(slip > 0)) return err[1]('The payslip take-home should be an amount in pounds.');
-        saveState(Object.assign({}, props.state, { takeHome: { pct: pct / 100, scheme: form.scheme, onBonus: form.onBonus === 'yes', payslip: slip } })).catch(function () {});
+        // A row left blank is dropped; one half filled in is a mistake to point out.
+        var rows = form.deductions.filter(function (d) { return d.name.trim() || d.monthly.trim(); });
+        var bad = rows.filter(function (d) { return !d.name.trim() || !(parseNum(d.monthly) > 0); })[0];
+        if (bad) return err[1]('Each deduction needs a name and an amount a month' + (bad.name.trim() ? ' (check ' + bad.name.trim() + ').' : '.'));
+        var deductions = rows.map(function (d) { return { id: d.id, name: d.name, monthly: parseNum(d.monthly), kind: d.kind }; });
+        saveState(Object.assign({}, props.state, { takeHome: { pct: pct / 100, scheme: form.scheme, onBonus: form.onBonus === 'yes', payslip: slip, deductions: deductions } })).catch(function () {});
         props.onDone();
     }
     var select = function (k, options) {
@@ -823,6 +852,23 @@ function TakeHomeView(props) {
             E(Label, { text: 'Your pension (%)', flex: 1 }, E('input', { value: form.pct, inputMode: 'decimal', placeholder: '0', onChange: function (e) { set('pct', e.target.value); }, style: inputStyle(ui) })),
             E(Label, { text: 'From bonus too', flex: 1 }, select('onBonus', [{ id: 'no', label: 'No' }, { id: 'yes', label: 'Yes' }]))),
         E(Label, { text: 'How it’s taken', hint: 'Salary sacrifice comes off before tax and NI; net pay before tax only; relief at source after tax, with 20% added by the pension. Your payslip or pension portal says which.' }, select('scheme', SCHEMES)),
+        // The payslip's other deductions.
+        E('div', { style: Object.assign(capsLabel(ui), { margin: '18px 0 6px' }) }, 'Other deductions'),
+        E('div', { style: { fontFamily: ui.sys, fontSize: 11.5, color: ui.C.zinc700, lineHeight: 1.4, marginBottom: 10 } },
+            'From your payslip, a month each. Pre-tax ones (cycle to work, an electric car) come off before tax and usually NI; post-tax ones (Sharesave, a union) after.'),
+        form.deductions.map(function (d, i) {
+            return E('div', { key: d.id || i, style: cardStyle(ui, { padding: '12px 12px 0', marginBottom: 10, borderRadius: 14 }) },
+                E('div', { style: { display: 'flex', gap: 8 } },
+                    E(Label, { text: 'Name', flex: 1.6 }, E('input', { value: d.name, placeholder: 'e.g. Cycle to work', autoCapitalize: 'words', onChange: function (e) { setDed(i, 'name', e.target.value); }, style: inputStyle(ui) })),
+                    E(Label, { text: '£ a month', flex: 1 }, E('input', { value: d.monthly, inputMode: 'decimal', placeholder: '0', onChange: function (e) { setDed(i, 'monthly', e.target.value); }, style: inputStyle(ui) }))),
+                E('div', { style: { display: 'flex', gap: 8, alignItems: 'flex-start' } },
+                    E(Label, { text: 'When', flex: 1 }, E('select', { value: d.kind, onChange: function (e) { setDed(i, 'kind', e.target.value); }, style: inputStyle(ui) },
+                        DEDUCTION_KINDS.map(function (k) { return E('option', { key: k.id, value: k.id }, k.label); }))),
+                    E('button', { onClick: function () { set('deductions', form.deductions.filter(function (x, j) { return j !== i; })); }, 'aria-label': 'Remove ' + (d.name || 'deduction'),
+                        style: Object.assign(buttonStyle(ui, 'danger'), { marginTop: 18, minHeight: 40, padding: '0 12px' }) }, 'Remove')));
+        }),
+        E('button', { onClick: function () { set('deductions', form.deductions.concat([{ id: newId(), name: '', monthly: '', kind: 'sacrifice' }])); },
+            style: Object.assign(buttonStyle(ui), { width: '100%', marginBottom: 18 }) }, '+ Add deduction'),
         E(Label, { text: 'Take-home on your latest payslip (£ a month)', hint: 'Optional. When set, Cash Flow uses it instead of the worked-out figure: use it if you have a student loan, benefits or a different tax code.' },
             E('input', { value: form.payslip, inputMode: 'decimal', placeholder: 'Worked out', onChange: function (e) { set('payslip', e.target.value); }, style: inputStyle(ui) })),
         err[0] && E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.rose, marginBottom: 10 } }, err[0]),

@@ -173,3 +173,25 @@ test('take-home for Cash Flow: the base of the year under way a month at a time,
     assert.equal(P.takeHomeOf({ years: [] }, []), null);
     assert.equal(P.validateState({ years, takeHome: { pct: 0.05, scheme: 'nonsense' } }).takeHome.scheme, 'sacrifice');
 });
+
+test('take-home: payslip deductions come off before tax and NI, before tax only, or after tax', () => {
+    const th = deductions => P.validTakeHome({ pct: 0.05, scheme: 'sacrifice', deductions });
+    const none = P.netPay(80000, 0, th([]));
+    const sac = P.netPay(80000, 0, th([{ name: 'Cycle to work', monthly: 100, kind: 'sacrifice' }]));
+    assert.equal(round(sac.tax, 2), round(P.incomeTax(74800, 74800), 2));   // £80k − £4k pension − £1,200
+    assert.equal(round(sac.ni, 2), round(P.nationalInsurance(74800), 2));
+    assert.equal(round(none.net - sac.net, 2), round(1200 * (1 - 0.40 - 0.02), 2));
+    const pre = P.netPay(80000, 0, th([{ name: 'Give as you earn', monthly: 100, kind: 'pretax' }]));
+    assert.equal(round(pre.ni, 2), round(none.ni, 2));
+    assert.equal(round(none.net - pre.net, 2), round(1200 * (1 - 0.40), 2));
+    const post = P.netPay(80000, 0, th([{ name: 'Sports club', monthly: 50, kind: 'post' }]));
+    assert.deepEqual([round(post.tax, 2), round(post.ni, 2), round(none.net - post.net, 2)], [round(none.tax, 2), round(none.ni, 2), 600]);
+    assert.deepEqual(JSON.parse(JSON.stringify(post.deductions)), [{ name: 'Sports club', kind: 'post', annual: 600 }]);
+});
+
+test('take-home: a deduction needs a name and an amount a month; an unknown kind is read as pre-tax', () => {
+    const t = P.validTakeHome({ deductions: [{ name: 'Gym', monthly: 30, kind: 'post' }, { name: '', monthly: 10 }, { name: 'Blank', monthly: 0 },
+        { name: 'Odd', monthly: 5, kind: 'nonsense' }, 'junk'] });
+    assert.deepEqual(t.deductions.map(d => [d.name, d.monthly, d.kind]), [['Gym', 30, 'post'], ['Odd', 5, 'sacrifice']]);
+    assert.deepEqual([...P.validTakeHome({ pct: 0.05 }).deductions], []);
+});
