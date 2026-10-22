@@ -1217,14 +1217,6 @@ function getPreviousCompletedCloseFromSeries(timestamps, closes, currentQuoteTs)
     };
 }
 
-// Returns the most recent historical close strictly before todayStr.
-function getHistoricalPrevClose(series, todayStr) {
-    if (!Array.isArray(series) || series.length === 0) return null;
-    const prev = series
-        .filter(p => p && p.date && p.date < todayStr && Number.isFinite(Number(p.close)))
-        .sort((a, b) => String(a.date).localeCompare(String(b.date)));
-    return prev.length > 0 ? Number(prev[prev.length - 1].close) : null;
-}
 
 // Reads the in-memory prices[ticker] history and returns the latest completed
 // close strictly before currentSessionDate (YYYY-MM-DD).
@@ -1583,7 +1575,6 @@ const GY_CACHE_KEY         = 'giltsyield_snapshots_v1';
 const GY_MIN_INTERVAL_MS   = 10 * 60 * 1000;          // automatic fetches are at least this far apart
 const GY_MAX_AGE_MS        = 4 * 24 * 3600 * 1000;    // a stored price older than this is not used (long weekend + a day)
 const GY_DIRTY_MIN = 50, GY_DIRTY_MAX = 130;          // per £100 nominal; outside this is not a gilt price
-const GY_JUMP_WARN   = 2.5;                           // a bigger move than this (points) vs the previous close is flagged
 const GY_KEEP_SESSIONS = 12;
 function getGyApiKey()     { try { return (localStorage.getItem(GY_APIKEY_STORAGE) || '').trim(); } catch { return ''; } }
 function setGyApiKey(k)    { try { localStorage.setItem(GY_APIKEY_STORAGE, String(k || '').trim()); } catch {} }
@@ -1972,7 +1963,6 @@ function calendarFor(sym) {
     if (/^[A-Z][A-Z0-9\-]*$/.test(tk)) return 'NYSE';   // plain US listing
     return null;
 }
-function exchangeForTicker(ticker) { return calendarFor(ticker); } // kept for existing callers
 
 // Holdings eligibility: real LSE / US listings only (not gilts, cash, indices, FX).
 // isSyntheticTicker() elsewhere is too broad here — it treats any ticker with no
@@ -3569,14 +3559,6 @@ function shallowNumberMapEqual(a, b, tolerance) {
 function fmtDate(d) {
     return d.toISOString().slice(0, 10);
 }
-// Get Monday of week for a given date (UTC)
-function weekKey(d) {
-    const dt = new Date(d);
-    const day = dt.getUTCDay();
-    const diff = (day === 0 ? -6 : 1 - day);
-    dt.setUTCDate(dt.getUTCDate() + diff);
-    return fmtDate(dt);
-}
 // ── Stages 1.2 + 2.1 + 3.1 + 4.1: Restricted Compensation Timeline Builder ────
 // Root script module scope — outside any React component, useMemo, or useCallback.
 //
@@ -4638,10 +4620,6 @@ function paSnapshot() {
     });
     return out;
 }
-function clearProviderAudit() {
-    _paState = { v: 1, since: new Date().toISOString(), providers: {} };
-    try { localStorage.removeItem(PAUDIT_KEY); } catch {}
-}
 
 // ── Network: buffered fetch with timeout ──────────────────────────────────────
 // Every market-data request goes through _fetchBuffered: the WHOLE response
@@ -5106,8 +5084,6 @@ const UI = {
 // Use these instead of repeating card-dark + radius + padding inline.
 // CARD_INTERACTIVE adds hover/active states for upload zones and action buttons.
 const CARD = `card-dark ${UI.radius.md} ${UI.card.md}`;
-const CARD_SM = `card-dark ${UI.radius.sm} ${UI.card.sm}`;
-const CARD_LG = `card-dark ${UI.radius.lg} ${UI.card.lg}`;
 const CARD_INTERACTIVE = `card-dark ${UI.radius.md} ${UI.card.md} hover:border-amber-400/40 active:scale-[0.97] transition-all duration-150 cursor-pointer`;
 
 // ── Global display constants ──────────────────────────────────────────────────
@@ -7238,7 +7214,6 @@ function BottomSheet({ context, onDismiss, sheetDragY, setSheetDragY, sheetDragS
 
 const formatPct    = (n) => n == null || isNaN(n) ? '—' : `${n >= 0 ? '+' : ''}${(n * 100).toFixed(1)}%`;
 const formatPctRaw = (n) => n == null || isNaN(n) ? '—' : `${n >= 0 ? '+' : ''}${n.toFixed(1)}%`;
-const formatUnits  = (n) => n.toLocaleString('en-GB', { maximumFractionDigits: 4 });
 
 function card(children, extra={}) {
     return React.createElement('div', {
@@ -7288,71 +7263,6 @@ function MetricBlock({ value, todayAbs, todayPct, totalAbs, totalPct, size='sm',
     );
 }
 
-function AllocationBar({ accounts, totalValue, onSegmentTap }) {
-    if (!accounts.length || !totalValue) return null;
-    const ACCT_COLORS = ['#fbbf24', '#60a5fa', '#a78bfa', '#34d399', '#f87171', '#fb923c'];
-
-    return React.createElement('div', { style: { marginTop: 16 } },
-        // Continuous, high-density distribution bar
-        React.createElement('div', {
-            style: {
-                display: 'flex',
-                height: 8,
-                borderRadius: 999,
-                overflow: 'hidden',
-                background: 'rgba(255,255,255,0.04)',
-                marginBottom: 12,
-            }
-        },
-            accounts.map((acct, i) => {
-                const pct = totalValue > 0 ? Math.max(0, acct.totalValue / totalValue) : 0;
-                if (pct <= 0) return null;
-                const color = ACCT_COLORS[i % ACCT_COLORS.length];
-                return React.createElement('button', {
-                    key: 'bar_' + acct.name,
-                    onClick: () => onSegmentTap(acct.name),
-                    style: {
-                        flex: pct,
-                        background: color,
-                        border: 'none',
-                        padding: 0,
-                        cursor: 'pointer',
-                        transition: 'opacity 120ms ease',
-                        WebkitTapHighlightColor: 'transparent',
-                    },
-                    onMouseOver: e => e.currentTarget.style.opacity = '0.8',
-                    onMouseOut:  e => e.currentTarget.style.opacity = '1',
-                });
-            })
-        ),
-        // Decoupled micro-legend — text always legible regardless of segment width
-        React.createElement('div', {
-            style: { display: 'flex', flexWrap: 'wrap', gap: '8px 14px', justifyContent: 'flex-start' }
-        },
-            accounts.map((acct, i) => {
-                const pct = totalValue > 0 ? Math.max(0, acct.totalValue / totalValue) : 0;
-                if (pct <= 0) return null;
-                const color = ACCT_COLORS[i % ACCT_COLORS.length];
-                const label = acct.name.replace(/Hargreaves Lansdown |HL /i, '').trim().toUpperCase();
-                return React.createElement('button', {
-                    key: 'leg_' + acct.name,
-                    onClick: () => onSegmentTap(acct.name),
-                    style: {
-                        display: 'flex', alignItems: 'center', gap: 6,
-                        background: 'none', border: 'none', padding: 0,
-                        cursor: 'pointer', WebkitTapHighlightColor: 'transparent',
-                    }
-                },
-                    React.createElement('div', { style: { width: 6, height: 6, borderRadius: '50%', background: color, flexShrink: 0 } }),
-                    React.createElement('span', { style: { fontFamily: sys, fontSize: 11, fontWeight: 500, color: C.zinc400 } }, label),
-                    React.createElement('span', { style: { fontFamily: mono, fontSize: 10, color: color, fontVariantNumeric: 'tabular-nums', marginLeft: 1 } },
-                        `${(pct * 100).toFixed(0)}%`
-                    )
-                );
-            })
-        )
-    );
-}
 
 function SectionLabel({ label, right }) {
     return React.createElement('div', { style: {
@@ -7733,11 +7643,6 @@ function UploadSection({ transactions, cacheMeta, tickersUsed, loading, handleFi
     );
 }
 
-// SPX display helpers — display-only, no math change
-function isSPXBenchmarkKey(key) {
-    const k = String(key || '').toUpperCase();
-    return k === 'SPX' || k === '^GSPC' || k.indexOf('S&P 500') >= 0 || k.indexOf('SNP') >= 0;
-}
 
 // ── Contributors to the plotted line ─────────────────────────────────────────────────────────────────────────────
 // Splits the plotted "invested" TWR line into per-holding contributions, so the chart's pressed-day bubble can show
@@ -9172,7 +9077,7 @@ function PortfolioApp() {
     const liveFetchInFlightRef = React.useRef(false); // a live refresh is running — silent polls skip
     const lastGoodQuoteAtRef = React.useRef({});      // ticker → ms of its last accepted fresh quote
     const isFirstLiveFetch = React.useRef(true); // stamps liveAt on the first successful fetch even if values match cache
-    const [fxGBPUSD, setFxGBPUSD] = useState([]); // [{date, close}]
+    const [, setFxGBPUSD] = useState([]); // [{date, close}]
     const [livePrices, setLivePrices] = useState({}); // { ticker: latestQuote } — intraday
     // Per-ticker quote session date from meta.regularMarketTime — the authoritative
     // market-session timestamp, not the fetch time and not the last daily bar date.
@@ -9259,15 +9164,10 @@ function PortfolioApp() {
     const [loadStatus, setLoadStatus] = useState({}); // { ticker: 'ok'|'fail'|'loading' }
     const [loadSource, setLoadSource] = useState({}); // { ticker: 'twelvedata'|'stooq'|'yahoo' }
     const [fetchDebug, setFetchDebug] = useState({}); // { ticker: [{src, result, msg}, ...] }
-    const [debugExpanded, setDebugExpanded] = useState(null); // ticker string or null
-    const [chipsExpanded, setChipsExpanded] = useState(false); // ticker chips panel collapsed by default
-    const [activeSection, setActiveSection] = useState('performance');
-    const [txSearch, setTxSearch] = useState('');
-    const [txFilter, setTxFilter] = useState('all'); // all | buy | sell | subscription | fee
+    const [, setActiveSection] = useState('performance');
     const [selectedTicker, setSelectedTicker] = useState(null); // holdings drill-down modal
-    const [startDate, setStartDate] = useState(null);
-    const [endDate, setEndDate] = useState(null); // null = today
-    const [showDatePicker, setShowDatePicker] = useState(false);
+    const [startDate] = useState(null);
+    const [endDate] = useState(null); // null = today
     const [scrolled, setScrolled] = useState(false); // compact sticky header after scrolling
     const [sheetDragY, setSheetDragY] = useState(0); // live drag offset for settings sheet (px)
     const sheetDragStart = React.useRef(null); // { y, time } at touch start
@@ -9284,9 +9184,6 @@ function PortfolioApp() {
         try { localStorage.setItem('privacy_mode', next ? '1' : '0'); } catch {}
         return next;
     });
-    // Helper: renders value or blur placeholder in privacy mode
-    const priv = (val, placeholder = '••••••') => privacyMode ? placeholder : val;
-    const [settingsHydrated, setSettingsHydrated] = useState(false);
     // Cash rate used as risk-free for the Sharpe-ish ratio. 4% is roughly the
     // Bank of England base rate for the current period; user can edit it in the panel.
     const [cashRate, setCashRate] = useState(4.0);
@@ -10683,32 +10580,6 @@ function PortfolioApp() {
                 perfLedger,
                 gbpusdRate,
                 tickerCurrencyMap }), [weeklyDates, resolvedPricesMap, perfLedger, gbpusdRate, tickerCurrencyMap]);
-        // Modified Dietz return between two dates
-        function modifiedDietz(start, end, txs) {
-            var _a, _b;
-            const startVal = ((_a = portfolioTimeline.find(p => p.date === start)) === null || _a === void 0 ? void 0 : _a.portfolioValue) || 0;
-            const endVal = ((_b = portfolioTimeline.find(p => p.date === end)) === null || _b === void 0 ? void 0 : _b.portfolioValue) || 0;
-            const periodMs = new Date(end) - new Date(start);
-            if (periodMs <= 0)
-                return null;
-            let netCF = 0;
-            let weightedCF = 0;
-            for (const t of txs) {
-                const ts = fmtDate(t.parsedDate);
-                if (ts <= start || ts > end)
-                    continue;
-                if (t.category !== 'subscription' && t.category !== 'transfer')
-                    continue;
-                const cf = t.value;
-                const weight = (new Date(end) - t.parsedDate) / periodMs;
-                netCF += cf;
-                weightedCF += cf * weight;
-            }
-            const denom = startVal + weightedCF;
-            if (denom === 0)
-                return null;
-            return (endVal - startVal - netCF) / denom;
-        }
         // Which benchmarks have a price series available (sheet uploaded). SPX is canonical;
         // others appear in the chip selector only if their data is present.
         const availableBenchmarks = useMemo(() => {
@@ -10991,7 +10862,6 @@ function PortfolioApp() {
                 gbpusdRate,
                 tickerCurrencyMap }), [enriched, resolvedPricesMap, holdingsDate, gbpusdRate, endDate, tickerCurrencyMap]); // prices omitted: resolvedPricesMap already incorporates it
         const activeHoldings = holdings.filter(h => Math.abs(h.units) > 0.001);
-        const closedHoldings = holdings.filter(h => Math.abs(h.units) < 0.001);
         // Pricing conditions the user should know about, shown in Settings → Daily
         // close check and written to the diagnostics export.
         const pricingWarnings = useMemo(() => computePricingWarnings({
@@ -11210,25 +11080,6 @@ function PortfolioApp() {
                 .sort((a, b) => b.weight - a.weight);
             return { sectors, total };
         }, [activeHoldings]);
-        // ── Contributions timeline ───────────────────────────────────────────────
-        // Monthly cash inflows (subscriptions + transfers) from inception to today.
-        // Each bar = net inflow that month. Cumulative line overlaid.
-        const contributionsTimeline = useMemo(() => {
-            const inflows = enriched.filter(t => t.category === 'subscription' || t.category === 'transfer');
-            if (inflows.length === 0)
-                return [];
-            const byMonth = {};
-            for (const t of inflows) {
-                const key = fmtDate(t.parsedDate).slice(0, 7); // YYYY-MM
-                byMonth[key] = (byMonth[key] || 0) + t.value;
-            }
-            const sorted = Object.entries(byMonth).sort(([a], [b]) => a.localeCompare(b));
-            let cumulative = 0;
-            return sorted.map(([month, amount]) => {
-                cumulative += amount;
-                return { month, amount, cumulative };
-            });
-        }, [enriched]);
         // ── Rolling returns (1M / 3M / 6M / 1Y trailing TWR from performanceChart) ──
         const rollingReturns = useMemo(() => {
             if (performanceChart.length < 2)
@@ -11268,74 +11119,6 @@ function PortfolioApp() {
         // UK tax year: 6 April → 5 April. Annual ISA allowance £20,000.
         // Subscriptions count against the allowance; transfers between ISAs do not.
         const isaYears = useMemo(() => computeIsaYears({ enriched }), [enriched]);
-        const downloadCSV = useCallback((filename, headers, rows) => {
-            const escape = (v) => {
-                if (v == null)
-                    return '';
-                const s = String(v);
-                return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s.replace(/"/g, '""')}"` : s;
-            };
-            const lines = [headers.map(escape).join(','), ...rows.map(r => r.map(escape).join(','))];
-            const blob = new Blob([lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = filename;
-            a.click();
-            URL.revokeObjectURL(url);
-        }, []);
-        const exportTWR = useCallback(() => {
-            if (!performanceChart.length)
-                return;
-            downloadCSV('portfolio-twr.csv', ['Date', 'Portfolio TWR', 'Invested-only TWR', 'SPX GBP TWR', 'Raw Value (£)', 'Contributed (£)'], performanceChart.map(p => [
-                p.date,
-                p.portfolio != null ? (p.portfolio - 100).toFixed(2) + '%' : '',
-                p.invested != null ? (p.invested - 100).toFixed(2) + '%' : '',
-                p.benchmark != null ? (p.benchmark - 100).toFixed(2) + '%' : '',
-                p.rawValue != null ? p.rawValue.toFixed(2) : '',
-                p.contributed != null ? p.contributed.toFixed(2) : '',
-            ]));
-        }, [performanceChart, downloadCSV]);
-        const exportAttribution = useCallback(() => {
-            if (!(attribution === null || attribution === void 0 ? void 0 : attribution.rows.length))
-                return;
-            downloadCSV('portfolio-attribution.csv', ['Ticker', 'Name', 'Status', 'Weeks Held', 'Avg Weight', 'Ticker TWR', 'SPX TWR', 'Contribution', 'SPX Counterfactual', 'Alpha'], attribution.rows.map(r => [
-                r.ticker, r.name, r.status, r.weeksHeld,
-                (r.avgWeight * 100).toFixed(2) + '%',
-                r.tickerTWR != null ? (r.tickerTWR * 100).toFixed(2) + '%' : '',
-                r.spxTWR != null ? (r.spxTWR * 100).toFixed(2) + '%' : '',
-                (r.contribution * 100).toFixed(4) + '%',
-                r.spxCounterfactual != null ? (r.spxCounterfactual * 100).toFixed(4) + '%' : '',
-                r.alpha != null ? (r.alpha * 100).toFixed(4) + '%' : '',
-            ]));
-        }, [attribution, downloadCSV]);
-        const exportHoldings = useCallback(() => {
-            const now = holdingsDate;
-            const activeRows = activeHoldings.map(h => {
-                const netCost = h.totalCost - h.totalProceeds;
-                return [
-                    h.ticker || '', h.name, 'active',
-                    h.units.toFixed(4),
-                    netCost.toFixed(2),
-                    h.marketValue != null ? h.marketValue.toFixed(2) : '',
-                    h.unrealisedPL != null ? h.unrealisedPL.toFixed(2) : '',
-                    h.unrealisedPL != null && netCost > 0 ? ((h.unrealisedPL / netCost) * 100).toFixed(2) + '%' : '',
-                    now, '',
-                ];
-            });
-            const closedRows = closedHoldings.map(h => {
-                const pl = h.totalProceeds - h.totalCost;
-                const ret = h.totalCost > 0 ? (pl / h.totalCost * 100).toFixed(2) + '%' : '';
-                return [
-                    h.ticker || '', h.name, 'closed',
-                    '', h.totalCost.toFixed(2), h.totalProceeds.toFixed(2),
-                    pl.toFixed(2), ret,
-                    h.firstDate.toISOString().slice(0, 10),
-                    h.lastDate.toISOString().slice(0, 10),
-                ];
-            });
-            downloadCSV('portfolio-holdings.csv', ['Ticker', 'Name', 'Status', 'Units', 'Cost (£)', 'Market Value / Proceeds (£)', 'P/L (£)', 'Return %', 'From', 'To'], [...activeRows, ...closedRows]);
-        }, [activeHoldings, closedHoldings, today, downloadCSV]);
         // ── Export cached prices as XLSX ─────────────────────────────────────────
         // iOS Safari does not support the `download` attribute on anchor tags or
         // the File System Access API — XLSX.writeFile silently fails.
@@ -12160,63 +11943,6 @@ function PortfolioApp() {
         }, [jsonImportPending, jsonImportMode, prices, loadSource, compConfigs, externalHoldings,
             marketRows, marketAt, marketStatus, marketError,
             setGiltMarket, setUploadFeedback, setUploadError]);
-        const undoJsonImport = useCallback(function() {
-            try {
-                var snap = sessionStorage.getItem('json_import_rollback');
-                if (!snap) { setUploadError('No undo snapshot available.'); return; }
-                var prev = JSON.parse(snap);
-                // Guard: if IDB was saved AFTER the snapshot (e.g. after a page reload
-                // which re-establishes state from a different source), the snapshot is
-                // stale and applying it would regress to an older state unexpectedly.
-                if (prev.snapTs && cacheMeta && cacheMeta.savedAt && cacheMeta.savedAt > prev.snapTs) {
-                    sessionStorage.removeItem('json_import_rollback');
-                    setUploadError('Undo unavailable — cache was updated after the snapshot was taken. Reload to see current state.');
-                    return;
-                }
-                setPrices(prev.prices || {});
-                setLoadSource(prev.loadSource || {});
-                // Restore live prices and session state to empty (pre-import baseline)
-                setLivePrices({});
-                setLiveQuoteChecks({});
-                setLivePrevClose({});
-                setLiveDailyCloses({});
-                setLiveQuoteSessionDates({});
-                setTodayPnlSnapshot(null);
-                setLiveStatus('idle');
-                setLiveAt(null);
-                var st = {};
-                Object.keys(prev.prices || {}).forEach(function(t) { st[t] = 'ok'; });
-                setLoadStatus(st);
-                // Restore employer equity plans and external custody positions
-                if (Array.isArray(prev.compConfigs)) {
-                    setCompConfigs(prev.compConfigs);
-                    idbSet('corporate_equity_config', prev.compConfigs).catch(function() {});
-                }
-                if (Array.isArray(prev.externalHoldings)) {
-                    setExternalHoldings(prev.externalHoldings);
-                    idbSet('external_custody_holdings', prev.externalHoldings).catch(function() {});
-                }
-                if (prev.giltCache && prev.giltCache.snaps) { saveGyCache(prev.giltCache); setGiltMarket(prev.giltCache); }
-                sessionStorage.removeItem('json_import_rollback');
-                // Restore market overview from rollback snapshot (or reset to idle)
-                var prevMO = prev.marketOverview;
-                if (prevMO && Array.isArray(prevMO.rows) && prevMO.rows.length > 0) {
-                    setMarketRows(prevMO.rows);
-                    setMarketAt(prevMO.at || null);
-                    setMarketStatus(prevMO.status || 'partial');
-                    setMarketError(prevMO.error || null);
-                    marketCacheRef.current = { rows: prevMO.rows, at: prevMO.at || 0, _fetching: false };
-                } else {
-                    setMarketRows(null); setMarketAt(null); setMarketStatus('idle'); setMarketError(null);
-                    marketCacheRef.current = { rows: null, at: 0, _fetching: false };
-                }
-                setUploadFeedback({ added: 0, duplicates: 0, intraFileDupes: 0, existingDupes: 0,
-                    files: 1, extendedOldest: false, extendedNewest: false, ts: Date.now(),
-                    _exportMsg: 'Restore undone — previous workspace reloaded.' });
-            } catch(e) {
-                setUploadError('Undo failed: ' + e.message);
-            }
-        }, [cacheMeta, setUploadFeedback, setUploadError]);
         // formatGBP, C, sys, mono, serif, fmtV, fmtA, fmtP, signColor are now global (above PortfolioApp).
 
         // ─── Phase 1: Bottom-Sheet Dashboard ────────────────────────────────────
