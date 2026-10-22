@@ -3729,8 +3729,7 @@ function buildRestrictedTimeline(compConfigs, weeklyDates, prices, tickerCurrenc
 
                 // ── Vesting phase evaluation ───────────────────────────────────
                 let valueGBP, phase;
-                const taxRate = typeof plan.estimated_vesting_tax_rate === 'number'
-                    ? plan.estimated_vesting_tax_rate : 0;
+                const taxRate = vestingTaxRate(plan);
 
                 if (dateStr < plan.maturity_vesting_date) {
                     phase    = 'RESTRICTED';
@@ -5181,7 +5180,20 @@ function giltNextCouponDate(reg, valuationISO) {
 // ── Gilt redemption yield (gross and net of income tax) ──────────────────────────────────────────────────────────
 // Income-tax rate applied to coupons for the NET yield. Gilt price gains are exempt from CGT, so only coupons are taxed and
 // the pull-to-par gain is kept whole — which is why a low-coupon gilt's net yield sits only a little below its gross yield.
-const GILT_NET_TAX_RATE = 0.45;
+// Rates come from Pay (PayStore.marginal): the next pound of coupon at Fergus's marginal income-tax rate. Until Pay has a year
+// with a base, 45% (additional rate) stands in.
+const GILT_DEFAULT_TAX_RATE = 0.45;
+function marginalRates() {
+    try { return window.PayStore ? window.PayStore.marginal() : null; } catch (e) { return null; }
+}
+function giltTaxRate() { const m = marginalRates(); return m ? m.saving : GILT_DEFAULT_TAX_RATE; }
+// Tax on a share vest: the same marginal rate with NI, whatever a plan's own estimated_vesting_tax_rate says; a plan's own
+// figure (else 0) only stands in until Pay has figures.
+function vestingTaxRate(plan) {
+    const m = marginalRates();
+    if (m) return m.pay;
+    return typeof plan.estimated_vesting_tax_rate === 'number' ? plan.estimated_vesting_tax_rate : 0;
+}
 
 // Add n business days (negative n goes back). Weekends are skipped; UK bank holidays are not modelled.
 function giltAddBusinessDays(iso, n) {
@@ -5202,7 +5214,7 @@ function giltAddBusinessDays(iso, n) {
 // Returns { gross, net } as fractions (0.0412 = 4.12%), or null when it cannot be solved honestly.
 function giltYieldFromDirty(reg, dirty, tradeISO, taxRate) {
     if (!reg || !Number.isFinite(dirty) || dirty <= 0 || !tradeISO) return null;
-    const tax = Number.isFinite(taxRate) ? taxRate : GILT_NET_TAX_RATE;
+    const tax = Number.isFinite(taxRate) ? taxRate : giltTaxRate();
     const settle = giltAddBusinessDays(tradeISO, 1);
     const matISO = toISODate(reg.maturityDate);
     if (!(settle < matISO)) return null;
@@ -7000,7 +7012,7 @@ function HoldingRow({ h, onTap, privacyMode, totalValue, metricCols }) {
                                     { label: 'Dirty price', value: Number.isFinite(h.giltSpot.dirty) ? h.giltSpot.dirty.toFixed(3) : '—' },
                                     { label: 'Price as of', value: h.giltSpot.session ? new Date(h.giltSpot.session + 'T00:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' }) + (h.giltSpot.final ? ' close' : ' (intraday)') : '—' },
                                     { label: 'Gross yield to mat.', value: Number.isFinite(h.giltSpot.ytmGross) ? (h.giltSpot.ytmGross * 100).toFixed(2) + '%' : '—' },
-                                    { label: 'Net yield (' + Math.round(GILT_NET_TAX_RATE * 100) + '% tax)', value: Number.isFinite(h.giltSpot.ytmNet) ? (h.giltSpot.ytmNet * 100).toFixed(2) + '%' : '—' },
+                                    { label: 'Net yield (' + Math.round(giltTaxRate() * 100) + '% tax)', value: Number.isFinite(h.giltSpot.ytmNet) ? (h.giltSpot.ytmNet * 100).toFixed(2) + '%' : '—' },
                                 ] : []),
                             ].map(({ label, value }) =>
                                 React.createElement('div', { key: label },

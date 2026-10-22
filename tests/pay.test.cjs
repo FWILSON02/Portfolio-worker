@@ -174,6 +174,56 @@ test('take-home for Cash Flow: the base of the year under way a month at a time,
     assert.equal(P.validateState({ years, takeHome: { pct: 0.05, scheme: 'nonsense' } }).takeHome.scheme, 'sacrifice');
 });
 
+test('marginal rate: one figure for pay (tax and NI) and one for savings (tax only), with the 60% band and share vests in it', () => {
+    const rate = (rowsIn, th) => {
+        const years = rowsIn.map(y => P.validYear(y));
+        const m = P.marginalOf({ years, takeHome: th || P.validTakeHome({}) }, P.computeYears(years));
+        return m && [round(m.pay, 3), round(m.saving, 3)];
+    };
+    assert.deepEqual(rate([{ year: 2026, base: 80000 }]), [0.42, 0.4]);                          // higher rate + 2% NI
+    assert.deepEqual(rate([{ year: 2025, base: 90000, bonus: 20000 }, { year: 2026, base: 90000 }]), [0.62, 0.6]);   // £110k: allowance taper
+    assert.deepEqual(rate([{ year: 2026, base: 135000 }]), [0.47, 0.45]);                       // additional rate
+    // £90k plus a £25k vest is £115k: the vest takes the next pound into the 60% band.
+    assert.deepEqual(rate([{ year: 2025, base: 90000, bonus: 0, shares: 4000, price: 25, currency: 'GBP' }, { year: 2026, base: 90000 }]), [0.62, 0.6]);
+    assert.equal(P.marginalOf({ years: [] }, []), null);
+});
+
+test('share awards vest in equal parts over the four years after the year of the award', () => {
+    const rows = P.computeYears([{ year: 2022, base: 1, shares: 400, price: 10, currency: 'GBP', stockName: 'Acme' }, { year: 2026, base: 1 }, { year: 2027, base: 1 }].map(y => P.validYear(y)));
+    const at = y => { const v = P.vestOf(rows, y); return v && [v.shares, v.gross]; };
+    assert.equal(at(2022), null);
+    assert.deepEqual([at(2023), at(2026)], [[100, 1000], [100, 1000]]);
+    assert.equal(at(2027), null);                                          // a 2022 award has fully vested
+});
+
+test('take-home: the year\'s share vests come after tax and NI on top of the base and latest bonus', () => {
+    // 2024's award of 4,000 and 2025's of 2,000 both vest in 2026: 1,000 + 500 shares, at the latest award price ($24 at $1.25).
+    const years = [{ year: 2024, base: 90000, bonus: 5000, shares: 4000, price: 20, currency: 'USD', fx: 1.25 },
+                   { year: 2025, base: 100000, bonus: 10000, shares: 2000, price: 24, currency: 'USD', fx: 1.25, stockName: 'Acme' },
+                   { year: 2026, base: 100000 }].map(y => P.validYear(y));
+    const state = { years, takeHome: P.validTakeHome({}) };
+    const th = P.takeHomeOf(state, P.computeYears(years));
+    assert.deepEqual([th.vest.shares, round(th.vest.gross, 2)], [1500, 28800]);
+    assert.equal(round(th.vest.net, 2), round(P.netPay(100000, 10000, state.takeHome, { vest: 28800 }).net - P.netPay(100000, 10000, state.takeHome).net, 2));
+    assert.ok(th.vest.net > 28800 * 0.4 && th.vest.net < 28800 * 0.5);    // 62% up to £125,140 and 47% above it
+    assert.equal(th.monthly, th.worked);                                  // vests stay out of the monthly figure
+    const plain = [P.validYear({ year: 2026, base: 100000 })];
+    assert.equal(P.takeHomeOf({ years: plain, takeHome: state.takeHome }, P.computeYears(plain)).vest, null);
+});
+
+test('gilts and share plans take the marginal rate from Pay; their own figures only stand in without it', () => {
+    const saved = ctx.PayStore;
+    ctx.PayStore = { marginal: () => null };                  // no pay figures yet
+    assert.equal(app.giltTaxRate(), 0.45);
+    assert.equal(app.vestingTaxRate({ estimated_vesting_tax_rate: 0.3 }), 0.3);
+    assert.equal(app.vestingTaxRate({}), 0);
+    ctx.PayStore = { marginal: () => ({ pay: 0.62, saving: 0.6 }) };
+    try {
+        assert.equal(app.giltTaxRate(), 0.6);
+        assert.equal(app.vestingTaxRate({ estimated_vesting_tax_rate: 0.3 }), 0.62);
+    } finally { ctx.PayStore = saved; }
+});
+
 test('take-home: payslip deductions come off before tax and NI, before tax only, or after tax', () => {
     const th = deductions => P.validTakeHome({ pct: 0.05, scheme: 'sacrifice', deductions });
     const none = P.netPay(80000, 0, th([]));
