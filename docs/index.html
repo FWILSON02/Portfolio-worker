@@ -175,8 +175,39 @@
 <script crossorigin="anonymous" src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" integrity="sha384-vtjasyidUo0kW94K5MXDXntzOJpQgBKXmE7e2Ga4LG0skTTLeBi97eFAXsqewJjw"></script>
 <script crossorigin="anonymous" src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js" integrity="sha384-D/t0ZMqQW31H3az8ktEiNb39wyKnS82iFY52QPACM+IjKW3jDUhyIgh2PApRqJZs"></script>
 <script>
-window.onerror=function(msg,src,line,col,err){var el=document.getElementById('_err');el.style.display='block';el.textContent+='ERROR: '+msg+'\n  at '+(src||'?')+':'+line+'\n'+(err&&err.stack?err.stack:'')+'\n\n';return false;};
-window.addEventListener('unhandledrejection',function(e){var el=document.getElementById('_err');el.style.display='block';el.textContent+='PROMISE: '+(e.reason&&e.reason.stack?e.reason.stack:String(e.reason))+'\n\n';});
+// Error log (Settings → Diagnostics): the last 50 errors and warnings, kept on the phone so they can be read and copied
+// after the overlay or the error card has gone. A repeat of the newest entry only bumps its count. Never throws.
+var APP_LOG_KEY='app_error_log_v1',APP_LOG_MAX=50,_appLogBusy=false;
+function appLogRead(){try{var a=JSON.parse(localStorage.getItem(APP_LOG_KEY)||'[]');return Array.isArray(a)?a:[];}catch(e){return [];}}
+function appLogClear(){try{localStorage.removeItem(APP_LOG_KEY);}catch(e){}setTimeout(function(){window.dispatchEvent(new Event('app-log'));},0);}
+function appLog(kind,msg,detail){
+  if(_appLogBusy)return;_appLogBusy=true;
+  try{
+    var a=appLogRead(),m=String(msg==null?'':msg).slice(0,500),last=a[a.length-1],now=Date.now();
+    if(last&&last.kind===kind&&last.msg===m){last.n=(last.n||1)+1;last.t=now;}
+    else{a.push({t:now,kind:kind,msg:m,detail:detail?String(detail).slice(0,2000):'',build:typeof APP_BUILD==='number'?APP_BUILD:null,n:1});if(a.length>APP_LOG_MAX)a=a.slice(-APP_LOG_MAX);}
+    localStorage.setItem(APP_LOG_KEY,JSON.stringify(a));
+    // Later, not now: console.error can be called while React renders, and the Diagnostics list re-renders on this.
+    setTimeout(function(){window.dispatchEvent(new Event('app-log'));},0);
+  }catch(e){}
+  _appLogBusy=false;
+}
+(function(){
+  function text(x){if(x instanceof Error)return x.message;if(typeof x==='string')return x;try{return JSON.stringify(x);}catch(e){return String(x);}}
+  ['error','warn'].forEach(function(k){
+    var orig=console[k];
+    console[k]=function(){
+      try{
+        var args=[].slice.call(arguments),err=args.filter(function(x){return x instanceof Error;})[0];
+        // A cancelled share sheet or an aborted fetch is not a fault.
+        if(!(err&&err.name==='AbortError'))appLog(k,args.map(text).join(' '),err&&err.stack);
+      }catch(e){}
+      return orig.apply(console,arguments);
+    };
+  });
+})();
+window.onerror=function(msg,src,line,col,err){appLog('crash',msg,(src||'?')+':'+line+'\n'+(err&&err.stack?err.stack:''));var el=document.getElementById('_err');el.style.display='block';el.textContent+='ERROR: '+msg+'\n  at '+(src||'?')+':'+line+'\n'+(err&&err.stack?err.stack:'')+'\n\n';return false;};
+window.addEventListener('unhandledrejection',function(e){appLog('crash','Unhandled promise: '+(e.reason&&e.reason.message?e.reason.message:String(e.reason)),e.reason&&e.reason.stack);var el=document.getElementById('_err');el.style.display='block';el.textContent+='PROMISE: '+(e.reason&&e.reason.stack?e.reason.stack:String(e.reason))+'\n\n';});
 var _R=React;
 window.useState=_R.useState;window.useMemo=_R.useMemo;
 window.useCallback=_R.useCallback;window.useEffect=_R.useEffect;window.useRef=_R.useRef;
@@ -219,17 +250,17 @@ window.HelpCircle=_li([{t:'c',cx:12,cy:12,r:10},'M9.09 9a3 3 0 0 1 5.83 1c0 2-3 
 <!-- The app's scripts are core.js, providers.js, sync.js, widgets.js, components.js, performance.js, holdings.js, app.js, settings.js and markets.js (no module system: they share globals, in this order). APP_BUILD is the pull request that last changed the app: Settings → App shows it,
      Reload app compares it with the server's, and CI (tests/build.test.cjs) checks it is this PR's number. Bump it in every PR,
      and the ?v= of those ten with it, so the Home Screen app never runs a cached app.js against a newer index.html. -->
-<script>const APP_BUILD = 115;</script>
-<script src="core.js?v=115"></script>
-<script src="providers.js?v=115"></script>
-<script src="sync.js?v=115"></script>
-<script src="widgets.js?v=115"></script>
-<script src="components.js?v=115"></script>
-<script src="performance.js?v=115"></script>
-<script src="holdings.js?v=115"></script>
-<script src="app.js?v=115"></script>
-<script src="settings.js?v=115"></script>
-<script src="markets.js?v=115"></script>
+<script>const APP_BUILD = 116;</script>
+<script src="core.js?v=116"></script>
+<script src="providers.js?v=116"></script>
+<script src="sync.js?v=116"></script>
+<script src="widgets.js?v=116"></script>
+<script src="components.js?v=116"></script>
+<script src="performance.js?v=116"></script>
+<script src="holdings.js?v=116"></script>
+<script src="app.js?v=116"></script>
+<script src="settings.js?v=116"></script>
+<script src="markets.js?v=116"></script>
 <script>
 class ErrorBoundary extends React.Component {
     constructor(props) { 
@@ -266,6 +297,29 @@ class ErrorBoundary extends React.Component {
         return this.props.children;
     }
 }
+</script>
+<script>
+// Offline copy (docs/sw.js): opens the app with no signal and picks up a new build on the next open. The kill switch:
+// set SW_ENABLED = false and every phone unregisters it and deletes its cache on its next open. Settings → Diagnostics
+// → Offline copy turns it off on one phone (sw_off in localStorage).
+const SW_ENABLED = true;
+const SW_OFF_KEY = 'sw_off';
+function swOff(){
+  if(!('serviceWorker' in navigator))return Promise.resolve();
+  return Promise.all([
+    navigator.serviceWorker.getRegistrations().then(function(rs){return Promise.all(rs.map(function(r){return r.unregister();}));}),
+    window.caches?caches.keys().then(function(ks){return Promise.all(ks.filter(function(k){return k.indexOf('portfolio-app')===0;}).map(function(k){return caches.delete(k);}));}):null
+  ]).catch(function(e){appLog('warn','Turning the offline copy off failed: '+(e&&e.message||e));});
+}
+function swOn(){
+  if(!('serviceWorker' in navigator))return Promise.resolve(null);
+  return navigator.serviceWorker.register('sw.js').catch(function(e){appLog('warn','Offline copy could not start: '+(e&&e.message||e));return null;});
+}
+(function(){
+  if(!('serviceWorker' in navigator))return;
+  var off=false;try{off=localStorage.getItem(SW_OFF_KEY)==='1';}catch(e){}
+  if(!SW_ENABLED||off)swOff();else window.addEventListener('load',swOn);
+})();
 </script>
 <script>
 try{ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(ErrorBoundary, null, React.createElement(PortfolioApp, null)));}
