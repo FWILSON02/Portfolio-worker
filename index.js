@@ -1,4 +1,4 @@
-// Cloudflare Worker for the portfolio app — copied from the app's Settings.
+// Cloudflare Worker for the portfolio app.
 // Interface the app uses:  GET /proxy?url=<encoded target URL>
 //                           PUT /backup, GET /backup[?day=YYYY-MM-DD], GET /backup/list  (encrypted cloud backup)
 //   • Forwards ONLY to Yahoo Finance, Twelve Data, Naver Finance, Marketstack and giltsyield.com (not an open proxy: the
@@ -12,9 +12,7 @@
 //     scrambled data. Needs a KV namespace bound as BACKUPS (wrangler.json) and a
 //     secret BACKUP_TOKEN (Worker → Settings → Variables and Secrets); the app sends
 //     that token with every backup call. Without them /backup answers 501.
-// Deploy: merging to main in the GitHub repo redeploys it (Cloudflare is linked to
-// the repo). Or: Cloudflare dashboard → Workers → your worker → Edit code → paste
-// over the existing code → Deploy.
+// Deploy: merging to main in the GitHub repo redeploys it (Cloudflare Workers Builds is linked to the repo).
 
 const ALLOWED_HOSTS = new Set([
   'query1.finance.yahoo.com',

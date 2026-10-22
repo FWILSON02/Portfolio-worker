@@ -2136,7 +2136,7 @@ async function fetchGiltsyieldPrices(signal) {
     try { res = await proxyFetch(url, signal, { purpose: 'gilt prices', allowHttpError: true }); }
     catch (e) { return { ok: false, error: paScrub((e && e.message) || 'request failed') }; }
     const text = await res.text();
-    if (res.status === 403 && /host not allowed/i.test(text)) return { ok: false, error: 'the Cloudflare Worker does not allow giltsyield.com yet \u2014 redeploy it (Settings \u2192 Copy Worker code)' };
+    if (res.status === 403 && /host not allowed/i.test(text)) return { ok: false, error: 'the Cloudflare Worker does not allow giltsyield.com yet \u2014 it redeploys when main changes, so check the latest merge went live' };
     if (!res.ok) return { ok: false, error: 'HTTP ' + res.status + (res.status === 401 || res.status === 403 ? ' (check the API key)' : '') };
     if (/^\s*</.test(text)) return { ok: false, error: 'giltsyield.com returned a web page, not data (wrong key or portfolio name?)' };
     const rows = _gyCsvRows(text);
@@ -2575,7 +2575,7 @@ async function fetchMarketstackBatch(tickers, apiKey, signal) {
             const fast = cat === 'network' && elapsed < 250;
             throw bail(cat, 'Marketstack: ' + (cat === 'timeout' ? 'request timed out'
                 : cat === 'no-worker' ? 'no Worker URL configured'
-                : fast ? 'no response from the Worker in ' + elapsed + ' ms (' + raw + ') \u2014 too quick to have reached Marketstack; the Worker most likely refuses api.marketstack.com (out of date): redeploy it (Settings \u2192 Copy Worker code)'
+                : fast ? 'no response from the Worker in ' + elapsed + ' ms (' + raw + ') \u2014 too quick to have reached Marketstack; the Worker most likely refuses api.marketstack.com (out of date): it redeploys when main changes, so check the latest merge went live'
                 : 'network error \u2014 ' + raw), cat === 'network' || cat === 'no-worker');
         }
         const text = await res.text();
@@ -2588,7 +2588,7 @@ async function fetchMarketstackBatch(tickers, apiKey, signal) {
             const blocked = res.status === 403 && /host not allowed/i.test(text);
             const cat = _msCategory({ status: res.status, hostBlocked: blocked, nonJson: true });
             const e = bail(cat, blocked
-                ? 'Marketstack: the Cloudflare Worker doesn\u2019t allow api.marketstack.com yet \u2014 redeploy it (Settings \u2192 Copy Worker code)'
+                ? 'Marketstack: the Cloudflare Worker doesn\u2019t allow api.marketstack.com yet \u2014 it redeploys when main changes, so check the latest merge went live'
                 : 'Marketstack: HTTP ' + res.status + ' and not JSON' + (text ? ' \u2014 ' + _msScrub(text, apiKey).slice(0, 80) : ''), true);
             e.endpointProblem = res.status === 404;
             throw e;
@@ -4323,10 +4323,6 @@ function buildRestrictedTimeline(compConfigs, weeklyDates, prices, tickerCurrenc
 // The worker accepts:  GET /proxy?url=<encoded-target-url>
 //
 const WORKER_URL = 'https://morning-tree-9d1b.fergushastiewilson.workers.dev';
-// Source of the Cloudflare Worker this app talks to, kept inside the app so the
-// app stays a single file. It runs on Cloudflare, not here: Settings → System →
-// "Worker code" copies it for pasting into the Cloudflare dashboard.
-const CLOUDFLARE_WORKER_SOURCE = "// Cloudflare Worker for the portfolio app \u2014 copied from the app's Settings.\n// Interface the app uses:  GET /proxy?url=<encoded target URL>\n//                           PUT /backup, GET /backup[?day=YYYY-MM-DD], GET /backup/list  (encrypted cloud backup)\n//   \u2022 Forwards ONLY to Yahoo Finance, Twelve Data, Naver Finance, Marketstack and giltsyield.com (not an open proxy: the\n//     Worker URL is visible in the app, and an open proxy invites abuse that\n//     burns the free quota and gets Cloudflare's shared IPs blocked by Yahoo).\n//   \u2022 The proxy is GET only; no cookies or client headers forwarded; nothing logged.\n//   \u2022 Answers only the app's own site (ALLOWED_ORIGINS), so other websites can't\n//     use it from a visitor's browser. Scripts can still fake an Origin header;\n//     this stops casual reuse, not a determined caller.\n//   \u2022 Backups: the app encrypts on the phone before sending, so this only ever holds\n//     scrambled data. Needs a KV namespace bound as BACKUPS (wrangler.json) and a\n//     secret BACKUP_TOKEN (Worker \u2192 Settings \u2192 Variables and Secrets); the app sends\n//     that token with every backup call. Without them /backup answers 501.\n// Deploy: merging to main in the GitHub repo redeploys it (Cloudflare is linked to\n// the repo). Or: Cloudflare dashboard \u2192 Workers \u2192 your worker \u2192 Edit code \u2192 paste\n// over the existing code \u2192 Deploy.\n\nconst ALLOWED_HOSTS = new Set([\n  'query1.finance.yahoo.com',\n  'query2.finance.yahoo.com',\n  'api.twelvedata.com',\n  'm.stock.naver.com',        // Naver Finance: KOSPI 200 history\n  'fchart.stock.naver.com',\n  'api.marketstack.com',      // Marketstack: LSE fallback when Alpha Vantage is exhausted\n  'giltsyield.com',           // giltsyield.com: gilt prices for the gilt ladder (CSV)\n]);\n\n// Sites allowed to call the Worker. Add an origin here if the app moves.\nconst ALLOWED_ORIGINS = new Set([\n  'https://fwilson02.github.io',  // GitHub Pages: the app and its Home Screen icon\n]);\n\nfunction corsFor(origin) {\n  return {\n    'Access-Control-Allow-Origin': origin,\n    'Access-Control-Allow-Methods': 'GET, PUT, OPTIONS',\n    'Access-Control-Allow-Headers': 'Content-Type, Authorization',\n    'Access-Control-Max-Age': '86400',\n    'Vary': 'Origin',\n  };\n}\n\nfunction reply(status, body, cors) {\n  return new Response(body, { status, headers: { ...cors, 'Content-Type': 'text/plain; charset=utf-8' } });\n}\n\n// \u2500\u2500 Backups \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nconst BACKUP_MAX_BYTES = 20 * 1024 * 1024;     // KV holds up to 25 MB a value\nconst BACKUP_DAY_TTL = 90 * 24 * 60 * 60;      // one copy per day, kept 90 days; the latest is kept until replaced\n\nfunction json(status, obj, cors) {\n  return new Response(JSON.stringify(obj), { status, headers: { ...cors, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });\n}\n\n// Compares in time that doesn't depend on where the strings differ.\nfunction sameSecret(a, b) {\n  const x = new TextEncoder().encode(a), y = new TextEncoder().encode(b);\n  let diff = x.length ^ y.length;\n  for (let i = 0; i < Math.max(x.length, y.length); i++) diff |= (x[i] || 0) ^ (y[i] || 0);\n  return diff === 0;\n}\n\nasync function backup(request, url, env, cors) {\n  if (!env || !env.BACKUPS || !env.BACKUP_TOKEN) return json(501, { error: 'backups not set up on the Worker' }, cors);\n  const auth = request.headers.get('Authorization') || '';\n  if (!auth.startsWith('Bearer ') || !sameSecret(auth.slice(7), env.BACKUP_TOKEN)) return json(401, { error: 'wrong backup token' }, cors);\n\n  if (url.pathname === '/backup/list' && request.method === 'GET') {\n    const days = [];\n    let cursor;\n    do {\n      const page = await env.BACKUPS.list({ prefix: 'day:', cursor });\n      page.keys.forEach(k => days.push(k.name.slice(4)));\n      cursor = page.list_complete ? null : page.cursor;\n    } while (cursor);\n    return json(200, { days: days.sort().reverse() }, cors);\n  }\n  if (url.pathname !== '/backup') return reply(404, 'not found', cors);\n\n  if (request.method === 'GET') {\n    const day = url.searchParams.get('day');\n    if (day && !/^\\d{4}-\\d{2}-\\d{2}$/.test(day)) return json(400, { error: 'bad day' }, cors);\n    const body = await env.BACKUPS.get(day ? 'day:' + day : 'latest');\n    if (body == null) return json(404, { error: 'no backup' }, cors);\n    return new Response(body, { status: 200, headers: { ...cors, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });\n  }\n  if (request.method === 'PUT') {\n    const body = await request.text();\n    if (body.length > BACKUP_MAX_BYTES) return json(413, { error: 'backup too large' }, cors);\n    let parsed;\n    try { parsed = JSON.parse(body); } catch { return json(400, { error: 'not JSON' }, cors); }\n    if (!parsed || parsed.format !== 'portfolio-cloud-backup' || typeof parsed.data !== 'string') return json(400, { error: 'not an encrypted backup' }, cors);\n    const day = new Date().toISOString().slice(0, 10);\n    await env.BACKUPS.put('latest', body);\n    await env.BACKUPS.put('day:' + day, body, { expirationTtl: BACKUP_DAY_TTL });\n    return json(200, { ok: true, day, bytes: body.length }, cors);\n  }\n  return reply(405, 'method not allowed', cors);\n}\n\nexport default {\n  async fetch(request, env) {\n    const origin = request.headers.get('Origin') || '';\n    if (!ALLOWED_ORIGINS.has(origin)) return new Response('origin not allowed', { status: 403, headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Vary': 'Origin' } });\n    const CORS = corsFor(origin);\n\n    if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });\n\n    const url = new URL(request.url);\n    if (url.pathname === '/backup' || url.pathname === '/backup/list') return backup(request, url, env, CORS);\n    if (request.method !== 'GET') return reply(405, 'method not allowed', CORS);\n    if (url.pathname !== '/proxy') return reply(404, 'not found', CORS);\n\n    let target;\n    try { target = new URL(url.searchParams.get('url') || ''); }\n    catch { return reply(400, 'bad url', CORS); }\n    if (target.protocol !== 'https:' || !ALLOWED_HOSTS.has(target.hostname)) return reply(403, 'host not allowed', CORS);\n\n    let upstream;\n    try {\n      upstream = await fetch(target.toString(), {\n        method: 'GET',\n        headers: {\n          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15',\n          'Accept': 'application/json,text/plain,*/*',\n        },\n        cf: { cacheTtl: 0 },\n      });\n    } catch (e) {\n      return reply(502, 'upstream fetch failed', CORS);\n    }\n    return new Response(upstream.body, {\n      status: upstream.status,\n      headers: { ...CORS, 'Content-Type': upstream.headers.get('Content-Type') || 'application/json', 'Cache-Control': 'no-store' },\n    });\n  },\n};\n";
 function getWorkerUrl() {
     // Check localStorage override first (allows changing without redeploying)
     try { return localStorage.getItem('cf_worker_url') || WORKER_URL; } catch { return WORKER_URL; }
@@ -4596,7 +4592,7 @@ function paClassify(provider, status, ok, text) {
     const body = String(text == null ? '' : text);
     const fail = (category, message, outcome) => ({ category, outcome: outcome || 'failed', message });
     if (status === 403 && /host not allowed/i.test(body))
-        return fail('worker-allowlist', 'the Cloudflare Worker does not allow this host \u2014 redeploy it (Settings \u2192 Copy Worker code)');
+        return fail('worker-allowlist', 'the Cloudflare Worker does not allow this host \u2014 it redeploys when main changes, so check the latest merge went live');
     let json = null;
     if (body.length <= 30000 && /^\s*[\[{]/.test(body)) { try { json = JSON.parse(body); } catch { json = null; } }
     const clip = x => String(x == null ? '' : x).replace(/\*\*/g, '').slice(0, 200);
@@ -7556,7 +7552,7 @@ function Row({ icon: Icon, iconColor, iconBg, label, sub, right, onClick, isLabe
 // The pull request that last changed the app. Bump it in every PR so Settings → App shows which change the phone is
 // running (Fergus asked; the Estate ?v= number only moved when balances.js changed, so it looked stuck). CI checks it
 // matches the PR's number (tests/build.test.cjs): PR #85 forgot, and the phone kept saying PR #84.
-const APP_BUILD = 98;
+const APP_BUILD = 99;
 
 // Settings → App: pulls the newest index.html, balances.js, lifeadmin.js and pay.js past the browser's cache, then reloads. A Home Screen web app
 // on iOS keeps serving cached files for a while after a deploy, and closing it from the app switcher doesn't clear that.
@@ -9714,21 +9710,7 @@ function MoreTab(props) {
     const [showClearConfirm, setShowClearConfirm] = React.useState(false); // iOS-safe confirm dialog
     const [clearCacheMode, setClearCacheMode] = React.useState('both'); // 'both'|'tx'|'prices'
     const [workerInput, setWorkerInput] = React.useState(getWorkerUrl() || '');
-    const [workerCodeOpen, setWorkerCodeOpen] = React.useState(false);
-    const [workerCopyMsg, setWorkerCopyMsg]   = React.useState('');
     const [apiKeyMsg, setApiKeyMsg] = React.useState(null);   // { tone, text } — names only, never a key value
-    // Copy the embedded Worker source. If the clipboard is unavailable (or the
-    // browser refuses), show the code so it can be selected and copied by hand.
-    const copyWorkerCode = () => {
-        const fail = () => { setWorkerCodeOpen(true); setWorkerCopyMsg('Copy was blocked — select the code below and copy it.'); };
-        try {
-            if (navigator.clipboard && navigator.clipboard.writeText) {
-                navigator.clipboard.writeText(CLOUDFLARE_WORKER_SOURCE).then(
-                    () => setWorkerCopyMsg('Copied. In Cloudflare: Workers → your worker → Edit code → paste → Deploy.'),
-                    fail);
-            } else fail();
-        } catch { fail(); }
-    };
     const [tdKeyInput, setTdKeyInput] = React.useState(getTdApiKey() || '');
     const [avKeyInput, setAvKeyInput] = React.useState(getAvApiKey() || '');
     const [msKeyInput, setMsKeyInput] = React.useState(getMsApiKey() || '');
@@ -10452,23 +10434,6 @@ function MoreTab(props) {
                                     padding: '10px 14px', fontFamily: sys, fontSize: 12, color: '#a1a1aa'
                                 }
                             }),
-                            // Worker code — embedded in this file; copied from here into Cloudflare.
-                            React.createElement('div', { style: { display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' } },
-                                React.createElement('button', {
-                                    onClick: copyWorkerCode,
-                                    style: { fontFamily: sys, fontSize: 11, color: '#60a5fa', background: 'transparent', border: '1px solid #27272a', borderRadius: 8, padding: '6px 10px', minHeight: 32 }
-                                }, 'Copy Worker code'),
-                                React.createElement('button', {
-                                    onClick: () => setWorkerCodeOpen(o => !o),
-                                    style: { fontFamily: sys, fontSize: 11, color: '#a1a1aa', background: 'transparent', border: '1px solid #27272a', borderRadius: 8, padding: '6px 10px', minHeight: 32 }
-                                }, workerCodeOpen ? 'Hide code' : 'Show code')
-                            ),
-                            workerCopyMsg && React.createElement('div', { style: { fontFamily: sys, fontSize: 10, color: '#a1a1aa', marginTop: 6 } }, workerCopyMsg),
-                            workerCodeOpen && React.createElement('pre', {
-                                style: { marginTop: 8, maxHeight: 260, overflow: 'auto', background: '#0a0e14', border: '1px solid #27272a', borderRadius: 10,
-                                         padding: '10px 12px', fontFamily: sys, fontSize: 10, lineHeight: 1.45, color: '#a1a1aa',
-                                         whiteSpace: 'pre', userSelect: 'text', WebkitUserSelect: 'text' }
-                            }, CLOUDFLARE_WORKER_SOURCE)
                         ),
                         // Twelve Data API key — the primary second source for the daily-close check
                         React.createElement('div', { style: { padding: '13px 16px', borderBottom: '1px solid rgba(255,255,255,0.04)' } },
@@ -11477,7 +11442,7 @@ async function _naverGet(url, signal) {
     const text = await res.text();
     if (!res.ok) {
         const e = new Error(/host not allowed/i.test(text)
-            ? "your Worker doesn't allow Naver yet \u2014 update it (Settings \u2192 Copy Worker code)"
+            ? "your Worker doesn't allow Naver yet \u2014 it redeploys when main changes, so check the latest merge went live"
             : 'HTTP ' + res.status);
         e.httpStatus = res.status; e.workerBlocked = /host not allowed/i.test(text);
         throw e;
