@@ -102,6 +102,7 @@ test('every screen renders with data, with no errors', { skip: !playwright && 'P
 
     // Investments: the account's holdings sheet.
     await tab('Investments');
+    assert.ok((await page.locator('body').innerText()).includes('SPXT'), 'the chart should name its benchmark SPXT');
     await page.getByText('ISA', { exact: true }).first().click();
     await settle(1000); await check('holdings sheet');
     await page.getByRole('button', { name: 'Close' }).first().click();

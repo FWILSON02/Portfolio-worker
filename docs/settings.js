@@ -523,7 +523,7 @@ function MoreTab(props) {
                     { label: 'Your return (XIRR, p.a.)', sub: 'Annualised, weighted by when you deposited',
                       val: ms.xirr != null ? pct(ms.xirr) : 'n/a \u00b7 needs 1 yr+', color: ms.xirr != null ? col(ms.xirr) : '#6b6b76', small: ms.xirr == null },
                 ];
-                if (ms.spx) rows.push({ label: 'Same deposits in S&P 500 (\u00a3)',
+                if (ms.spx) rows.push({ label: 'Same deposits in ' + spxLabel() + ' (\u00a3)',
                     sub: 'You are ' + gbpAbs(vs) + (vs >= 0 ? ' ahead' : ' behind'), subBlur: true,
                     val: gbpAbs(ms.spx.value), color: '#60a5fa', blur: true });
                 return React.createElement('div', { style: { marginBottom: 28 } },
@@ -556,7 +556,7 @@ function MoreTab(props) {
                         { label: 'Sortino Ratio', val: risk.sortino != null ? risk.sortino.toFixed(2) : '—', color: (risk.sortino || 0) >= 1 ? '#34d399' : '#a1a1aa' },
                         { label: 'Max Drawdown', val: risk.maxDD != null ? `${(risk.maxDD * 100).toFixed(1)}%` : '—', color: '#f87171' },
                         { label: 'Win Rate', val: risk.winRate != null ? `${(risk.winRate * 100).toFixed(0)}%` : '—', color: (risk.winRate || 0) >= 0.5 ? '#34d399' : '#f87171' },
-                        { label: 'Beat S&P (\u00a3) Rate', val: risk.beatRate != null ? `${(risk.beatRate * 100).toFixed(0)}%` : '—', color: (risk.beatRate || 0) >= 0.5 ? '#34d399' : '#f87171' },
+                        { label: 'Beat ' + spxLabel() + ' (\u00a3) Rate', val: risk.beatRate != null ? `${(risk.beatRate * 100).toFixed(0)}%` : '—', color: (risk.beatRate || 0) >= 0.5 ? '#34d399' : '#f87171' },
                     ].map(s => React.createElement('div', { key: s.label, style: { background: '#11161f', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 12, padding: '12px 14px' } },
                         React.createElement('div', { style: { fontFamily: sys, fontSize: 10, color: '#6b6b76', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 4 } }, s.label),
                         React.createElement('div', { style: { fontFamily: sys, fontSize: 18, fontVariantNumeric: 'tabular-nums', color: s.color } }, s.val)
@@ -566,7 +566,7 @@ function MoreTab(props) {
 
             // ── Benchmark comparison ─────────────────────────────
             risk && risk.bench && React.createElement('div', { style: { marginBottom: 28 } },
-                React.createElement('div', { style: { fontFamily: sys, fontSize: 10, color: '#888894', textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: 12 } }, 'vs S&P 500'),
+                React.createElement('div', { style: { fontFamily: sys, fontSize: 10, color: '#888894', textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: 12 } }, 'vs ' + spxLabel()),
                 React.createElement('div', { style: { background: '#11161f', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 14, overflow: 'hidden' } },
                     ...[
                         { label: 'SPX Ann. Return', port: risk.annReturn != null ? `${risk.annReturn >= 0 ? '+' : ''}${(risk.annReturn * 100).toFixed(1)}%` : '—', bench: risk.bench.annReturn != null ? `${risk.bench.annReturn >= 0 ? '+' : ''}${(risk.bench.annReturn * 100).toFixed(1)}%` : '—' },
@@ -581,7 +581,7 @@ function MoreTab(props) {
                     React.createElement('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', padding: '8px 16px', background: 'rgba(0,0,0,0.3)', borderTop: '1px solid rgba(255,255,255,0.06)', gap: 8 } },
                         React.createElement('div', { style: { fontFamily: sys, fontSize: 10, color: '#6b6b76' } }, 'metric'),
                         React.createElement('div', { style: { fontFamily: sys, fontSize: 10, color: '#fbbf24', textAlign: 'center' } }, 'Portfolio'),
-                        React.createElement('div', { style: { fontFamily: sys, fontSize: 10, color: '#60a5fa', textAlign: 'right' } }, 'S&P 500')
+                        React.createElement('div', { style: { fontFamily: sys, fontSize: 10, color: '#60a5fa', textAlign: 'right' } }, spxLabel())
                     )
                 )
             ),
@@ -680,7 +680,7 @@ function MoreTab(props) {
                     React.createElement('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginBottom: 12 } },
                         ...[
                             { label: 'Portfolio TWR', val: `${attribution.compoundPort >= 0 ? '+' : ''}${(attribution.compoundPort * 100).toFixed(1)}%`, color: attribution.compoundPort >= 0 ? '#34d399' : '#f87171' },
-                            { label: 'S&P \u00a3 Ctfl.', val: `${attribution.compoundSPX >= 0 ? '+' : ''}${(attribution.compoundSPX * 100).toFixed(1)}%`, color: '#60a5fa' },
+                            { label: spxLabel() + ' \u00a3 Ctfl.', val: `${attribution.compoundSPX >= 0 ? '+' : ''}${(attribution.compoundSPX * 100).toFixed(1)}%`, color: '#60a5fa' },
                             { label: 'Total Alpha', val: `${attribution.totalAlpha >= 0 ? '+' : ''}${(attribution.totalAlpha * 100).toFixed(2)}pp`, color: attribution.totalAlpha >= 0 ? '#34d399' : '#f87171' },
                         ].map(s => React.createElement('div', { key: s.label, style: { background: '#11161f', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: '10px 12px' } },
                             React.createElement('div', { style: { fontFamily: sys, fontSize: 10, color: '#6b6b76', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 } }, s.label),
@@ -764,7 +764,7 @@ function MoreTab(props) {
                             `${r.portRet >= 0 ? '+' : ''}${r.portRet.toFixed(1)}%`
                         ),
                         r.benchRet != null ? React.createElement('div', { style: { fontFamily: sys, fontSize: 13, fontVariantNumeric: 'tabular-nums', color: '#60a5fa' } },
-                            `S&P \u00a3 ${r.benchRet >= 0 ? '+' : ''}${r.benchRet.toFixed(1)}%`
+                            `${spxLabel()} \u00a3 ${r.benchRet >= 0 ? '+' : ''}${r.benchRet.toFixed(1)}%`
                         ) : React.createElement('div', null),
                         r.benchRet != null ? React.createElement('div', { style: { fontFamily: sys, fontSize: 13, fontVariantNumeric: 'tabular-nums', color: (r.portRet - r.benchRet) >= 0 ? '#34d399' : '#f87171', textAlign: 'right' } },
                             `α ${(r.portRet - r.benchRet) >= 0 ? '+' : ''}${(r.portRet - r.benchRet).toFixed(1)}pp`
@@ -779,7 +779,7 @@ function MoreTab(props) {
                 React.createElement('div', { style: { background: '#11161f', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 14, overflow: 'hidden' } },
                     [
                         (moneyStats && moneyStats.excludedNote) ? 'Performance covers equity and uninvested cash; gilts and cash-like funds are excluded.' : null,
-                        'Benchmark: S&P 500 converted to \u00a3, price only (no dividends).',
+                        'Benchmark: ' + spxLabel() + ', the S&P 500 ' + (spxLabel() === 'SPXT' ? 'total return (dividends reinvested)' : 'price index (total return not loaded yet)') + ' converted to \u00a3.',
                         'Value includes cash added or withdrawn \u2014 use % for performance.',
                         weeklyUntil ? 'Chart line is one point per week before ' + new Date(weeklyUntil + 'T12:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }) + ', daily after.' : null,
                     ].filter(Boolean).map((t, i, arr) => React.createElement('div', { key: 'cn' + i, style: { padding: '11px 16px', borderBottom: i < arr.length - 1 ? '1px solid rgba(255,255,255,0.04)' : 'none', fontFamily: sys, fontSize: 11, color: '#a1a1aa', lineHeight: 1.55 } }, t))

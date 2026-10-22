@@ -75,6 +75,7 @@ export function backupJson(today) {
         'VWRL.L': series(today, 9400, 0.12, 0.03),
         'ACME': series(today, 58, 0.15, 0.05),
         '^GSPC': series(today, 4800, 0.2, 0.03),
+        '^SP500TR': series(today, 7000, 0.2, 0.03),   // the S&P benchmark (SPXT) is the total-return index
         'GBPUSD=X': series(today, 1.26, 0.02, 0.01),
     };
     return JSON.stringify({
