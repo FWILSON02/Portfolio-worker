@@ -1,4 +1,4 @@
-// Cloud backup (docs/index.html): what leaves the phone is encrypted, and only the right passphrase opens it.
+// Cloud backup (docs/app.js): what leaves the phone is encrypted, and only the right passphrase opens it.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { loadApp } = require('./load.cjs');

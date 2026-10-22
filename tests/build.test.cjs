@@ -1,5 +1,6 @@
 // Settings → App shows APP_BUILD as the PR the phone is running, and Reload app compares it with the server's.
 // A PR that forgets to bump it leaves the phone saying the old number (PR #85 did), so CI checks it on every PR.
+// APP_BUILD and the app.js ?v= both live in docs/index.html; the app itself is docs/app.js.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
@@ -14,4 +15,9 @@ test('APP_BUILD is set', () => assert.ok(build > 0));
 const pr = (process.env.GITHUB_REF || '').match(/^refs\/pull\/(\d+)\//);
 test('APP_BUILD is this pull request\'s number', { skip: !pr && 'not a pull request run' }, () => {
     assert.equal(build, +pr[1], 'bump APP_BUILD in docs/index.html to ' + (pr && pr[1]));
+});
+
+// app.js is cached by the phone like the other files; its ?v= moves with APP_BUILD so a new index.html never runs an old app.js.
+test('app.js is loaded with ?v= set to APP_BUILD', () => {
+    assert.equal(+(html.match(/<script src="app\.js\?v=(\d+)"><\/script>/) || [])[1], build, 'set <script src="app.js?v=' + build + '"> in docs/index.html');
 });
