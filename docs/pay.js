@@ -366,13 +366,23 @@ function netPay(base, bonus, th, x) {
     var tax = incomeTax(taxable, ani, band), ni = nationalInsurance(niPay);
     return { gross: gross, pension: fromPay, tax: tax, ni: ni, deductions: deductions, net: gross - fromPay - tax - ni - sac - pre - post };
 }
-// The year's share vests in pounds: the shares on a year's row at their award price (dollars at the year's rate).
-function vestGross(y) {
-    if (!y || !(y.shares > 0) || !(y.price > 0)) return 0;
-    return y.shares * y.price / (y.currency === 'GBP' ? 1 : y.fxRate || fxFor(y).rate);
+// Shares on a year's row are the award from that year's pay review; they vest in equal parts over the next VEST_YEARS years
+// (an award on 2022's row vests in 2023, 2024, 2025 and 2026). The year's vest, in pounds: the shares vesting that year from
+// every award, at the latest award price of that stock (the nearest to today's price the sheet holds; dollars at that row's
+// rate). Returns { shares, stockName, gross } or null when nothing vests.
+var VEST_YEARS = 4;
+function vestOf(rows, year) {
+    var shares = 0, name = '', latest = null;
+    rows.forEach(function (r) {
+        if (!(r.shares > 0)) return;
+        if (year > r.year && year <= r.year + VEST_YEARS) { shares += r.shares / VEST_YEARS; name = name || r.stockName; }
+        if (r.price > 0 && (!latest || r.year > latest.year)) latest = r;
+    });
+    if (!(shares > 0) || !latest) return null;
+    return { shares: shares, stockName: name, gross: shares * latest.price / (latest.currency === 'GBP' ? 1 : latest.fxRate || fxFor(latest).rate) };
 }
 // One marginal tax rate for the whole app (Fergus asked): what the next pound would cost on this year's income, base plus
-// the latest bonus plus the year's share vests, so the 60% band between £100k and £125,140 shows up when he is in it.
+// the latest bonus plus the year's share vests (vestOf), so the 60% band between £100k and £125,140 shows up when he is in it.
 // pay: income tax plus NI on the next pound of pay or a vest; saving: income tax alone on the next pound of interest (gilt
 // coupons). Worked out from the same netPay as take-home, a £1,000 step each.
 function marginalOf(state, rows) {
@@ -380,7 +390,7 @@ function marginalOf(state, rows) {
     if (!y || !(y.base > 0)) return null;
     var th = state.takeHome || validTakeHome({});
     var lastBonus = rows.filter(function (r) { return r.bonus > 0; }).pop();
-    var bonus = lastBonus ? lastBonus.bonus : 0, vest = vestGross(y), step = 1000;
+    var bonus = lastBonus ? lastBonus.bonus : 0, vv = vestOf(rows, y.year), vest = vv ? vv.gross : 0, step = 1000;
     var at = netPay(y.base, bonus, th, { vest: vest });
     var morePay = netPay(y.base, bonus, th, { vest: vest + step }), moreSaving = netPay(y.base, bonus, th, { vest: vest, saving: step });
     return { year: y.year, pay: (morePay.tax - at.tax + morePay.ni - at.ni) / step, saving: (moreSaving.tax - at.tax) / step };
@@ -395,9 +405,9 @@ function takeHomeOf(state, rows) {
     var bonus = lastBonus ? { year: lastBonus.year, gross: lastBonus.bonus, net: netPay(y.base, lastBonus.bonus, th).net - year.net } : null;
     var worked = year.net / 12;
     // Share vests on top of the base and that bonus, after tax and NI: lumpy, so kept out of the monthly figure.
-    var vg = vestGross(y), bonusG = lastBonus ? lastBonus.bonus : 0;
-    var vest = vg > 0 ? { year: y.year, shares: y.shares, stockName: y.stockName, gross: vg,
-                          net: netPay(y.base, bonusG, th, { vest: vg }).net - netPay(y.base, bonusG, th).net } : null;
+    var vv = vestOf(rows, y.year), bonusG = lastBonus ? lastBonus.bonus : 0;
+    var vest = vv ? { year: y.year, shares: vv.shares, stockName: vv.stockName, gross: vv.gross,
+                      net: netPay(y.base, bonusG, th, { vest: vv.gross }).net - netPay(y.base, bonusG, th).net } : null;
     return { year: y.year, base: y.base, annual: year, worked: worked, payslip: th.payslip, monthly: th.payslip || worked,
              settings: th, set: !!state.takeHome, bonus: bonus, vest: vest, marginal: marginalOf(state, rows) };
 }
@@ -778,7 +788,7 @@ function TakeHomeCard(props) {
             E('span', { style: { filter: p ? 'blur(6px)' : 'none', color: ui.C.zinc400 } }, fmtGBP(t.bonus.net)), ' after tax' + (t.settings.onBonus && t.settings.pct ? ' and pension' : '') + ', on top, when paid.'),
         t.vest && E('div', { style: { fontFamily: ui.sys, fontSize: 12.5, color: ui.C.zinc600, marginTop: 8, lineHeight: 1.45 } },
             'Share vests: ', E('span', { style: { filter: p ? 'blur(6px)' : 'none' } }, fmtShares(t.vest.shares) + (t.vest.stockName ? ' ' + t.vest.stockName : '') + ' (' + fmtGBP(t.vest.gross) + ')'),
-            ' in ' + t.vest.year + ' are about ', E('span', { style: { filter: p ? 'blur(6px)' : 'none', color: ui.C.zinc400 } }, fmtGBP(t.vest.net)), ' after tax and NI, on top.'),
+            ' vest in ' + t.vest.year + ', about ', E('span', { style: { filter: p ? 'blur(6px)' : 'none', color: ui.C.zinc400 } }, fmtGBP(t.vest.net)), ' after tax and NI, on top.'),
         t.marginal && E('div', { style: { fontFamily: ui.sys, fontSize: 12.5, color: ui.C.zinc600, marginTop: 8, lineHeight: 1.45 } },
             'Marginal rate: ' + fmtPct(t.marginal.pay) + ' on pay and vests (with NI), ' + fmtPct(t.marginal.saving) + ' on gilt coupons. Gilts and share plans use these.'),
         !t.set && E('div', { style: { fontFamily: ui.sys, fontSize: 12.5, color: ui.C.amber, marginTop: 8, lineHeight: 1.45 } },
@@ -1147,7 +1157,7 @@ window.PayView = PayView;
 window.PayStore = PayStore;
 window.PayIcon = PayIcon;
 // For tests only: the pure parts, no UI.
-window.__payInternals = { netPay: netPay, incomeTax: incomeTax, nationalInsurance: nationalInsurance, takeHomeOf: takeHomeOf, marginalOf: marginalOf, validTakeHome: validTakeHome,
+window.__payInternals = { netPay: netPay, incomeTax: incomeTax, nationalInsurance: nationalInsurance, takeHomeOf: takeHomeOf, marginalOf: marginalOf, vestOf: vestOf, validTakeHome: validTakeHome,
     validateState: validateState, validYear: validYear, reviewFigures: reviewFigures, reviewYearOf: reviewYearOf, parsePaste: parsePaste, mergeYears: mergeYears, computeYears: computeYears,
     summary: summary, fxFor: fxFor, headerKey: headerKey, stockNameOf: stockNameOf };
 })();
