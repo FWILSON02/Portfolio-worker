@@ -15,8 +15,8 @@ jobs:
         with:
           node-version: 22
       # Kept out of package.json so the Cloudflare Worker build stays as it is. The four CDN packages are the exact
-      # versions docs/index.html pins, served to the app in place of the CDN.
-      - run: npm install --prefix "$RUNNER_TEMP/smoke" --no-save --no-package-lock --no-audit --no-fund playwright@1.56.1 react@18.3.1 react-dom@18.3.1 xlsx@0.18.5 papaparse@5.4.1
+      # versions docs/index.html pins, served to the app in place of the CDN. acorn parses app.js for tests/hooks.test.cjs.
+      - run: npm install --prefix "$RUNNER_TEMP/smoke" --no-save --no-package-lock --no-audit --no-fund playwright@1.56.1 react@18.3.1 react-dom@18.3.1 xlsx@0.18.5 papaparse@5.4.1 acorn@8.12.1 acorn-walk@8.3.3
       - run: echo "NODE_PATH=$RUNNER_TEMP/smoke/node_modules" >> "$GITHUB_ENV"
       - run: '"$RUNNER_TEMP/smoke/node_modules/.bin/playwright" install --with-deps chromium'
       - run: npm test
