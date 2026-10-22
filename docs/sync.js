@@ -942,6 +942,23 @@ function feedSince(ms, now) {
     return new Date(now).toDateString() === d.toDateString() ? t
         : d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }) + ' ' + t;
 }
+// Staleness strips at the top of Investments, beside the price-feed one (Fergus, 2026-10-22): a cloud backup over 3 days
+// old, and a trades CSV whose latest trade is over a year old (holdings come only from that CSV).
+const BACKUP_STALE_MS = 3 * 864e5;
+const TRADES_STALE_MS = 365 * 864e5;
+const _stripDate = ms => new Date(ms).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+function backupBanner(st, ready, now) {
+    if (!ready || !st || !st.at || now - st.at < BACKUP_STALE_MS) return null;
+    const why = st.held ? ' The automatic backup is held back: see Settings, Backup.'
+              : (st.error && st.errorAt > st.at) ? ' The last attempt failed: see Settings, Backup.' : '';
+    return { level: 'amber', text: 'The last cloud backup was ' + Math.floor((now - st.at) / 864e5) + ' days ago, on ' + _stripDate(st.at) + '.' + why };
+}
+function tradesBanner(rows, now) {
+    let latest = 0;
+    for (const r of rows || []) { const t = r && r.parsedDate ? +r.parsedDate : NaN; if (t > latest) latest = t; }
+    if (!latest || now - latest < TRADES_STALE_MS) return null;
+    return { level: 'amber', text: 'The latest trade in your trades CSV is from ' + _stripDate(latest) + ', over a year ago. Upload a newer one if you\u2019ve traded since.' };
+}
 function feedBanner(h, now) {
     if (!h || !h.okAt) return null;
     if (h.failAt && h.failAt > h.okAt && now - h.okAt >= FEED_STALE_MS)
