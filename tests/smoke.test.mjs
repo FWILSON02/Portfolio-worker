@@ -96,6 +96,8 @@ test('every screen renders with data, with no errors', { skip: !playwright && 'P
     for (const label of ['Pay', 'Bills']) {
         await page.getByRole('button', { name: new RegExp('^' + label + '\\b') }).first().click();
         await settle(1000); await check('Cash Flow page ' + label);
+        // Pay values the year's share vests at today's price: the Acme share plan supplies it.
+        if (label === 'Pay') assert.ok((await page.locator('body').innerText()).includes('today\u2019s price'), 'the vest should use the share plan\'s price');
         await page.getByRole('button', { name: /Back/ }).first().click();
         await settle();
     }
