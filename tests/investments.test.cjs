@@ -1,4 +1,4 @@
-// Investments (docs/index.html): ledger categories, money in and out, money-weighted return and prices in pounds.
+// Investments (docs/app.js): ledger categories, money in and out, money-weighted return and prices in pounds.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { loadApp } = require('./load.cjs');
