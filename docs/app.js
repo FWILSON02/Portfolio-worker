@@ -3854,6 +3854,9 @@ function PortfolioApp() {
               React.createElement(TabBoundary, { name: 'Investments', resetKey: activeTab },
                 // Price feed health: first, above every other alert (Fergus: alerts go at the very top)
                 React.createElement(FeedBanner, { strip: feedStrip }),
+                // Stale data: the cloud backup, and the trades CSV the holdings come from
+                React.createElement(FeedBanner, { kind: 'backup', strip: backupBanner(loadCloudBackupState(), !!(getCloudBackupToken() && getCloudBackupPass()), Date.now()) }),
+                React.createElement(FeedBanner, { kind: 'trades', strip: tradesBanner(enriched, Date.now()) }),
                 // Maturity alerts (amber, then red near the date)
                 maturityAlerts && React.createElement(window.MaturityAlerts.Banner, { source: maturityAlerts, privacy: privacyMode }),
                 // Hero Card

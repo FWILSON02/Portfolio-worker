@@ -40,3 +40,24 @@ test('feed health: a success clears the strip, and a refresh that came back with
     assert.equal(app.feedBanner(step(h, { ok: true, fresh: 6, requested: 12 }, NOW), NOW), null);          // half is fine
     assert.equal(app.feedBanner(step(h, { ok: true, fresh: 1, requested: 3 }, NOW), NOW), null);           // too few holdings to judge
 });
+
+// Staleness strips (docs/sync.js backupBanner, tradesBanner): an old cloud backup, an old trades CSV.
+const DAY = 864e5;
+test('backup strip: only when backups are set up and the last one is over 3 days old', () => {
+    assert.equal(app.backupBanner({ at: NOW - 2 * DAY }, true, NOW), null);
+    assert.equal(app.backupBanner({ at: NOW - 5 * DAY }, false, NOW), null);   // not set up: Settings says so
+    assert.equal(app.backupBanner({}, true, NOW), null);                       // never backed up on this phone yet
+    const s = plain(app.backupBanner({ at: NOW - 4 * DAY }, true, NOW));
+    assert.equal(s.level, 'amber');
+    assert.match(s.text, /^The last cloud backup was 4 days ago, on 18 Oct 2026\.$/);
+    assert.match(app.backupBanner({ at: NOW - 4 * DAY, error: 'x', errorAt: NOW - DAY }, true, NOW).text, /last attempt failed/);
+    assert.match(app.backupBanner({ at: NOW - 4 * DAY, held: { at: NOW } }, true, NOW).text, /held back/);
+});
+
+test('trades strip: only when the latest trade is over a year old', () => {
+    const t = ms => ({ parsedDate: new Date(ms) });
+    assert.equal(app.tradesBanner([t(NOW - 400 * DAY), t(NOW - 30 * DAY)], NOW), null);
+    assert.equal(app.tradesBanner([], NOW), null);
+    const s = plain(app.tradesBanner([t(NOW - 500 * DAY), t(NOW - 400 * DAY)], NOW));
+    assert.match(s.text, /^The latest trade in your trades CSV is from 17 Sept? 2025, over a year ago\./);
+});

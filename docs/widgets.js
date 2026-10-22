@@ -403,11 +403,11 @@ function buildGiltLadderState(enriched, today, giltMarket, nowMs) {
 // references that never remount on PortfolioApp re-render.
 
 // FeedBanner — the price-feed strip (see feedBanner): amber, or red after a day without prices. Top of Investments.
-function FeedBanner({ strip }) {
+function FeedBanner({ strip, kind = 'feed' }) {
     if (!strip) return null;
     const red = strip.level === 'red', col = red ? C.rose : C.amber;
     return React.createElement('div', {
-        role: 'status', 'data-feed-banner': strip.level,
+        role: 'status', ['data-' + kind + '-banner']: strip.level,
         style: {
             display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 12, borderRadius: 12, padding: '12px 14px',
             background: red ? 'rgba(239,68,68,0.08)' : 'rgba(251,191,36,0.08)',
