@@ -370,25 +370,40 @@ function netPay(base, bonus, th, x) {
 }
 // Shares on a year's row are the award from that year's pay review; they vest in equal parts over the next VEST_YEARS years
 // (an award on 2022's row vests in 2023, 2024, 2025 and 2026). The year's vest, in pounds: the shares vesting that year from
-// every award, at today's price when the app can supply it (PayStore.setPriceFeed: the share plan for that stock, in
-// pounds), else at the latest award price of that stock (dollars at that row's rate). Returns { shares, stockName, gross,
-// live } or null when nothing vests.
+// every award, each stock on its own (awards from an earlier employer can still be vesting after a move), at today's price
+// when the app can supply it (PayStore.setPriceFeed: the share plan for that stock, in pounds), else at that stock's latest
+// award price (dollars at that row's rate). A row with no stock named counts as the latest named stock. Returns
+// { shares, stockName, gross, live } or null when nothing vests; with two stocks, stockName joins them and live is true
+// only when both had today's price.
 var VEST_YEARS = 4;
 var _priceFeed = null;
 function livePriceOf(name) {
     try { var p = _priceFeed ? _priceFeed(name) : null; return p > 0 && isFinite(p) ? p : null; } catch (e) { return null; }
 }
 function vestOf(rows, year) {
-    var shares = 0, name = '', latest = null;
+    var fallbackName = '', stocks = {}, order = [];
+    rows.forEach(function (r) { if (r.shares > 0 && r.stockName) fallbackName = r.stockName; });
     rows.forEach(function (r) {
         if (!(r.shares > 0)) return;
-        if (year > r.year && year <= r.year + VEST_YEARS) { shares += r.shares / VEST_YEARS; name = name || r.stockName; }
-        if (r.price > 0 && (!latest || r.year > latest.year)) latest = r;
+        var name = r.stockName || fallbackName, k = name.toLowerCase().trim();
+        var st = stocks[k] || (stocks[k] = { name: name, shares: 0, latest: null });
+        if (order.indexOf(k) < 0) order.push(k);
+        if (year > r.year && year <= r.year + VEST_YEARS) st.shares += r.shares / VEST_YEARS;
+        if (r.price > 0 && (!st.latest || r.year > st.latest.year)) st.latest = r;
     });
-    if (!(shares > 0) || !latest) return null;
-    var live = livePriceOf(name || latest.stockName);
-    return { shares: shares, stockName: name, live: !!live,
-             gross: shares * (live || latest.price / (latest.currency === 'GBP' ? 1 : latest.fxRate || fxFor(latest).rate)) };
+    var out = { shares: 0, stockName: '', gross: 0, live: true }, names = [];
+    order.forEach(function (k) {
+        var st = stocks[k];
+        if (!(st.shares > 0)) return;
+        var live = livePriceOf(st.name);
+        var px = live || (st.latest ? st.latest.price / (st.latest.currency === 'GBP' ? 1 : st.latest.fxRate || fxFor(st.latest).rate) : null);
+        if (!(px > 0)) return;
+        out.shares += st.shares; out.gross += st.shares * px; out.live = out.live && !!live;
+        if (st.name) names.push(st.name);
+    });
+    if (!(out.shares > 0)) return null;
+    out.stockName = names.join(' + ');
+    return out;
 }
 // One marginal tax rate for the whole app (Fergus asked): what the next pound would cost on this year's income, base plus
 // the latest bonus plus the year's share vests (vestOf), so the 60% band between £100k and £125,140 shows up when he is in it.
@@ -513,7 +528,7 @@ function parsePaste(textIn) {
     });
     return out;
 }
-// Pasted years replace the same year already here (keeping its id, notes and own $ rate) and add the rest.
+// Pasted years replace the same year already here (keeping its id, notes, own $ rate and, for a year with shares, its stock) and add the rest.
 function mergeYears(existing, incoming) {
     var by = {}, added = 0, updated = 0;
     (existing || []).forEach(function (y) { by[y.year] = y; });
@@ -522,7 +537,7 @@ function mergeYears(existing, incoming) {
         if (old) {
             updated++;
             by[y.year] = Object.assign({}, y, { id: old.id, notes: y.notes || old.notes, fx: y.fx || old.fx,
-                                                stockName: y.stockName || old.stockName, currency: y.shares ? (old.shares ? old.currency : y.currency) : old.currency });
+                                                stockName: old.shares && old.stockName ? old.stockName : (y.stockName || old.stockName), currency: y.shares ? (old.shares ? old.currency : y.currency) : old.currency });
         } else { added++; by[y.year] = y; }
     });
     var years = Object.keys(by).map(function (k) { return by[k]; }).sort(function (a, b) { return a.year - b.year; });

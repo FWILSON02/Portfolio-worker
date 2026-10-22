@@ -209,6 +209,26 @@ test('vests are valued at today\'s price when the app supplies one, else at the 
     } finally { P.PayStore.setPriceFeed(null); }
 });
 
+test('vests from two employers\' awards are each valued at their own stock\'s price', () => {
+    // A Citi award still vesting after a move to HSBC: each stock at its own live price, else its own latest award price.
+    const rows = P.computeYears([{ year: 2023, base: 1, shares: 400, price: 50, currency: 'GBP', stockName: 'Citi' },
+                                 { year: 2025, base: 1, shares: 800, price: 8, currency: 'GBP', stockName: 'HSBC' },
+                                 { year: 2026, base: 1 }].map(y => P.validYear(y)));
+    const v = P.vestOf(rows, 2026);
+    assert.deepEqual([v.shares, v.gross, v.stockName, v.live], [300, 100 * 50 + 200 * 8, 'Citi + HSBC', false]);
+    P.PayStore.setPriceFeed(name => name === 'HSBC' ? 10 : null);
+    try {
+        const w = P.vestOf(rows, 2026);
+        assert.deepEqual([w.gross, w.live], [100 * 50 + 200 * 10, false]);   // only HSBC had today's price
+    } finally { P.PayStore.setPriceFeed(null); }
+});
+
+test('pasting the sheet again keeps the stock a year with shares already names', () => {
+    const old = [P.validYear({ year: 2025, base: 1, shares: 800, price: 8, currency: 'GBP', stockName: 'HSBC' })];
+    const m = P.mergeYears(old, [P.validYear({ year: 2025, base: 2, shares: 800, price: 8, currency: 'USD', stockName: 'Citi' })]);
+    assert.deepEqual([m.years[0].base, m.years[0].stockName, m.years[0].currency], [2, 'HSBC', 'GBP']);
+});
+
 test('take-home: the year\'s share vests come after tax and NI on top of the base and latest bonus', () => {
     // 2024's award of 4,000 and 2025's of 2,000 both vest in 2026: 1,000 + 500 shares, at the latest award price ($24 at $1.25).
     const years = [{ year: 2024, base: 90000, bonus: 5000, shares: 4000, price: 20, currency: 'USD', fx: 1.25 },
