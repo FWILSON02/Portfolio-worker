@@ -9679,6 +9679,37 @@ function PortfolioApp() {
         const tickerCurrencyMap = useMemo(
             () => Object.assign({}, baseCurrencyMap, unitAudit.corrections),
             [baseCurrencyMap, unitAudit]);
+        // Pay values a year's share vests at today's price (PayStore.setPriceFeed): the share plan whose institution is the
+        // stock's name on the Pay sheet ('Citi') gives the ticker; the live quote (else the last stored close) is converted
+        // to pounds. The feed is set once and reads this ref, so a price tick never touches Pay's store.
+        const payFeedRef = React.useRef({});
+        payFeedRef.current = { compConfigs, tickerCurrencyMap };
+        useEffect(() => {
+            if (!window.PayStore || !window.PayStore.setPriceFeed) return;
+            const lastClose = (series) => {
+                if (!Array.isArray(series)) return null;
+                for (let i = series.length - 1; i >= 0; i--) { const c = Number(series[i] && series[i].close); if (Number.isFinite(c) && c > 0) return c; }
+                return null;
+            };
+            const latest = (tk) => {
+                const up = String(tk).toUpperCase().trim();
+                const pick = (obj) => { const k = Object.keys(obj || {}).find(x => x.toUpperCase().trim() === up); return k ? obj[k] : undefined; };
+                const live = Number(pick(livePricesRef.current));
+                return Number.isFinite(live) && live > 0 ? live : lastClose(pick(pricesRef.current));
+            };
+            window.PayStore.setPriceFeed((stockName) => {
+                const key = String(stockName || '').toLowerCase().trim();
+                if (!key) return null;
+                const ctx = payFeedRef.current;
+                const plan = (ctx.compConfigs || []).find(p => p && p.yahoo_ticker && String(p.institution || '').toLowerCase().includes(key));
+                if (!plan) return null;
+                const px = latest(plan.yahoo_ticker);
+                if (px == null) return null;
+                const ccy = lookupCurrency(ctx.tickerCurrencyMap, String(plan.yahoo_ticker).toUpperCase().trim()) || plan.currency;
+                return pxToGBPWithCurrency(px, ccy, latest('GBPUSD=X'));
+            });
+            return () => window.PayStore.setPriceFeed(null);
+        }, []);
         // tickerStooqMap: Yahoo ticker → provider-specific Stooq ticker (e.g. FLRK.L → FLRK.UK)
         //   Used in fetchAllPrices to route each ticker to the correct Stooq symbol.
         //   Benchmarks not in this map fall back to toStooqSym() conversion.

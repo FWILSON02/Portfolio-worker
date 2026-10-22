@@ -196,6 +196,19 @@ test('share awards vest in equal parts over the four years after the year of the
     assert.equal(at(2027), null);                                          // a 2022 award has fully vested
 });
 
+test('vests are valued at today\'s price when the app supplies one, else at the latest award price', () => {
+    const rows = P.computeYears([{ year: 2022, base: 1, shares: 400, price: 10, currency: 'GBP', stockName: 'Acme' }, { year: 2026, base: 1 }].map(y => P.validYear(y)));
+    assert.deepEqual([P.vestOf(rows, 2026).gross, P.vestOf(rows, 2026).live], [1000, false]);
+    const asked = [];
+    P.PayStore.setPriceFeed(name => { asked.push(name); return name === 'Acme' ? 12.5 : null; });
+    try {
+        const v = P.vestOf(rows, 2026);
+        assert.deepEqual([v.gross, v.live, asked[0]], [1250, true, 'Acme']);
+        P.PayStore.setPriceFeed(() => { throw new Error('feed broke'); });
+        assert.deepEqual([P.vestOf(rows, 2026).gross, P.vestOf(rows, 2026).live], [1000, false]);   // a failing feed never breaks Pay
+    } finally { P.PayStore.setPriceFeed(null); }
+});
+
 test('take-home: the year\'s share vests come after tax and NI on top of the base and latest bonus', () => {
     // 2024's award of 4,000 and 2025's of 2,000 both vest in 2026: 1,000 + 500 shares, at the latest award price ($24 at $1.25).
     const years = [{ year: 2024, base: 90000, bonus: 5000, shares: 4000, price: 20, currency: 'USD', fx: 1.25 },

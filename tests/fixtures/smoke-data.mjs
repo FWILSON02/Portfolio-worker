@@ -84,7 +84,8 @@ export function backupJson(today) {
         summary: {},
         payload: {
             transactions: [], prices, livePrices: {}, livePrevClose: {}, liveDailyCloses: {}, liveQuoteSessionDates: {},
-            todayPnlSnapshot: null, compConfigs: [], externalHoldings: [], loadSource: {},
+            todayPnlSnapshot: null, compConfigs: [{ plan_id: 'acme-rsu-1', institution: 'Acme', restricted_category: 'RSU', status: 'ACTIVE', yahoo_ticker: 'ACME', currency: 'GBP',
+                current_units: 40, total_target_units: 40, grant_date: iso(addDays(today, -400)), grant_price: 50, maturity_vesting_date: iso(addDays(today, 200)) }], externalHoldings: [], loadSource: {},
             metadata_schema: { currencies: { 'VWRL.L': 'GBX', ACME: 'USD' }, stooq_aliases: {}, display_names: {} },
             giltPriceHistory: { v: 1, snaps: {} },
             balances, lifeAdmin, pay, marketOverview: null,
