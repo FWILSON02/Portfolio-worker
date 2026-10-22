@@ -6,6 +6,8 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # A normal run takes about a minute. A hang (a stuck download) fails here instead of running for hours.
+    timeout-minutes: 10
     env:
       # The render smoke test (tests/smoke.test.mjs) must run here, not be skipped.
       SMOKE_REQUIRED: '1'
@@ -15,8 +17,10 @@ jobs:
         with:
           node-version: 22
       # Kept out of package.json so the Cloudflare Worker build stays as it is. The four CDN packages are the exact
-      # versions docs/index.html pins, served to the app in place of the CDN.
-      - run: npm install --prefix "$RUNNER_TEMP/smoke" --no-save --no-package-lock --no-audit --no-fund playwright@1.56.1 react@18.3.1 react-dom@18.3.1 xlsx@0.18.5 papaparse@5.4.1
+      # versions docs/index.html pins, served to the app in place of the CDN. acorn parses app.js for tests/hooks.test.cjs.
+      - run: npm install --prefix "$RUNNER_TEMP/smoke" --no-save --no-package-lock --no-audit --no-fund playwright@1.56.1 react@18.3.1 react-dom@18.3.1 xlsx@0.18.5 papaparse@5.4.1 acorn@8.12.1 acorn-walk@8.3.3
       - run: echo "NODE_PATH=$RUNNER_TEMP/smoke/node_modules" >> "$GITHUB_ENV"
-      - run: '"$RUNNER_TEMP/smoke/node_modules/.bin/playwright" install --with-deps chromium'
+      # The smoke test drives the Google Chrome already on the runner image. Downloading Playwright's own Chromium (with its
+      # apt packages) hung for over 30 minutes on PR 112.
+      - run: echo "SMOKE_CHROME_CHANNEL=chrome" >> "$GITHUB_ENV"
       - run: npm test

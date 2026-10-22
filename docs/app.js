@@ -135,6 +135,10 @@ function PortfolioApp() {
     const [exportModal, setExportModal] = useState(null); // null | { json, filename }
     // Keep pricesRef in sync so callbacks can read latest prices without dep-array inclusion.
     useEffect(() => { pricesRef.current = prices; }, [prices]);
+    // Read by fetchAllPrices without listing loadSource: listing it would re-create the callback after every fetch and
+    // re-run the effect that schedules fetches.
+    const loadSourceRef = React.useRef(loadSource);
+    loadSourceRef.current = loadSource;
     // Keep live refs in sync for shallow-compare guards inside fetchLivePrices.
     useEffect(() => { livePricesRef.current = livePrices; }, [livePrices]);
     useEffect(() => { livePrevCloseRef.current = livePrevClose; }, [livePrevClose]);
@@ -758,7 +762,7 @@ function PortfolioApp() {
                         return {
                             ticker, prices: existing || [], refreshed: false,
                             status: existing?.length ? 'ok' : 'fail',
-                            source: loadSource[ticker] || 'fail',
+                            source: loadSourceRef.current[ticker] || 'fail',
                             debug:  existing?.length
                                 ? [{ src: 'cache', result: 'ok', msg: `refresh failed (${(e.attempts && e.attempts[0] && e.attempts[0].msg) || e.message}) — keeping ${existing.length} stored pts` }]
                                 : (e.attempts || [{ src: 'yahoo', result: 'fail', msg: e.message }]),
@@ -778,7 +782,7 @@ function PortfolioApp() {
                     // Weekly alone would replace the stored 90-day daily tail with Friday bars, so with a stored series
                     // a failed daily fetch is a failed refresh: keep the series and retry later today.
                     if (dailyErr && existing?.length) {
-                        return { ticker, prices: existing, refreshed: false, status: 'ok', source: loadSource[ticker] || 'yahoo',
+                        return { ticker, prices: existing, refreshed: false, status: 'ok', source: loadSourceRef.current[ticker] || 'yahoo',
                             debug: [{ src: 'yahoo-daily', result: 'fail', msg: `refresh failed (${dailyErr}) — keeping ${existing.length} stored pts` }] };
                     }
                     const merged = mergeHistorySeries(existing, weekly.data, daily ? daily.data : []);
@@ -803,7 +807,7 @@ function PortfolioApp() {
                 }, Object.assign({}, currentPrices));
 
                 const finalStatus = tickerResults.reduce((acc, r) => { acc[r.ticker] = r.status; return acc; }, {});
-                const finalSource = tickerResults.reduce((acc, r) => { acc[r.ticker] = r.source; return acc; }, Object.assign({}, loadSource));
+                const finalSource = tickerResults.reduce((acc, r) => { acc[r.ticker] = r.source; return acc; }, Object.assign({}, loadSourceRef.current));
                 const finalDebug  = tickerResults.reduce((acc, r) => { acc[r.ticker] = r.debug;  return acc; }, {});
                 // Every ticker that was meant to refresh and didn't stays pending for a retry later today.
                 const pending = tickerResults.filter(r => !r.refreshed && r.source !== 'synthetic').map(r => r.ticker);
@@ -1169,7 +1173,7 @@ function PortfolioApp() {
                     setDailyCheckForcing(forceQueuedRef.current);
                 }
             }
-        }, [tickersUsed, compConfigs, externalHoldings, checkAssetOpenInLast3M, configCurrencyMap]);
+        }, [tickersUsed, compConfigs, externalHoldings, checkAssetOpenInLast3M, configCurrencyMap, recordFeed]);
 
         // Public entry point. Each run gets an id; only the newest run may commit, so a
         // slow request can never overwrite fresher prices. A silent 15-second poll is
@@ -2293,7 +2297,7 @@ function PortfolioApp() {
                 console.error('Export failed:', err);
                 setUploadError('Export failed: ' + err.message);
             });
-        }, [prices, livePrices, loadSource, setUploadError, setUploadFeedback]);
+        }, [prices, livePrices, loadSource, liveAt, tickerCurrencyMap, setUploadError, setUploadFeedback]);
         // ── JSON backup export (v4 unified system snapshot) ──────────────────────
         // v4 improvements:
         //   • pnlSessionDate in envelope — deterministic freshness anchor (session date,
