@@ -39,7 +39,8 @@ async function serve(page) {
 }
 
 test('every screen renders with data, with no errors', { skip: !playwright && 'Playwright not installed', timeout: 180000 }, async t => {
-    const browser = await playwright.chromium.launch();
+    // SMOKE_CHROME_CHANNEL=chrome (the Tests workflow) uses the installed Google Chrome instead of Playwright's download.
+    const browser = await playwright.chromium.launch(process.env.SMOKE_CHROME_CHANNEL ? { channel: process.env.SMOKE_CHROME_CHANNEL } : {});
     t.after(() => browser.close());
     // iPhone 17 size, touch, in a fresh profile (empty IndexedDB and localStorage).
     const ctx = await browser.newContext({ viewport: { width: 402, height: 874 }, deviceScaleFactor: 2, hasTouch: true, isMobile: true,
