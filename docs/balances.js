@@ -1184,6 +1184,14 @@ function breakdown(base, focus, accounts, metric) {
     }).sort(function (x, y) { return Math.abs(y.d) - Math.abs(x.d); });
     return { rows: rows, total: rows.reduce(function (t, g) { return t + g.d; }, 0) };
 }
+// Average change a month between two points, for reading the drift over a range (Fergus: how much C&C leaks a month).
+// Divides by the time between the two points' dates, not the count of month labels, so a latest point taken before
+// this month's payday isn't counted as a whole month. None for a single month apart: that is the change itself.
+function perMonth(from, to, metric) {
+    if (!from || !to || Math.abs(monthIndex(to.month) - monthIndex(from.month)) < 2) return null;
+    var months = Math.abs(Date.parse(to.date) - Date.parse(from.date)) / 864e5 / (365.25 / 12);
+    return months > 0 ? (to[metric] - from[metric]) / months : null;
+}
 // A group's figure at a point (share applied; only the accounts in the metric): what a drawn group line plots.
 // 'a:<id>' is a single account (e.g. just the mortgage), drawn on its own.
 function groupValue(p, gid, accounts, metric) {
@@ -1309,6 +1317,7 @@ function Chart(props) {
     }
 
     var change = to[metric] - (from ? from[metric] : to[metric]);
+    var avg = sel.length ? null : perMonth(from, to, metric);
     var marked = focus !== pts[pts.length - 1] || scrub || pin;
     var blur = props.privacy ? 'blur(6px)' : 'none';
     var maxAbs = bd ? Math.max.apply(null, bd.rows.map(function (g) { return Math.abs(g.d); }).concat([1])) : 1;
@@ -1328,7 +1337,8 @@ function Chart(props) {
                 })
                 : [E('span', { key: 'v', style: { fontSize: 14, fontWeight: 600, color: ui.C.white, filter: blur } }, fmtGBP(focus[metric])),
                    from && E('span', { key: 'd', style: { fontSize: 12, color: neutral ? ui.C.zinc400 : signColor(ui, change), filter: blur } }, fmtSigned(change)),
-                   from && E('span', { key: 'p', style: { fontSize: 12, color: neutral ? ui.C.zinc400 : signColor(ui, change) } }, fmtPct(pctChange(to[metric], from[metric])))]
+                   from && E('span', { key: 'p', style: { fontSize: 12, color: neutral ? ui.C.zinc400 : signColor(ui, change) } }, fmtPct(pctChange(to[metric], from[metric]))),
+                   avg != null && E('span', { key: 'm', style: { fontSize: 12, color: neutral ? ui.C.zinc400 : signColor(ui, avg), filter: blur } }, fmtSigned(avg) + '/mo')]
         ),
         E('div', {
             ref: ref,
@@ -2367,6 +2377,6 @@ window.MaturityAlerts = { Banner: MaturityBanner, investmentAlerts: investmentAl
 // For tests only: the pure parts, no UI.
 window.__balancesInternals = { applyLinked: applyLinked, parseJsonBackup: parseJsonBackup, buildJson: buildJson, parseImport: parseImport, importToState: importToState, runChecks: runChecks, buildSeries: buildSeries, parseAmount: parseAmount, buildCsv: buildCsv,
     resolveTimeline: resolveTimeline, paydayOf: paydayOf, validLink: validLink, hintName: hintName, termValue: termValue, termRuns: termRuns, monthTicks: monthTicks, niceStep: niceStep, axisLabel: axisLabel, totalsFor: totalsFor, indexAccounts: indexAccounts, withPartial: withPartial, liveLinked: liveLinked,
-    grow: grow, workDown: workDown, validLoan: validLoan, loanOwed: loanOwed, assetValue: assetValue, validateState: validateState, breakdown: breakdown, groupValue: groupValue,
+    grow: grow, workDown: workDown, validLoan: validLoan, loanOwed: loanOwed, assetValue: assetValue, validateState: validateState, breakdown: breakdown, groupValue: groupValue, perMonth: perMonth,
     alertStage: alertStage, alertWindows: alertWindows, validWindows: validWindows, estateAlerts: estateAlerts, investmentAlerts: investmentAlerts, silenceAlert: silenceAlert, silenced: silenced, readSilence: readSilence };
 })();
