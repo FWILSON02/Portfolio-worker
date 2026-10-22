@@ -71,23 +71,8 @@ function mktSafeFiniteNumber(v) {
     return (Number.isFinite(n) && n > 0) ? n : null;
 }
 
-// dp defaults to 2 for Day; pass dp=1 for period returns.
-function mktFmtPct(v, dp) {
-    if (v == null || !Number.isFinite(v)) return '\u2014';
-    var places = (dp != null) ? dp : 2;
-    return (v >= 0 ? '+' : '') + v.toFixed(places) + '%';
-}
 
-function mktPctColor(v) {
-    if (v == null || !Number.isFinite(v)) return C.zinc500;
-    return v >= 0 ? C.emerald : C.rose;
-}
 
-function mktFmtNumber(v) {
-    if (v == null || !Number.isFinite(v) || v <= 0) return '\u2014';
-    if (v >= 1000) return v.toLocaleString('en-US', { maximumFractionDigits: 0 });
-    return v.toFixed(2);
-}
 
 // Yield level: e.g. 4.23 → "4.23%"
 function mktFmtYieldLevel(v) {
@@ -95,11 +80,6 @@ function mktFmtYieldLevel(v) {
     return v.toFixed(2) + '%';
 }
 
-// Basis-point move: e.g. +12.5 → "+13bp", -8 → "-8bp"
-function mktFmtBp(v) {
-    if (v == null || !Number.isFinite(v)) return '\u2014';
-    return (v >= 0 ? '+' : '') + v.toFixed(0) + 'bp';
-}
 
 // Now column: yield level for bpChange rows; price for pctReturn.
 // Respects row.nowDecimals when set (e.g. 4 for EUR/USD, 2 for USD/JPY).
@@ -113,27 +93,7 @@ function mktFmtRowNow(row) {
     return v.toFixed(2);
 }
 
-// Format any price/level value using the same rules as mktFmtRowNow.
-// Used for previousClose in the diagnostic strip so it shows as a yield
-// level (e.g. "4.23%") for rates rows and as a compact price for others.
-function mktFmtRowLevel(row, value) {
-    if (row == null || value == null || !Number.isFinite(value)) return '\u2014';
-    if (row.displayKind === 'bpChange') return mktFmtYieldLevel(value);
-    var v = Number(value);
-    if (v <= 0) return '\u2014';
-    if (row.nowDecimals != null) return v.toFixed(row.nowDecimals);
-    if (v >= 1000) return v.toLocaleString('en-US', { maximumFractionDigits: 0 });
-    return v.toFixed(2);
-}
 
-// Move column (Day / 1M / YTD / 12M): bp for bpChange, pct for pctReturn.
-// decimals is ignored for bpChange (always integer bp).
-function mktFmtRowMove(row, value, decimals) {
-    if (value == null || !Number.isFinite(value)) return '\u2014';
-    if (row.displayKind === 'bpChange') return mktFmtBp(value);
-    if (row.displayKind === 'ptChange') return (value >= 0 ? '+' : '') + value.toFixed(2);
-    return mktFmtPct(value, decimals != null ? decimals : 1);
-}
 
 // Colour for any move column: positive emerald, negative rose, missing muted.
 // VIX uses inverse colouring: a rising VIX is risk-off (bad = rose),
@@ -513,13 +473,6 @@ function mktComputePeriodReturnsFromHistoryCore(historyCore, inst, liveNow, live
     };
 }
 
-// Backward-compat shim (not used internally; kept so any external callers survive).
-// Callers inside this file have been migrated to the two-function pattern above.
-function mktParseReturnHistoryResult(chartResult, inst, liveNow, liveDate) {
-    var core    = mktParseHistoryCore(chartResult, inst);
-    var periods = mktComputePeriodReturnsFromHistoryCore(core, inst, liveNow, liveDate);
-    return Object.assign({}, core, periods, { historyError: core.historyError });
-}
 
 // ── Markets 1D: the same previous-close rules as Holdings ────────────────────
 // Computes the 1D move for one Markets row from graded daily rows (Yahoo, plus a
