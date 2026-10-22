@@ -346,7 +346,7 @@ const BENCHMARKS = [
     { id: 'URTH', label: 'MSCI World', short: 'WORLD', color: '#34d399', fxTicker: 'GBPUSD=X' },
 ];
 // The S&P benchmark is Yahoo's S&P 500 TOTAL RETURN index (dividends reinvested), fetched like ^GSPC (Fergus: call it SPXT).
-// The plain index stays for the Markets tab and the legend's level; if the total-return history is missing the benchmark
+// The plain index stays for the Markets screen and the legend's level; if the total-return history is missing the benchmark
 // falls back to the price index and is called SPX until it arrives.
 const BENCH_TR_TICKER = '^SP500TR';
 let spxLabelNow = 'SPXT';

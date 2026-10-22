@@ -2086,7 +2086,7 @@ window.__debugChartIntegrity = (function() {
     return function() { return _snapshot; };
 })();
 
-const InsightsPanel = React.memo(function InsightsPanel({ data, privacyMode, lastSpotRefreshAt }) {
+const InsightsPanel = React.memo(function InsightsPanel({ data, privacyMode, lastSpotRefreshAt, onOpenMarkets }) {
     if (!data) return null;
     const { contributors, bestMover, worstMover, hasLiveData, liveCount, giltCount } = data;
 
@@ -2323,10 +2323,12 @@ const InsightsPanel = React.memo(function InsightsPanel({ data, privacyMode, las
         React.createElement('div', { style: {
             display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16,
         } },
-            React.createElement('span', { style: {
+            // The title opens the Markets screen (Fergus moved Markets here from the tab bar); the chevron marks it as a link.
+            React.createElement('button', { onClick: onOpenMarkets, style: {
+                display: 'flex', alignItems: 'center', gap: 3, background: 'none', border: 'none', padding: '6px 6px 6px 0', margin: '-6px 0',
                 fontFamily: sys, fontSize: 10, fontWeight: 700,
-                color: C.zinc500, textTransform: 'uppercase', letterSpacing: '0.18em',
-            } }, 'Daily Insights'),
+                color: C.zinc500, textTransform: 'uppercase', letterSpacing: '0.18em', WebkitTapHighlightColor: 'transparent',
+            } }, 'Market Movers', React.createElement(ChevronRight, { style: { width: 12, height: 12, flexShrink: 0 }, strokeWidth: 2.5 })),
             hasLiveData && React.createElement('div', { style: {
                 display: 'flex', alignItems: 'center', gap: 5,
             } },

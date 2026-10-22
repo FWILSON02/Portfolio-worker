@@ -5,7 +5,7 @@
 // ══════════════════════════════════════════════════════════════════════════════
 // DAILY-CLOSE VERIFICATION — one module for every "Today" / 1D figure in the app
 // ──────────────────────────────────────────────────────────────────────────────
-// Used by: Holdings "Today", restricted schemes (Citi / HSBC), and the Markets tab.
+// Used by: Holdings "Today", restricted schemes (Citi / HSBC), and the Markets screen.
 //
 // Why: Yahoo's daily series sometimes omits a session (22 Sep 2026: FLRK, SEMI,
 // SMGB, EQGB, IGUS and Citi all had no Tuesday bar), and the old resolvers then
@@ -1660,7 +1660,7 @@ function mergeYahooWithSecondary(sym, yahooRows, sec, livePx) {
 }
 
 // The single previous-close decision for every 1D figure in the app.
-// Holdings, restricted schemes, the Markets tab, the SPX chart patch and the
+// Holdings, restricted schemes, the Markets screen, the SPX chart patch and the
 // Settings/diagnostics views all call this; there is no fallback resolver.
 //   sessionDate — the session "today" represents (from the existing session guards)
 //   livePx      — Yahoo live price (same units as the rows)
@@ -1915,7 +1915,7 @@ function carryForwardLiveQuotes({ requested, fresh, previous, freshRows, previou
 const EXCHANGE_HOURS = {
     LSE:  { tz: 'Europe/London',    open: 8 * 60,       close: 16 * 60 + 30 },
     NYSE: { tz: 'America/New_York', open: 9 * 60 + 30, close: 16 * 60 },
-    KRX:  { tz: 'Asia/Seoul',       open: 9 * 60,       close: 15 * 60 + 30 },   // Markets tab (Naver) only
+    KRX:  { tz: 'Asia/Seoul',       open: 9 * 60,       close: 15 * 60 + 30 },   // Markets screen (Naver) only
 };
 const _clockFmt = {};
 function exchangeClock(tz, nowMs) {
