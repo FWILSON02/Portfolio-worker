@@ -279,3 +279,13 @@ test('pay review: base, bonus and total comp year on year, and bonus against bas
     assert.equal(P.reviewYearOf(saved, { year: 2026 }), 2026);
     assert.equal(P.reviewYearOf(saved, null), 2027);
 });
+
+// The rates in pay.js are for one tax year. From 6 April the next one starts: check the thresholds and rates against
+// gov.uk, update TAX, and set TAX.year. Runs weekly in CI (the Tests workflow), so this fails within a week of 6 April.
+test('the tax rates are for the current UK tax year', () => {
+    const now = new Date();
+    const y = now.getUTCFullYear(), m = now.getUTCMonth(), d = now.getUTCDate();
+    const start = (m > 3 || (m === 3 && d >= 6)) ? y : y - 1;
+    const current = start + '/' + String((start + 1) % 100).padStart(2, '0');
+    assert.equal(P.TAX.year, current, 'a new tax year has started: check the rates in docs/pay.js TAX, then set TAX.year to ' + current);
+});

@@ -502,7 +502,7 @@ function computeConsolidatedTimeline({ portfolioTimeline, restrictedTimeline }) 
     });
 }
 
-function computePerformanceChart({ benchmarkTimeline, spxGbpSeries, startDate, perfLedger, endDate, consolidatedTimeline }) {
+function computePerformanceChart({ benchmarkTimeline, spxGbpSeries, perfLedger, consolidatedTimeline }) {
     var _a, _b, _c;
     if (benchmarkTimeline.length === 0)
         return [];
@@ -520,18 +520,9 @@ function computePerformanceChart({ benchmarkTimeline, spxGbpSeries, startDate, p
                  spxNative: k.row.usd, spxGbp: k.row.gbp, spxSourceDate: k.row.date, spxStale: k.staleDays > 3 };
     };
 
-    // Find the first row on or after the requested anchor date.
-    // The dropdown can pass "2025-01-01" (a Wednesday) but weekly rows are Mondays —
-    // so an exact-date match fails. Use first-row-on-or-after instead.
-    // SPX data is no longer required at the portfolio anchor date — the benchmark
-    // series is independent and will start from the first valid SPX close >= anchor.
-    let anchorRow;
-    if (startDate) {
-        anchorRow = benchmarkTimeline.find(p => p.date >= startDate && p.portfolioValue > 0);
-    }
-    else {
-        anchorRow = benchmarkTimeline.find(p => p.portfolioValue > 0);
-    }
+    // The chart starts at the first row with a portfolio value. SPX data is not required there: the benchmark series is
+    // independent and starts from the first valid SPX close on or after it.
+    const anchorRow = benchmarkTimeline.find(p => p.portfolioValue > 0);
     if (!anchorRow)
         return [];
     const anchor = anchorRow.date;
@@ -544,7 +535,7 @@ function computePerformanceChart({ benchmarkTimeline, spxGbpSeries, startDate, p
         benchBase[b.id] = (_b = (_a = anchorRow.benchGBP) === null || _a === void 0 ? void 0 : _a[b.id]) !== null && _b !== void 0 ? _b : null;
     }
     // For portfolio: chain weekly Modified Dietz returns starting from anchor
-    const filtered = benchmarkTimeline.filter(p => p.date >= anchor && (!endDate || p.date <= endDate));
+    const filtered = benchmarkTimeline.filter(p => p.date >= anchor);
     let portfolioIndex = 100;
     // Parallel "invested-only" index: tracks the return of just the equity + untickered book
     // (i.e. excluding cash). Cash flows into this sub-portfolio are buys (cash → equity); flows

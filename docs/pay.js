@@ -332,8 +332,8 @@ function reviewFigures(rows, review) {
 // the 2025/26 figures too. Worked out over the year, as PAYE evens out by the year's end; a bonus month's payslip will
 // differ, the year won't. Relief at source includes the higher-rate relief claimed back through self assessment, so
 // payslips show a little less. Not covered: student loan, Scottish rates, taxable benefits: the payslip figure is there
-// for those.
-var TAX = { allowance: 12570, taperFrom: 100000, basicBand: 37700, additionalFrom: 125140, basic: 0.2, higher: 0.4, additional: 0.45,
+// for those. year: the tax year these rates are for; tests/pay.test.cjs fails from the next 6 April until they are checked.
+var TAX = { year: '2026/27', allowance: 12570, taperFrom: 100000, basicBand: 37700, additionalFrom: 125140, basic: 0.2, higher: 0.4, additional: 0.45,
             niFrom: 12570, niUpper: 50270, niMain: 0.08, niUpperRate: 0.02 };
 // Income tax on a year's taxable pay. ani: adjusted net income, which sets how much of the personal allowance is left;
 // band: extra basic-rate band (relief at source widens it by the gross contribution).
@@ -803,7 +803,7 @@ function TakeHomeCard(props) {
         !t.set && E('div', { style: { fontFamily: ui.sys, fontSize: 12.5, color: ui.C.amber, marginTop: 8, lineHeight: 1.45 } },
             'Pension not set yet, so none is taken off. Tap Edit to add it.'),
         E('div', { style: { fontFamily: ui.sys, fontSize: 11.5, color: ui.C.zinc700, marginTop: 8, lineHeight: 1.4 } },
-            '2026/27 UK tax and NI on ' + t.year + '’s base, over the year, with your payslip deductions. No student loan, Scottish rates or benefits: add your payslip figure if they apply.'));
+            TAX.year + ' UK tax and NI on ' + t.year + '’s base, over the year, with your payslip deductions. No student loan, Scottish rates or benefits: add your payslip figure if they apply.'));
 }
 
 var _openYear = null;
@@ -1166,7 +1166,7 @@ window.PayView = PayView;
 window.PayStore = PayStore;
 window.PayIcon = PayIcon;
 // For tests only: the pure parts, no UI.
-window.__payInternals = { netPay: netPay, incomeTax: incomeTax, nationalInsurance: nationalInsurance, takeHomeOf: takeHomeOf, marginalOf: marginalOf, PayStore: PayStore, vestOf: vestOf, validTakeHome: validTakeHome,
+window.__payInternals = { TAX: TAX, netPay: netPay, incomeTax: incomeTax, nationalInsurance: nationalInsurance, takeHomeOf: takeHomeOf, marginalOf: marginalOf, PayStore: PayStore, vestOf: vestOf, validTakeHome: validTakeHome,
     validateState: validateState, validYear: validYear, reviewFigures: reviewFigures, reviewYearOf: reviewYearOf, parsePaste: parsePaste, mergeYears: mergeYears, computeYears: computeYears,
     summary: summary, fxFor: fxFor, headerKey: headerKey, stockNameOf: stockNameOf };
 })();

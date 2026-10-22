@@ -342,7 +342,7 @@ function mktDeriveQuoteStatus(marketState, quoteTs, fetchedAtMs, inst, observedU
 // ── History helpers ───────────────────────────────────────────────────────────
 // Split into two layers so the cache never stores final return percentages.
 //
-// Layer 1: mktParseHistoryCore — extracts anchor closes from a 2y chart result.
+// Layer 1: mktHistoryCoreFromSeries — extracts anchor closes from a 2y daily series.
 //   • Safe to cache: contains no live-quote-dependent numbers.
 //   • Stored as MARKET_HISTORY_CACHE[symbol].historyCore
 //
@@ -350,9 +350,6 @@ function mktDeriveQuoteStatus(marketState, quoteTs, fetchedAtMs, inst, observedU
 //   refresh using the latest live quote as numerator when valid.
 //   • Never cached: must re-run every fetch cycle.
 
-function mktParseHistoryCore(chartResult, inst) {
-    return mktHistoryCoreFromSeries(mktParseDailyCloseSeries(chartResult), inst);
-}
 function mktHistoryCoreFromSeries(series, inst) {
     try {
         series = series || [];

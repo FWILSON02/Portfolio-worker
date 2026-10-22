@@ -53,9 +53,7 @@ const UI = {
 };
 // ─── Shared className helpers ────────────────────────────────────────────────
 // Use these instead of repeating card-dark + radius + padding inline.
-// CARD_INTERACTIVE adds hover/active states for upload zones and action buttons.
 const CARD = `card-dark ${UI.radius.md} ${UI.card.md}`;
-const CARD_INTERACTIVE = `card-dark ${UI.radius.md} ${UI.card.md} hover:border-amber-400/40 active:scale-[0.97] transition-all duration-150 cursor-pointer`;
 
 // ── Global display constants ──────────────────────────────────────────────────
 // Defined outside PortfolioApp so HoldingRow and BottomSheet can reference them
