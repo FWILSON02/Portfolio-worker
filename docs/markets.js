@@ -1978,8 +1978,9 @@ function MarketOverviewScreen({ rows, status, updatedAt, error, onRefresh, onBac
     },
         React.createElement('div', {
             className: 'safe-top',
+            // Side padding only: a padding shorthand here would override safe-top's padding-top and put Back under the status bar.
             style: { position: 'relative', display: 'flex', alignItems: 'center', minHeight: 44, flexShrink: 0,
-                     padding: '0 16px 0 6px', background: C.surface, borderBottom: '1px solid ' + C.border }
+                     paddingLeft: 6, paddingRight: 16, background: C.surface, borderBottom: '1px solid ' + C.border }
         },
             React.createElement('button', {
                 onClick: onBack, 'aria-label': 'Back',
