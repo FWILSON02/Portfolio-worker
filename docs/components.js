@@ -543,43 +543,6 @@ function card(children, extra={}) {
     }, children);
 }
 
-function MetricBlock({ value, todayAbs, todayPct, totalAbs, totalPct, size='sm', privacy=false, privacyMode=false }) {
-    const large = size === 'lg';
-    const blur = privacy && privacyMode;
-    // isValidNumber: explicit guard that distinguishes null/undefined/NaN from a genuine zero.
-    // todayAbs === 0 is a valid calculated result and must render as +£0, not —.
-    // todayAbs === null means no data available and must render as —.
-    const isValidNumber = (v) => v != null && Number.isFinite(Number(v));
-    return React.createElement('div', {
-        style: { fontFamily: sys, fontVariantNumeric: 'tabular-nums', letterSpacing: '-0.02em' }
-    },
-        // Line 1: Current value — largest primary typography
-        React.createElement('div', {
-            style: { fontSize: large ? 34 : 23, fontWeight: 700, color: C.white,
-                     lineHeight: 1.05, marginBottom: 5, filter: blur ? 'blur(8px)' : 'none' }
-        }, value),
-        // Line 2: Today's change — colour-coded; null → '—', valid zero → '+£0'
-        React.createElement('div', { style: { display: 'flex', gap: 5, alignItems: 'baseline', marginBottom: 2 } },
-            React.createElement('span', { style: { fontSize: 10, color: C.zinc500, letterSpacing: '0.04em', textTransform: 'uppercase', fontWeight: 500 } }, 'Today'),
-            React.createElement('span', { style: { fontSize: large ? 15 : 13, fontWeight: 600, color: signColor(todayAbs), filter: blur ? 'blur(6px)' : 'none' } },
-                isValidNumber(todayAbs) ? fmtA(todayAbs) : '—'
-            ),
-            React.createElement('span', { style: { fontSize: large ? 13 : 12, fontWeight: 600, color: signColor(todayPct) } },
-                isValidNumber(todayPct) ? `(${fmtP(todayPct)})` : ''
-            )
-        ),
-        // Line 3: Total period return — muted secondary typography
-        React.createElement('div', { style: { display: 'flex', gap: 5, alignItems: 'baseline' } },
-            React.createElement('span', { style: { fontSize: 10, color: C.zinc500, letterSpacing: '0.04em', textTransform: 'uppercase', fontWeight: 500 } }, 'Total'),
-            React.createElement('span', { style: { fontSize: large ? 14 : 12, fontWeight: 600, color: signColor(totalAbs), filter: blur ? 'blur(6px)' : 'none' } },
-                totalAbs == null ? '—' : fmtA(totalAbs)
-            ),
-            React.createElement('span', { style: { fontSize: large ? 13 : 11, fontWeight: 600, color: signColor(totalPct) } },
-                totalPct == null ? '' : `(${fmtP(totalPct)})`
-            )
-        )
-    );
-}
 
 
 function SectionLabel({ label, right }) {

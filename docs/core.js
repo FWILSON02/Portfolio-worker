@@ -262,80 +262,6 @@ function SvgChart({ data, series, width, height, margin, xKey, xFormat, yFormat,
                         React.createElement("span", null, tooltipFormat ? tooltipFormat(v, s.key, hoverD) : v.toFixed(1))));
                 }))))));
 }
-function SvgBarChart({ data, xKey, barKey, lineKey, barColor, lineColor, width, height, margin, xFormat, privacyMode }) {
-    barColor = barColor || '#fbbf24';
-    lineColor = lineColor || '#60a5fa';
-    const m = Object.assign({ top: 10, right: 52, bottom: 28, left: 52 }, margin || {});
-    const W = Math.max(1, width - m.left - m.right);
-    const H = Math.max(1, height - m.top - m.bottom);
-    const [hover, setHover] = React.useState(null);
-    if (!data || data.length === 0)
-        return null;
-    const barVals = data.map(d => d[barKey] || 0);
-    const barMax = Math.max.apply(null, barVals.concat([1]));
-    const lineVals = lineKey ? data.map(d => d[lineKey]).filter(v => v != null && isFinite(v)) : [];
-    const lineMin = lineVals.length ? Math.min.apply(null, lineVals) : 0;
-    const lineMax = lineVals.length ? Math.max.apply(null, lineVals) : 1;
-    const linePad = (lineMax - lineMin) * 0.08 || 1;
-    const colW = W / data.length;
-    const barW = Math.max(2, colW - 3);
-    const bx = (i) => i * colW + (colW - barW) / 2;
-    const lx = (i) => (i + 0.5) * colW;
-    const ly = (v) => H - ((v - lineMin + linePad) / (lineMax - lineMin + 2 * linePad)) * H;
-    const linePath = lineKey ? data.map((d, i) => {
-        const v = d[lineKey];
-        return (v != null && isFinite(v)) ? (lx(i).toFixed(1) + ',' + ly(v).toFixed(1)) : null;
-    }).filter(Boolean).join('L') : '';
-    const svgRef = React.useRef(null);
-    function onMove(e) {
-        if (!svgRef.current)
-            return;
-        const rect = svgRef.current.getBoundingClientRect();
-        const cx = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left - m.left;
-        const idx = Math.floor(cx / colW);
-        setHover(Math.max(0, Math.min(data.length - 1, idx)));
-    }
-    // Y ticks
-    const step = barMax < 5000 ? 1000 : barMax < 20000 ? 5000 : barMax < 60000 ? 10000 : 20000;
-    const yTicks = [];
-    for (let v = 0; v <= barMax * 1.05; v += step) {
-        if (yTicks.length < 7)
-            yTicks.push(v);
-    }
-    const xStep = Math.max(1, Math.ceil(data.length / Math.floor(W / 48)));
-    return (React.createElement("svg", { ref: svgRef, width: width, height: height, onMouseMove: onMove, onMouseLeave: () => setHover(null), onTouchMove: onMove, onTouchEnd: () => setHover(null), style: { display: 'block', userSelect: 'none' } },
-        React.createElement("g", { transform: 'translate(' + m.left + ',' + m.top + ')' },
-            yTicks.map((v, i) => (React.createElement("line", { key: i, x1: 0, x2: W, y1: (H - (v / barMax) * H * 0.95).toFixed(1), y2: (H - (v / barMax) * H * 0.95).toFixed(1), stroke: "#1e2530", strokeWidth: 1, strokeDasharray: "4 6" }))),
-            data.map((d, i) => {
-                const v = d[barKey] || 0;
-                if (v <= 0)
-                    return null;
-                const bh = (v / barMax) * H * 0.95;
-                return React.createElement("rect", { key: i, x: bx(i).toFixed(1), y: (H - bh).toFixed(1), width: barW, height: bh.toFixed(1), rx: 2, fill: barColor, fillOpacity: hover === i ? 1 : 0.65 });
-            }),
-            lineKey && linePath && (React.createElement("path", { d: 'M' + linePath, stroke: lineColor, strokeWidth: 2, fill: "none" })),
-            hover != null && (React.createElement("line", { x1: lx(hover).toFixed(1), x2: lx(hover).toFixed(1), y1: 0, y2: H, stroke: "#888894", strokeWidth: 1, strokeDasharray: "3 4" })),
-            React.createElement("line", { x1: 0, x2: 0, y1: 0, y2: H, stroke: "#6b6b76" }),
-            React.createElement("line", { x1: 0, x2: W, y1: H, y2: H, stroke: "#6b6b76" }),
-            yTicks.map((v, i) => (React.createElement("text", { key: i, x: -5, y: (H - (v / barMax) * H * 0.95).toFixed(1), textAnchor: "end", dominantBaseline: "middle", fill: "#a1a1aa", fontSize: 10, fontFamily: "JetBrains Mono" }, privacyMode ? '' : '£' + (v >= 1000 ? (v / 1000).toFixed(0) + 'k' : v)))),
-            data.map((d, i) => {
-                if (i % xStep !== 0)
-                    return null;
-                return (React.createElement("text", { key: i, x: lx(i).toFixed(1), y: H + 14, textAnchor: "middle", fill: "#a1a1aa", fontSize: 10, fontFamily: "JetBrains Mono" }, xFormat && d[xKey] ? xFormat(d[xKey]) : (d[xKey] || '')));
-            })),
-        hover != null && data[hover] && (React.createElement("foreignObject", { x: Math.min(m.left + lx(hover) + 12, width - 160), y: m.top + 4, width: 150, height: 70, style: { pointerEvents: 'none' } },
-            React.createElement("div", { style: { background: '#0d1218', border: '1px solid #27272a', borderRadius: 10,
-                    fontFamily: 'JetBrains Mono', fontSize: 11, padding: '8px 12px',
-                    boxShadow: '0 8px 24px rgba(0,0,0,0.7)', color: '#e4e4e7' } },
-                React.createElement("div", { style: { color: '#a1a1aa', marginBottom: 4, fontSize: 10 } }, data[hover][xKey]),
-                React.createElement("div", { style: { color: barColor } },
-                    privacyMode ? "Inflow: ••••" : "Inflow: \u00A3",
-                    privacyMode ? "" : (data[hover][barKey] || 0).toLocaleString('en-GB', { maximumFractionDigits: 0 })),
-                lineKey && React.createElement("div", { style: { color: lineColor } },
-                    privacyMode ? "Total: ••••" : "Total: \u00A3",
-                    privacyMode ? "" : (data[hover][lineKey] || 0).toLocaleString('en-GB', { maximumFractionDigits: 0 })))))));
-}
-// Recharts replaced by inline SVG charts (SvgChart, SvgBarChart, SvgResponsive)
 // ─── IndexedDB persistence ──────────────────────────────────────────────────
 // Small async wrapper around IndexedDB. We store three things:
 //   - kv['transactions']  → the full transactions array
@@ -1018,12 +944,6 @@ function isSameCalendarDay(value) {
 // "today" means the same thing everywhere: the latest completed (or live)
 // trading session, not the wall-clock calendar date.
 
-// Canonical UTC-date-only string from any date/timestamp value.
-// Single source of truth — replaces ad-hoc toISOString().slice(0,10) calls.
-function dateOnlyUTC(value) {
-    const d = value instanceof Date ? value : new Date(value);
-    return isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
-}
 
 // The current P&L session date string (YYYY-MM-DD).
 //   Weekday  → today's UTC date (current or just-closed session).
@@ -1038,13 +958,6 @@ function getCurrentPnlSessionDateStr() {
     return d.toISOString().slice(0, 10);
 }
 
-// LEGACY — strict date-equality check. Superseded by getEffectiveDateForTicker for
-// per-ticker P&L paths. Retained for any remaining callers; new code should use
-// getEffectiveDateForTicker (per-ticker, stale-reject) or getEffectivePnlSessionDateStr.
-function isLiveQuoteUsableForPnl(liveAt, pnlSessionDateStr) {
-    if (!liveAt || !pnlSessionDateStr) return false;
-    return dateOnlyUTC(liveAt) === pnlSessionDateStr;
-}
 
 // Returns the UTC date string for the trading session immediately before dateStr.
 // Mon (dow=1) → 3 days back to Fri.  Any other weekday → 1 day back.
@@ -1065,7 +978,7 @@ function previousTradingDayStr(dateStr) {
 //      Friday liveAt is valid for Friday P&L until the first Monday fetch arrives.
 //      On Tuesday, a Friday liveAt correctly returns null (prevSession = Monday ≠ Friday).
 //
-// Using the effective date as todayStr in pickReliablePrevClose ensures that when
+// Using the effective date as the session date for the previous close ensures that when
 // liveAt = Friday and candidate = Monday, prevClose resolves to Thursday (not Friday),
 // so the delta = Friday − Thursday — not the false-zero Friday − Friday.
 function getEffectivePnlSessionDateStr(liveAt, candidateSessionDateStr) {
@@ -1221,57 +1134,7 @@ function getPreviousCompletedCloseFromSeries(timestamps, closes, currentQuoteTs)
 }
 
 
-// Reads the in-memory prices[ticker] history and returns the latest completed
-// close strictly before currentSessionDate (YYYY-MM-DD).
-//
-// This is the primary source of truth for previous close: it is keyed by date
-// string and cannot be stale, from the wrong session, or carry over between
-// fetch cycles. livePrevClose is consulted only when this returns null.
-//
-// Supported row shapes (all observed in the app's price series):
-//   { date: 'YYYY-MM-DD', close: number }  — standard
-//   { date: 'YYYY-MM-DD', price: number }  — alternate field name
-//   { t: number | string, c: number }      — compact (Stooq-style)
-//   { timestamp: number, close: number }   — timestamp-keyed
-//   { timestamp: number, price: number }   — timestamp-keyed w/ price field
-//
-// Returns { value, selectedDate, source, reason } or null.
-function getPreviousCloseFromPriceHistory({ ticker, prices, currentSessionDate }) {
-    const normTk = String(ticker || '').toUpperCase().trim();
-    if (!normTk || !prices || !currentSessionDate) return null;
-    // Case-insensitive series lookup
-    const rawSeries = prices[normTk]
-        ?? prices[ticker]
-        ?? Object.entries(prices).find(([k]) => String(k).toUpperCase().trim() === normTk)?.[1];
-    if (!Array.isArray(rawSeries) || rawSeries.length === 0) return null;
-    const tsToDate = ts => new Date(Number(ts) * 1000).toISOString().slice(0, 10);
-    // Normalize each row to { dateKey, close }
-    const rows = rawSeries.map(row => {
-        if (!row || typeof row !== 'object') return null;
-        // Extract calendar date
-        let dateKey = null;
-        if (row.date && typeof row.date === 'string')        { dateKey = row.date.slice(0, 10); }
-        else if (row.timestamp != null)                       { dateKey = tsToDate(row.timestamp); }
-        else if (row.t != null)                               { dateKey = typeof row.t === 'number' ? tsToDate(row.t) : String(row.t).slice(0, 10); }
-        if (!dateKey || dateKey.length < 10) return null;
-        // Extract close
-        const close = Number(row.close ?? row.price ?? row.c);
-        if (!Number.isFinite(close) || close <= 0) return null;
-        return { dateKey, close };
-    }).filter(Boolean);
-    if (rows.length === 0) return null;
-    // Sort ascending; keep only bars strictly before the current session
-    const prior = rows
-        .filter(r => r.dateKey < currentSessionDate)
-        .sort((a, b) => a.dateKey.localeCompare(b.dateKey));
-    if (prior.length === 0) return null;
-    const sel = prior[prior.length - 1]; // most recent completed session
-    return { value: sel.close, selectedDate: sel.dateKey, source: 'prices-history', reason: 'latest-completed-session-from-prices' };
-}
 
-// Debug gate for previous-close resolution.
-// Set true to log per-ticker decision details via console.table.
-const DEBUG_PREV_CLOSE_RESOLUTION = false;
 
 // Maximum plausible single-session daily move for a liquid equity.
 // livePrevClose values implying a larger move vs the current live price are
@@ -1279,133 +1142,4 @@ const DEBUG_PREV_CLOSE_RESOLUTION = false;
 // Callers that do not pass livePrices skip this check (tentative trust).
 const MAX_SANE_DAILY_MOVE = 0.15; // 15 %
 
-// ⚠ LEGACY — NO REMAINING CALLERS. Its only user was the gilt ladder's IGLS.L proxy, which has been removed
-// along with the gilt model. Every previous close in the app comes from resolveVerifiedDailyPrevClose.
-// This resolver does not check that its close is from the previous trading session, so it must not be
-// used for new code; it is safe to delete.
-//
-// Detailed previous-close resolver — returns structured metadata in addition to the value.
-//
-// Source-of-truth hierarchy (prices-history FIRST):
-//   1. getPreviousCloseFromPriceHistory — in-memory prices[ticker] series.
-//      If this has a valid completed close before the current session, use it
-//      immediately.  It cannot be stale, from the wrong session, or carry over
-//      between fetch cycles.  livePrevClose is never consulted for tickers that
-//      have a prices-history entry.
-//   2. livePrevClose — fallback ONLY when prices[ticker] is absent or empty
-//      (e.g. restricted tickers C, HSBA.L not present in the HL ledger).
-//      After the non-accumulating setLivePrevClose fix, this map contains only
-//      fresh values from the latest fetch cycle; stale restored values cannot
-//      survive a successful live fetch.
-//   3. Plausibility guard (15% MAX_SANE_DAILY_MOVE) on livePrevClose fallback.
-//
-// Returns { value, source, selectedDate, rejectedLivePrev, reason }
-function pickReliablePrevCloseDetailed({ ticker, livePrevClose, prices, todayStr, liveStatus, liveAt, livePrices, liveSeries, quoteTime }) {
-    const normTk = String(ticker || '').toUpperCase().trim();
-    const currentSessionDate = todayStr; // YYYY-MM-DD of the current trading session
 
-    // ── 1. PRIMARY: prices-history ────────────────────────────────────────────
-    const histResult = getPreviousCloseFromPriceHistory({ ticker: normTk, prices, currentSessionDate });
-
-    if (histResult) {
-        // CI lookup of livePrevClose for debug comparison only (never used as value)
-        const rawLiveForDebug = DEBUG_PREV_CLOSE_RESOLUTION && livePrevClose
-            ? (livePrevClose[normTk] ?? null) : null;
-        if (DEBUG_PREV_CLOSE_RESOLUTION) console.table([{
-            ticker:                    normTk,
-            livePrice:                 livePrices ? (livePrices[normTk] ?? null) : null,
-            currentSessionDate,
-            pricesHistoryPrevClose:    histResult.value,
-            pricesHistoryDate:         histResult.selectedDate,
-            rawLivePrevClose:          rawLiveForDebug,
-            livePrevIgnored:           true,
-            finalPrevClose:            histResult.value,
-            finalSource:               histResult.source,
-            reason:                    histResult.reason,
-        }]);
-        return { value: histResult.value, source: histResult.source, selectedDate: histResult.selectedDate, rejectedLivePrev: false, reason: histResult.reason };
-    }
-
-    // ── 2. SECONDARY: live-chart daily-close series ───────────────────────────
-    // For tickers absent from `prices` (restricted stock C, HSBA.L), the live 5-day
-    // chart series captured in fetchLivePrices provides real recent closes. Resolve
-    // the previous close from it by ACTUAL date — the same date-anchored logic used
-    // for HL holdings — so the most recent completed close wins over any stale scalar.
-    const seriesResult = getPreviousCloseFromPriceHistory({ ticker: normTk, prices: liveSeries, currentSessionDate });
-    if (seriesResult) {
-        const rawLiveForDebug = DEBUG_PREV_CLOSE_RESOLUTION && livePrevClose
-            ? (livePrevClose[normTk] ?? null) : null;
-        if (DEBUG_PREV_CLOSE_RESOLUTION) console.table([{
-            ticker:                    normTk,
-            livePrice:                 livePrices ? (livePrices[normTk] ?? null) : null,
-            currentSessionDate,
-            liveSeriesPrevClose:       seriesResult.value,
-            liveSeriesDate:            seriesResult.selectedDate,
-            rawLivePrevClose:          rawLiveForDebug,
-            livePrevIgnored:           true,
-            finalPrevClose:            seriesResult.value,
-            finalSource:               'live-chart-series',
-            reason:                    'latest-completed-session-from-live-chart',
-        }]);
-        return { value: seriesResult.value, source: 'live-chart-series', selectedDate: seriesResult.selectedDate, rejectedLivePrev: false, reason: 'latest-completed-session-from-live-chart' };
-    }
-
-    // ── 3. FALLBACK: scalar livePrevClose ─────────────────────────────────────
-    // Reached only when neither prices[ticker] nor the live-chart series has data.
-    const livePrevRaw = (livePrevClose && normTk)
-        ? (livePrevClose[normTk] != null
-            ? livePrevClose[normTk]
-            : (() => { const k = Object.keys(livePrevClose).find(k => String(k).toUpperCase().trim() === normTk); return k ? livePrevClose[k] : undefined; })())
-        : undefined;
-    const livePrev = Number(livePrevRaw);
-
-    // Plausibility guard: reject livePrev if implied daily move > MAX_SANE_DAILY_MOVE
-    let livePrevPlausible = true;
-    let plausibilityReason = null;
-    if (livePrices && normTk && Number.isFinite(livePrev) && livePrev > 0) {
-        const rawCurrent = livePrices[normTk] != null
-            ? livePrices[normTk]
-            : (() => { const k = Object.keys(livePrices).find(k => String(k).toUpperCase().trim() === normTk); return k ? livePrices[k] : undefined; })();
-        const currentPx = rawCurrent != null ? Number(rawCurrent) : null;
-        if (Number.isFinite(currentPx) && currentPx > 0) {
-            const impliedMove = Math.abs(currentPx / livePrev - 1);
-            if (impliedMove > MAX_SANE_DAILY_MOVE) {
-                livePrevPlausible = false;
-                plausibilityReason = `implied-move-${(impliedMove * 100).toFixed(1)}pct-exceeds-${(MAX_SANE_DAILY_MOVE * 100).toFixed(0)}pct-guard`;
-            }
-        }
-    }
-
-    const hasFreshLiveSession = liveStatus === 'ok' && isSameCalendarDay(liveAt);
-    let value = null, source = 'none', selectedDate = null, rejectedLivePrev = false, reason = null;
-
-    if (!livePrevPlausible) {
-        rejectedLivePrev = true;
-        reason = (plausibilityReason || 'implausible') + '/no-prices-or-live-series';
-    } else if (Number.isFinite(livePrev) && livePrev > 0) {
-        value = livePrev; source = 'live-prev-close-scalar-fallback';
-        reason = hasFreshLiveSession ? 'fresh-no-prices-or-live-series' : 'stale-no-prices-or-live-series';
-    } else {
-        reason = 'no-prices-no-live-series-no-scalar';
-    }
-
-    if (DEBUG_PREV_CLOSE_RESOLUTION) console.table([{
-        ticker:                 normTk,
-        livePrice:              livePrices ? (livePrices[normTk] ?? null) : null,
-        currentSessionDate,
-        pricesHistoryPrevClose: null,
-        pricesHistoryDate:      null,
-        rawLivePrevClose:       livePrevRaw ?? null,
-        livePrevIgnored:        !livePrevPlausible,
-        finalPrevClose:         value,
-        finalSource:            source,
-        reason,
-    }]);
-
-    return { value, source, selectedDate, rejectedLivePrev, reason };
-}
-
-// Compatibility wrapper — all existing call sites remain unchanged.
-function pickReliablePrevClose(args) {
-    return pickReliablePrevCloseDetailed(args).value;
-}

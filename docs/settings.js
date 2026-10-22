@@ -380,7 +380,6 @@ function MoreTab(props) {
         getWorkerUrl, setWorkerUrl, relTime,
         setUploadError,
         parityDelta, hasParityMismatch,
-        startDate, endDate,
         compConfigs, handleCompConfigCSV,
         externalHoldings, handleExternalCustodyCSV,
         allPriceTickers,

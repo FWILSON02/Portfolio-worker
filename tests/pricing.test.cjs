@@ -139,7 +139,7 @@ test('holdings: buys, sells and transfers become units, cost and value per accou
         { parsedDate: new Date('2025-04-01'), category: 'fee', instrument: { name: 'x', ticker: 'X' }, quantity: '', value: -5 },
     ];
     const resolvedPricesMap = { 'ACME.L': rows(['2025-12-31', 1500]), WIDG: rows(['2025-12-31', 20]) };
-    const h = app.computeHoldings({ enriched, holdingsDate: '2026-01-01', resolvedPricesMap, endDate: null, gbpusdRate: 1.25,
+    const h = app.computeHoldings({ enriched, holdingsDate: '2026-01-01', resolvedPricesMap, gbpusdRate: 1.25,
                                     tickerCurrencyMap: { 'ACME.L': 'GBp', WIDG: 'USD' } });
     const by = Object.fromEntries(h.map(x => [x.ticker + '/' + x.account, x]));
     assert.equal(by['ACME.L/ISA'].units, 60);
@@ -170,4 +170,14 @@ test('today\'s change: units x (live - previous close), each in pounds at its ow
         liveDailyCloses: { ACME: rows([prev, 100, 'conflict']) } }));
     assert.equal(held.todayAbsChange, null);
     assert.equal(held.todayPrevReason, 'sources-disagree');
+});
+
+// The exchange holiday calendars cover listed years only. From 1 December, next year must be there too, or the daily close
+// check can't verify sessions from 1 January. Runs weekly in CI (the Tests workflow).
+test('the exchange holiday calendars cover next year from December', () => {
+    const now = new Date();
+    const need = now.getUTCMonth() === 11 ? now.getUTCFullYear() + 1 : now.getUTCFullYear();
+    const calendars = app.EXCHANGE_CALENDARS;
+    const missing = Object.keys(calendars).filter(k => calendars[k].holidays && !calendars[k].years.includes(need));
+    assert.deepEqual(missing, [], 'add ' + need + '\'s holidays to EXCHANGE_CALENDARS in docs/providers.js');
 });

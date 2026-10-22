@@ -317,7 +317,7 @@ function computeAttribution({ performanceChart, perfLedger, resolvedPricesMap, g
     };
 }
 
-function computeHoldings({ enriched, holdingsDate, resolvedPricesMap, endDate, gbpusdRate, tickerCurrencyMap }) {
+function computeHoldings({ enriched, holdingsDate, resolvedPricesMap, gbpusdRate, tickerCurrencyMap }) {
     const map = new Map();
     const sorted = [...enriched].sort((a, b) => a.parsedDate - b.parsedDate);
     for (const t of sorted) {
@@ -379,7 +379,7 @@ function computeHoldings({ enriched, holdingsDate, resolvedPricesMap, endDate, g
         const priceKey = (h.ticker && h.ticker !== 'UNTICKERED') ? h.ticker : h.name;
         const series = priceKey ? resolvedPricesMap[priceKey] : null;
         const px = series ? priceAt(series, holdingsDate) : null;
-        const fxRate = endDate ? (priceAt(resolvedPricesMap['GBPUSD=X'], holdingsDate) || gbpusdRate) : gbpusdRate;
+        const fxRate = gbpusdRate;
         // Untickered synthetic prices are stored in GBP (derived from HL £ values).
         // Real tickers go through pxToGBP for GBX/USD conversion.
         let gbpH = null;
@@ -477,8 +477,6 @@ function computeLedgerHoldingsWithDelta({ giltLadderState, liveAt, liveStatus, l
 
     // Session validity guard: suppress Today deltas if live quote state is
     // stale, from a prior day's JSON backup, or not yet fetched this session.
-    // Uses isLiveQuoteUsableForPnl so a Friday fetch remains valid on weekends —
-    // aligning liquid holdings with restricted stock's weekend P&L behaviour.
     // Two-stage session date resolution:
     //   candidate = what getCurrentPnlSessionDateStr thinks the session is.
     //   effective  = what the live data actually represents (may be previous session).
@@ -769,7 +767,7 @@ function computeInsightsData({ activeHoldingsWithDelta, masterPortfolio, restric
     };
 }
 
-function computeTickerDetail({ selectedTicker, enriched, holdingsDate, resolvedPricesMap, endDate, gbpusdRate, tickerCurrencyMap }) {
+function computeTickerDetail({ selectedTicker, enriched, holdingsDate, resolvedPricesMap, gbpusdRate, tickerCurrencyMap }) {
     if (!selectedTicker)
         return null;
     const trades = enriched
@@ -812,7 +810,7 @@ function computeTickerDetail({ selectedTicker, enriched, holdingsDate, resolvedP
         priceLine = series
             .filter(p => p.date >= firstDate && p.date <= holdingsDate)
             .map(p => {
-            const gbp = pxToGBP(ticker, p.close, endDate ? (priceAt(resolvedPricesMap['GBPUSD=X'], p.date) || gbpusdRate) : gbpusdRate, tickerCurrencyMap);
+            const gbp = pxToGBP(ticker, p.close, gbpusdRate, tickerCurrencyMap);
             return { date: p.date, price: gbp };
         })
             .filter(p => p.price != null);

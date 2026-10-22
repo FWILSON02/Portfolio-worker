@@ -105,8 +105,6 @@ function PortfolioApp() {
     const [fetchDebug, setFetchDebug] = useState({}); // { ticker: [{src, result, msg}, ...] }
     const [, setActiveSection] = useState('performance');
     const [selectedTicker, setSelectedTicker] = useState(null); // holdings drill-down modal
-    const [startDate] = useState(null);
-    const [endDate] = useState(null); // null = today
     const [scrolled, setScrolled] = useState(false); // compact sticky header after scrolling
     const [sheetDragY, setSheetDragY] = useState(0); // live drag offset for settings sheet (px)
     const sheetDragStart = React.useRef(null); // { y, time } at touch start
@@ -907,8 +905,7 @@ function PortfolioApp() {
                     // Capture the FULL valid daily-close series ({date, close}) from this chart.
                     // This is the app's real access to recent closing levels for every fetched
                     // ticker — including restricted tickers (C, HSBA.L) absent from `prices`.
-                    // getPreviousCloseFromPriceHistory consumes this and selects the latest close
-                    // strictly before today's actual date, so a stale week-old scalar can never win.
+                    // resolveVerifiedDailyPrevClose reads the previous session's close from it.
                     // Bars are dated in the exchange's timezone, one row per date.
                     const dailySeries = yahooDailyRowsFromChart(result);
                     if (dailySeries.length > 0) newDailyCloses[normTk] = dailySeries;
@@ -1709,10 +1706,8 @@ function PortfolioApp() {
         const performanceChart = useMemo(() => computePerformanceChart({
                 benchmarkTimeline,
                 spxGbpSeries,
-                startDate,
                 perfLedger,
-                endDate,
-                consolidatedTimeline }), [benchmarkTimeline, perfLedger, startDate, endDate, consolidatedTimeline, prices, livePrices, liveQuoteSessionDates, resolvedPricesMap, spxGbpSeries]);
+                consolidatedTimeline }), [benchmarkTimeline, perfLedger, consolidatedTimeline, prices, livePrices, liveQuoteSessionDates, resolvedPricesMap, spxGbpSeries]);
 
 
         const stats = useMemo(() => {
@@ -1795,15 +1790,14 @@ function PortfolioApp() {
             return { windowReturn: res.total, plottedReturn: plotted, rowsPlusOther: sum, errorPP: (sum - plotted) * 100,
                      other: res.other, stepsWithOtherOver20bp: bigOther, rows: res.rows.map(r => r.tk) };
         };
-        // Current holdings — respects endDate so historical snapshots work correctly
-        const holdingsDate = endDate || fmtDate(today); // price/unit cutoff
+        // Current holdings: trades and prices up to today
+        const holdingsDate = fmtDate(today); // price/unit cutoff
         const holdings = useMemo(() => computeHoldings({
                 enriched,
                 holdingsDate,
                 resolvedPricesMap,
-                endDate,
                 gbpusdRate,
-                tickerCurrencyMap }), [enriched, resolvedPricesMap, holdingsDate, gbpusdRate, endDate, tickerCurrencyMap]); // prices omitted: resolvedPricesMap already incorporates it
+                tickerCurrencyMap }), [enriched, resolvedPricesMap, holdingsDate, gbpusdRate, tickerCurrencyMap]); // prices omitted: resolvedPricesMap already incorporates it
         const activeHoldings = holdings.filter(h => Math.abs(h.units) > 0.001);
         // Pricing conditions the user should know about, shown in Settings → Daily
         // close check and written to the diagnostics export.
@@ -1972,15 +1966,13 @@ function PortfolioApp() {
 
         // ── Per-ticker drill-down detail ─────────────────────────────────────────
         // Builds full trade history + a price line with buy/sell markers for the selected ticker.
-        // Respects holdingsDate (endDate) so historical snapshots match the rest of the app.
         const tickerDetail = useMemo(() => computeTickerDetail({
                 selectedTicker,
                 enriched,
                 holdingsDate,
                 resolvedPricesMap,
-                endDate,
                 gbpusdRate,
-                tickerCurrencyMap }), [selectedTicker, enriched, resolvedPricesMap, holdingsDate, endDate, gbpusdRate, tickerCurrencyMap]); // prices omitted: resolvedPricesMap already incorporates it
+                tickerCurrencyMap }), [selectedTicker, enriched, resolvedPricesMap, holdingsDate, gbpusdRate, tickerCurrencyMap]); // prices omitted: resolvedPricesMap already incorporates it
         // ── Concentration (HHI) ─────────────────────────────────────────────────
         // Herfindahl-Hirschman Index on current market values of active holdings.
         // HHI = Σ(weight_i²) × 10000. Ranges: <1500 diversified, 1500–2500 moderate, >2500 concentrated.
@@ -3762,7 +3754,6 @@ function PortfolioApp() {
                         getWorkerUrl, setWorkerUrl, relTime,
                         setUploadError,
                         parityDelta, hasParityMismatch,
-                        startDate, endDate,
                         compConfigs, handleCompConfigCSV,
                         externalHoldings, handleExternalCustodyCSV,
                         allPriceTickers,
