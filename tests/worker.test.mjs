@@ -29,7 +29,8 @@ test('only the allowed hosts are proxied', async () => {
 });
 
 test('the app no longer carries its own copy of the Worker: index.js is the only one', () => {
-    const html = fs.readFileSync(new URL('../docs/app.js', import.meta.url), 'utf8');
+    const html = fs.readdirSync(new URL('../docs/', import.meta.url)).filter(f => f.endsWith('.js'))
+        .map(f => fs.readFileSync(new URL('../docs/' + f, import.meta.url), 'utf8')).join('\n');
     assert.equal(html.includes('CLOUDFLARE_WORKER_SOURCE'), false);
     assert.equal(html.includes('Copy Worker code'), false);
 });

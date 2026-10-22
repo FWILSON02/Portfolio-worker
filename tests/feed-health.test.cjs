@@ -1,4 +1,4 @@
-// Price-feed health (docs/app.js feedBanner): the strip at the top of Investments when Yahoo prices stop arriving.
+// Price-feed health (docs/sync.js feedBanner): the strip at the top of Investments when Yahoo prices stop arriving.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { loadApp } = require('./load.cjs');
