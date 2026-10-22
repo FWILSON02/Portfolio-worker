@@ -53,7 +53,7 @@ function PortfolioApp() {
     const [liveStatus, setLiveStatus] = useState('idle'); // 'idle'|'fetching'|'ok'|'fail'
     const [liveAt, setLiveAt] = useState(null); // timestamp of last live fetch
     // Time of the last successful spot-price pull, stamped on EVERY success (liveAt only moves when a price changed).
-    // Display only: shown on the Daily Insights card.
+    // Display only: shown on the Market Movers card.
     const [lastSpotRefreshAt, setLastSpotRefreshAt] = useState(null);
     // Gilt prices from giltsyield.com (see fetchGiltsyieldPrices). `giltMarket` is the persisted snapshot store; the
     // ladder reads it through gyMarketFor, which enforces freshness. Fetching is quiet: never blocks, never throws.
@@ -1950,7 +1950,7 @@ function PortfolioApp() {
         const hasParityMismatch = parityDelta > 0.01;
 
         // ── Restricted positions: HSBC (R) / Citi (R) ─────────────────────────────
-        // One row per share the restricted schemes are on, with today's move. Feeds the hero's Today and Daily Insights.
+        // One row per share the restricted schemes are on, with today's move. Feeds the hero's Today and Market Movers.
         const restrictedPositions = React.useMemo(() => computeRestrictedPositions({
             currentCompState, livePrices, tickerCurrencyMap, gbpusdRate,
             liveAt, liveDailyCloses, liveQuoteSessionDates, latestSession,
@@ -2310,9 +2310,6 @@ function PortfolioApp() {
         const [marketStatus, setMarketStatus] = React.useState('idle');
         const [marketAt,     setMarketAt]     = React.useState(null);
         const [marketError,  setMarketError]  = React.useState(null);
-        // True once a live fetch in this session has produced usable Markets rows. Drives the
-        // green icon on the main-screen Markets button; deliberately NOT set by a restored backup.
-        const [marketReady,  setMarketReady]  = React.useState(false);
         const marketCacheRef = React.useRef({ rows: null, at: 0, _fetching: false });
         const marketAbortRef = React.useRef(null);
         // Dynamic instrument list: base + holdings. Ref keeps refreshMarketOverview stable.
@@ -2890,18 +2887,20 @@ function PortfolioApp() {
         const [sheetSort, setSheetSort] = React.useState('value'); // 'value'|'today'|'total'
         // After Settings → Reload Latest Version, come back on Settings and the same tab (see useReloadLatest).
         const [showSettings, setShowSettings] = React.useState(() => !!readReloadReturn());
-        // Top tab bar: 'markets' | 'investments' | 'estate' | 'lifeadmin'. Markets is read-only and does not feed portfolio
-        // valuation; Estate (balances.js) tracks account balances month by month, separate from the portfolio valuation;
+        // Top tab bar: 'investments' | 'estate' | 'lifeadmin'. Estate (balances.js) tracks account balances month by month, separate from the portfolio valuation;
         // Cash Flow (lifeadmin.js, id 'lifeadmin' from when it was Life Admin) has Pay (pay.js) and the monthly bills.
         const [activeTab, setActiveTab] = React.useState(() => {
             const t = (readReloadReturn() || {}).tab;
             // 'pay': a reload started on the old Pay tab, now the Pay line on Cash Flow.
-            return t === 'markets' || t === 'estate' || t === 'lifeadmin' ? t : t === 'pay' ? 'lifeadmin' : 'investments';
+            return t === 'estate' || t === 'lifeadmin' ? t : t === 'pay' ? 'lifeadmin' : 'investments';
         });
         React.useEffect(() => { reloadReturnTab = activeTab; }, [activeTab]);
+        // Markets (markets.js) is read-only and does not feed portfolio valuation. It is no longer a tab: it opens full
+        // screen from Market Movers on Investments, with Back to return (Fergus, 2026-10-22).
+        const [showMarketOverview, setShowMarketOverview] = React.useState(false);
         // Swipe left or right to move between the tabs (Fergus asked). See swipeAllowed for where a swipe may start.
         const tabOrderRef = React.useRef([]);
-        tabOrderRef.current = ['markets', 'investments'].concat(typeof window.BalancesScreen === 'function' ? ['estate'] : [],
+        tabOrderRef.current = ['investments'].concat(typeof window.BalancesScreen === 'function' ? ['estate'] : [],
                                                                 typeof window.LifeAdminScreen === 'function' ? ['lifeadmin'] : []);
         // A swiped- or tapped-to screen slides in from the side it came from (Fergus: an instant switch felt too abrupt).
         const swipeDirRef = React.useRef(0);
@@ -2950,7 +2949,6 @@ function PortfolioApp() {
             return () => { document.removeEventListener('touchstart', onStart); document.removeEventListener('touchend', onEnd); };
         }, []);
         const hasBalances = typeof window.BalancesScreen === 'function';
-        const showMarketOverview = activeTab === 'markets';
         const showBalances = activeTab === 'estate' && hasBalances;
         const hasLifeAdmin = typeof window.LifeAdminScreen === 'function';
         const showLifeAdmin = activeTab === 'lifeadmin' && hasLifeAdmin;
@@ -2980,7 +2978,7 @@ function PortfolioApp() {
             window.addEventListener('resize', updateTabFade);
             return () => window.removeEventListener('resize', updateTabFade);
         }, [updateTabFade]);
-        // The tab bar's height, published as --topbar-h so the Markets and Estate screens open below it.
+        // The tab bar's height, published as --topbar-h so the Estate and Cash Flow screens open below it.
         const topBarRef = React.useRef(null);
         React.useLayoutEffect(() => {
             const el = topBarRef.current;
@@ -3136,12 +3134,10 @@ function PortfolioApp() {
                 } else {
                     setMarketStatus('ok'); setMarketError(null);
                 }
-                setMarketReady(!result.offline && !!result.rows && result.okCount > 0);
             } catch(e) {
                 if (e && e.name === 'AbortError') { marketCacheRef.current._fetching = false; return; }
                 marketCacheRef.current._fetching = false;
                 setMarketStatus('fail');
-                setMarketReady(false);
                 setMarketError(e.message || 'fetch failed');
             }
         }, []); // stable — all deps are refs or module-scope
@@ -3170,8 +3166,8 @@ function PortfolioApp() {
 
         // ── Background prefetch ──────────────────────────────────────────────
         // Refresh Markets as the app opens (and when it returns to the foreground), whether
-        // or not the screen is ever visited, so it is ready when tapped and the button's icon
-        // can say so. It waits for the portfolio's own live-price pass to settle first, so the
+        // or not the screen is ever visited, so it is ready when Market Movers is tapped.
+        // It waits for the portfolio's own live-price pass to settle first, so the
         // two don't compete for the Worker and the Twelve Data credits; if that pass never
         // settles, a fallback timer starts the fetch anyway. refreshMarketOverview guards
         // against overlap, so opening Markets mid-fetch just shows its loading state.
@@ -3677,8 +3673,9 @@ function PortfolioApp() {
         })),
 
         // ── Market Overview screen (read-only, does not feed portfolio valuation)
-        showMarketOverview && React.createElement(TabBoundary, { name: 'Markets', screen: 'markets', resetKey: activeTab },
+        showMarketOverview && React.createElement(TabBoundary, { name: 'Markets', onClose: () => setShowMarketOverview(false) },
             React.createElement(MarketOverviewScreen, {
+                onBack:    () => setShowMarketOverview(false),
                 rows:      marketRows,
                 status:    marketStatus,
                 updatedAt: marketAt,
@@ -3778,8 +3775,8 @@ function PortfolioApp() {
             className: 'ios-scroll',
             style: { position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column' }
         },
-            // ── Tab bar — stays at the top on every tab, like browser tabs: Markets / Investments / Estate, then
-            // privacy and settings. Sticky over the Investments scroll; the Markets and Estate screens open below it.
+            // ── Tab bar — stays at the top on every tab, like browser tabs: Investments / Estate / Cash Flow, then
+            // privacy and settings. Sticky over the Investments scroll; the Estate and Cash Flow screens open below it.
             React.createElement('div', {
                 ref: topBarRef,
                 className: 'safe-top',
@@ -3793,14 +3790,6 @@ function PortfolioApp() {
                              overflowX: 'auto', overflowY: 'hidden', overscrollBehaviorX: 'contain', WebkitOverflowScrolling: 'touch',
                              WebkitMaskImage: tabFadeMask, maskImage: tabFadeMask } },
                     [
-                        { id: 'markets', label: 'Markets', color: C.blue,
-                          icon: React.createElement(Activity, {
-                              // The icon turns green (with a settled glow) once Markets data is ready to view.
-                              className: marketReady ? 'mkt-ready-icon' : '',
-                              style: { width: 13, height: 13, flexShrink: 0, color: marketReady ? C.emerald : 'currentColor',
-                                       filter: marketReady ? 'drop-shadow(0 0 2px rgba(52,211,153,0.9)) drop-shadow(0 0 6px rgba(52,211,153,0.5))' : 'none',
-                                       transition: 'color 0.5s ease, filter 0.5s ease' },
-                              strokeWidth: 2 }) },
                         { id: 'investments', label: 'Investments', color: C.amber,
                           icon: React.createElement(TrendingUp, { style: { width: 13, height: 13, flexShrink: 0 }, strokeWidth: 2 }) },
                         hasBalances && { id: 'estate', label: 'Estate', color: C.violet,
@@ -3891,7 +3880,8 @@ function PortfolioApp() {
                 ),
 
                 // ── Phase 3: Insights Panel (before accounts) ───────────────
-                transactions.length > 0 && insightsData && React.createElement(InsightsPanel, { data: insightsData, privacyMode, lastSpotRefreshAt }),
+                transactions.length > 0 && insightsData && React.createElement(InsightsPanel, { data: insightsData, privacyMode, lastSpotRefreshAt,
+                                                                                  onOpenMarkets: () => setShowMarketOverview(true) }),
 
                 // ── Phase 4: Account Cards Stack ────────────────────────────
                 transactions.length > 0 && accountGroups.length > 0 && React.createElement('div', {

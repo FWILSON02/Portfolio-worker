@@ -705,7 +705,7 @@ function restrictedInstTicker(inst) {
 //     bonus + prev intrinsic value), so it is comparable with the share's own %.
 // GUARDRAIL: output rows are display-only (isRestrictedDisplayOnly: true) and
 // must NEVER be fed into masterPortfolio, account totals or TWR. (The hero total,
-// Daily Insights and the chart take restricted capital from their own paths:
+// Market Movers and the chart take restricted capital from their own paths:
 // computeRestrictedPositions and restrictedChartPoint, never from these rows.)
 // ⚠️ PARITY CONTRACT: see the matching comment above RestrictedSchemesWidget.
 // If a formula changes in either place, change both. Per output row, the
@@ -836,7 +836,7 @@ function computeRestrictedDisplayRows({
 
 // ── Restricted positions: HSBC (R) and Citi (R) ──────────────────────────────
 // Every restricted plan (RSU, SIP and Sharesave alike) is grouped by the share it is on, and each share is one
-// position labelled with an "(R)", so the hero, Daily Insights and the chart can show the restricted moves next to
+// position labelled with an "(R)", so the hero, Market Movers and the chart can show the restricted moves next to
 // the ordinary holdings without mistaking them for shares that can be sold.
 function restrictedPositionLabel(ticker, institution) {
     const tk = String(ticker || '').toUpperCase().trim();
@@ -850,7 +850,7 @@ function restrictedPlanTicker(plan) {
 }
 // One row per underlying share: value = the restricted value of every plan on it (what the restricted card shows);
 // Today = the summed move of the plans that are priced on the latest session (null when none is), % against their
-// previous value. currentPriceRaw / currentPriceGBP feed the Spot column in Daily Insights.
+// previous value. currentPriceRaw / currentPriceGBP feed the Spot column in Market Movers.
 function computeRestrictedPositions({
     currentCompState, livePrices, tickerCurrencyMap, gbpusdRate,
     liveAt, liveDailyCloses, liveQuoteSessionDates, latestSession,

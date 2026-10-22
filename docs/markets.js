@@ -1658,7 +1658,7 @@ async function fetchMarketOverviewData(opts) {
 
 // ── MarketOverviewScreen ──────────────────────────────────────────────────────
 // Tap a degraded row to reveal a compact one-line diagnostic; clean rows show no expansion.
-function MarketOverviewScreen({ rows, status, updatedAt, error, onRefresh }) {
+function MarketOverviewScreen({ rows, status, updatedAt, error, onRefresh, onBack }) {
     var expandedState = React.useState(null);
     var expandedRowId = expandedState[0];
     var setExpandedRowId = expandedState[1];
@@ -1967,15 +1967,31 @@ function MarketOverviewScreen({ rows, status, updatedAt, error, onRefresh }) {
         );
     }
 
-    // Sits under the app's tab bar (its height is published as --topbar-h), so the tabs stay visible.
+    // Opens full screen over Investments from Market Movers (covering the tab bar); Back returns to Investments.
     return React.createElement('div', {
-        'data-swipe-tabs': '', 'data-tab-screen': 'markets',
+        'data-tab-screen': 'markets', className: 'settings-slide',
         style: {
-            position: 'fixed', top: 'var(--topbar-h, 0px)', left: 0, right: 0, bottom: 0, zIndex: 9995,
+            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 9995,
             background: C.bg, display: 'flex', flexDirection: 'column',
             WebkitTapHighlightColor: 'transparent', userSelect: 'none',
         }
     },
+        React.createElement('div', {
+            className: 'safe-top',
+            style: { position: 'relative', display: 'flex', alignItems: 'center', minHeight: 44, flexShrink: 0,
+                     padding: '0 16px 0 6px', background: C.surface, borderBottom: '1px solid ' + C.border }
+        },
+            React.createElement('button', {
+                onClick: onBack, 'aria-label': 'Back',
+                style: { position: 'relative', zIndex: 1, background: 'none', border: 'none', color: C.blue, display: 'flex', alignItems: 'center',
+                         gap: 2, padding: '10px 4px', fontFamily: sys, fontSize: 15, WebkitTapHighlightColor: 'transparent' }
+            }, React.createElement(ChevronLeft, { style: { width: 20, height: 20 }, strokeWidth: 2.2 }), 'Investments'),
+            React.createElement('div', {
+                style: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 44, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                         pointerEvents: 'none', fontFamily: sys, fontSize: 16, fontWeight: 650, color: C.white, letterSpacing: '-0.01em' }
+            }, 'Market Movers')
+        ),
+
 
         // ── Scrollable body ────────────────────────────────────────────────────
         React.createElement('div', {

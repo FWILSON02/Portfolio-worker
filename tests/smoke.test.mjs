@@ -96,7 +96,16 @@ test('every screen renders with data, with no errors', { skip: !playwright && 'P
     await check('upload the transactions CSV');
     assert.ok(await page.getByText('Upload a CSV to begin').count() === 0, 'the trades did not load');
 
-    for (const name of ['Markets', 'Investments', 'Estate', 'Cash Flow']) await tab(name);
+    // Markets is not a tab: it opens full screen from Market Movers on Investments, and Back returns.
+    assert.equal(await page.getByRole('tab', { name: 'Markets' }).count(), 0, 'Markets should no longer be a tab');
+    await page.getByRole('button', { name: /^Market Movers/ }).click();
+    await settle(1500); await check('Markets from Market Movers');
+    assert.ok(await page.locator('[data-tab-screen="markets"]').count() === 1, 'Market Movers should open the Markets screen');
+    await page.getByRole('button', { name: 'Back' }).first().click();
+    await settle();
+    assert.ok(await page.locator('[data-tab-screen="markets"]').count() === 0, 'Back should close the Markets screen');
+
+    for (const name of ['Investments', 'Estate', 'Cash Flow']) await tab(name);
 
     // Cash Flow's own pages: Pay and the bills.
     for (const label of ['Pay', 'Bills']) {
