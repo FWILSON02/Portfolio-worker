@@ -412,10 +412,16 @@ function relTime(ts) {
 // To add a new benchmark: add an entry here, add a matching sheet to the prices xlsx with
 // `date` and `close` columns, and it'll be picked up automatically.
 const BENCHMARKS = [
-    { id: '^GSPC', label: 'S&P 500', short: 'SPX', color: '#60a5fa', fxTicker: 'GBPUSD=X' },
+    { id: '^GSPC', label: 'S&P 500 total return', short: 'SPXT', color: '#60a5fa', fxTicker: 'GBPUSD=X' },
     { id: '^NDX', label: 'NASDAQ 100', short: 'NDX', color: '#a78bfa', fxTicker: 'GBPUSD=X' },
     { id: 'URTH', label: 'MSCI World', short: 'WORLD', color: '#34d399', fxTicker: 'GBPUSD=X' },
 ];
+// The S&P benchmark is Yahoo's S&P 500 TOTAL RETURN index (dividends reinvested), fetched like ^GSPC (Fergus: call it SPXT).
+// The plain index stays for the Markets tab and the legend's level; if the total-return history is missing the benchmark
+// falls back to the price index and is called SPX until it arrives.
+const BENCH_TR_TICKER = '^SP500TR';
+let spxLabelNow = 'SPXT';
+function spxLabel() { return spxLabelNow; }
 const PROXIES = {
 };
 
@@ -447,7 +453,7 @@ function normalizeMarketSeries(rawSeries, opts) {
 }
 
 // ── Canonical S&P 500 benchmark: ONE series, read by the chart, the cards and the attribution ────────────────
-// In GBP (the S&P close divided by GBP/USD on the same date) and a PRICE index (no dividends). Built from the stored
+// In GBP (the close divided by GBP/USD on the same date); the total-return index (^SP500TR) when stored, else the price index. Built from the stored
 // history plus the live quote. Only rows that are provably invalid are dropped: weekends, NYSE-holiday rows in daily
 // data, and exact carried-forward copies of the previous close. Genuine large moves are never removed (the old reversal guard
 // deleted 23 real weekly closes, including the -9.1% week of 4 Apr 2025).
@@ -1550,7 +1556,7 @@ const EXCHANGE_CALENDARS = {
 
 // Yahoo index / yield symbols → the calendar of the market that sets them.
 const INDEX_CALENDAR = {
-    '^GSPC': 'NYSE', '^NDX': 'NYSE', '^RUT': 'NYSE', '^VIX': 'NYSE', '^DJI': 'NYSE', '^IXIC': 'NYSE',
+    '^GSPC': 'NYSE', '^SP500TR': 'NYSE', '^NDX': 'NYSE', '^RUT': 'NYSE', '^VIX': 'NYSE', '^DJI': 'NYSE', '^IXIC': 'NYSE',
     '^TNX': 'NYSE', '^FVX': 'NYSE', '^TYX': 'NYSE', '^IRX': 'NYSE',
     '^FTSE': 'LSE', '^FTMC': 'LSE',
     '^STOXX50E': 'EUREX', '^GDAXI': 'EUREX',
@@ -8060,7 +8066,7 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
     });
 
     // ── Aligned SPX series (display-only, same row spine as portfolio) ─────────
-    // Benchmark: S&P 500 in GBP (price only). It is read from the data rows, so it sits on exactly the same dates as the
+    // Benchmark: S&P 500 total return (SPXT) in GBP. It is read from the data rows, so it sits on exactly the same dates as the
     // portfolio point for that row.
     const visibleStartDate = hasData ? data[0].date : null;
     const visibleEndDate   = hasData ? data[data.length - 1].date : null;
@@ -8416,7 +8422,7 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
             React.createElement('div', { key: 'chips', style: { gridColumn: 1, gridRow: 2, display: 'flex', alignItems: 'center', gap: 4, minHeight: 26 } },
                 chip('From start', !segActive, () => setCmpMode('start'), false),
                 chip('Custom', segActive, () => setCmpMode('prev'), !canCompare)),
-            spxRange != null ? gcell('sl', 2, 2, { fontFamily: mono, fontSize: 11, fontWeight: 600, color: C.blue, opacity: 0.9 }, 'S&P £') : null,
+            spxRange != null ? gcell('sl', 2, 2, { fontFamily: mono, fontSize: 11, fontWeight: 600, color: C.blue, opacity: 0.9 }, spxLabel() + ' £') : null,
             spxRange != null ? gcell('sv', 3, 2, { fontFamily: mono, fontSize: 11, fontWeight: 600, color: C.blue, opacity: 0.9,
                 textAlign: 'right', fontVariantNumeric: 'tabular-nums', position: 'relative' },
                 [fmtPctN(spxRange, 2),
@@ -8741,7 +8747,7 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
                                             x: bx + bPad, y: by + 39 + _xRows,
                                             fill: C.blue, fontSize: 10, fontFamily: mono,
                                             fontWeight: '600', dominantBaseline: 'middle', opacity: 0.9,
-                                        }, 'S&P \u00a3 ' + _fmtPct(_spxIdxShown) + '  ·  ' + _fmtIdx(_spxNative)),
+                                        }, spxLabel() + ' \u00a3 ' + _fmtPct(_spxIdxShown) + '  ·  ' + _fmtIdx(_spxNative)),
                                         _staleStr ? React.createElement('text', {
                                             x: bx + bPad, y: by + bH - 9,
                                             fill: C.zinc600, fontSize: 8, fontFamily: sys,
@@ -8817,8 +8823,8 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
             }, (() => {
                 // Base label
                 const _spxBase = spxLatestPrice != null && Number.isFinite(spxLatestPrice)
-                    ? 'S&P 500 in \u00a3  (index ' + spxLatestPrice.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) + ')'
-                    : 'S&P 500 in \u00a3';
+                    ? spxLabel() + ' in \u00a3  (index ' + spxLatestPrice.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) + ')'
+                    : spxLabel() + ' in \u00a3';
                 // Staleness suffix — shown when the SPX price is from a prior session
                 // (US market closed / pre-market). Format: "· as of 5 Jun"
                 const _today = fmtDate(new Date());
@@ -9773,7 +9779,7 @@ function PortfolioApp() {
         // Used to skip daily price fetches and live quotes for long-closed positions.
         // Benchmarks and FX pairs always return true — they're always needed for chart calculations.
         const checkAssetOpenInLast3M = useCallback((ticker) => {
-            if (ticker === '^GSPC' || ticker === 'GBPUSD=X') return true;
+            if (ticker === '^GSPC' || ticker === BENCH_TR_TICKER || ticker === 'GBPUSD=X') return true;
             const ninetyDaysAgo = new Date(today.getTime() - 90 * 86400 * 1000);
             let cumulativeUnits = 0;
             const assetTrades = enriched
@@ -9799,7 +9805,7 @@ function PortfolioApp() {
             setLoading(true);
             try {
                 const retryOnly  = Array.isArray(onlyTickers) ? new Set(onlyTickers) : null;
-                const allTickers = [...allPriceTickers, '^GSPC'].filter(t => !retryOnly || retryOnly.has(t));
+                const allTickers = [...allPriceTickers, '^GSPC', BENCH_TR_TICKER].filter(t => !retryOnly || retryOnly.has(t));
                 if (allTickers.length === 0) { markHistoryRefreshed(Date.now(), []); return; }
                 // Tickers declared as Yahoo symbols in the equity-plan / custody files.
                 // These are real listings even without an exchange suffix (e.g. "C").
@@ -9847,7 +9853,7 @@ function PortfolioApp() {
                     }
                     // Daily tail: open positions, declared market tickers (e.g. Citi), FX and the benchmark.
                     const wantDaily = checkAssetOpenInLast3M(ticker) || opts.yahooIsMarketSymbol
-                        || ticker === 'GBPUSD=X' || ticker === '^GSPC';
+                        || ticker === 'GBPUSD=X' || ticker === '^GSPC' || ticker === BENCH_TR_TICKER;
                     let daily = null, dailyErr = null;
                     if (wantDaily) {
                         try { daily = await fetchPriceSeries(ticker, ninetyDaysAgo, toDate, 'daily', opts); }
@@ -9930,7 +9936,7 @@ function PortfolioApp() {
             // Yahoo's reported quote currency per ticker (meta.currency, e.g. 'GBp',
             // 'GBP', 'USD') — compared with the CSV/config currency by the live gate.
             const newQuoteCurrency = {};
-            await Promise.all(activeTickers.concat(['GBPUSD=X', '^GSPC']).map(async ticker => {
+            await Promise.all(activeTickers.concat(['GBPUSD=X', '^GSPC', BENCH_TR_TICKER]).map(async ticker => {
                 try {
                     // range=5d&interval=1d: fetches settled daily closes rather than intraday ticks.
                     // meta.regularMarketPrice always holds the most recent quote regardless of
@@ -10119,7 +10125,7 @@ function PortfolioApp() {
                 // Last-good-quote carry-forward (see carryForwardLiveQuotes). Skipped when
                 // nothing fresh arrived, so a total outage still shows as a failed refresh.
                 if (Object.keys(newLive).length > 0) {
-                    const requested = activeTickers.concat(['GBPUSD=X', '^GSPC']).map(t => String(t).toUpperCase().trim());
+                    const requested = activeTickers.concat(['GBPUSD=X', '^GSPC', BENCH_TR_TICKER]).map(t => String(t).toUpperCase().trim());
                     const cf = carryForwardLiveQuotes({
                         requested, fresh: newLive, previous: livePricesRef.current,
                         freshRows: newDailyCloses, previousRows: liveDailyClosesRef.current,
@@ -10268,8 +10274,10 @@ function PortfolioApp() {
                     const newTickerNoHistory = tickersMissingHistory(allPriceTickers, pricesRef.current, checkAssetOpenInLast3M,
                         tk => isListedTicker(tk, configCurrencyMap)).length > 0;
                     const pendingTickers = historyRefreshPending(nowMs);
+                    // The total-return benchmark arrives after a deploy that introduced it: fetch it rather than wait for tomorrow.
+                    const benchMissing = (pricesRef.current[BENCH_TR_TICKER] || []).length < 2;
                     if (nowMs - historyAttemptAtRef.current > 30 * 60000) {
-                        if (noHistory || newTickerNoHistory || historyRefreshDue(nowMs)) {
+                        if (noHistory || newTickerNoHistory || benchMissing || historyRefreshDue(nowMs)) {
                             historyAttemptAtRef.current = nowMs;
                             await fetchAllPrices();
                         } else if (pendingTickers.length) {
@@ -11330,16 +11338,23 @@ function PortfolioApp() {
             const details = last ? last.planDetails : null;
             return windows => window.MaturityAlerts.investmentAlerts(gilts, compConfigs, details, window.MaturityAlerts.today(), windows);
         }, [giltLadderState, compConfigs, restrictedTimeline, today]);
-        // The ONE benchmark series (S&P 500 in GBP, price only): read by the chart, the cards, the attribution and the
-        // "same deposits in the S&P" comparison.
+        // The ONE benchmark series (S&P 500 total return in GBP): read by the chart, the cards, the attribution and the
+        // "same deposits in the S&P" comparison. Falls back to the price index until the total-return history is stored.
         const spxGbpSeries = useMemo(() => {
-            const _k = Object.keys(prices).find(k => k.toUpperCase().trim() === '^GSPC');
-            return buildSpxGbpSeries({
+            const _find = t => Object.keys(prices).find(k => k.toUpperCase().trim() === t);
+            const _tr = _find(BENCH_TR_TICKER);
+            const useTr = !!_tr && prices[_tr].length >= 2;
+            const _k = useTr ? _tr : _find('^GSPC');
+            const tk = useTr ? BENCH_TR_TICKER : '^GSPC';
+            spxLabelNow = useTr ? 'SPXT' : 'SPX';
+            const built = buildSpxGbpSeries({
                 spxRaw: _k ? prices[_k] : [],
                 fxRaw: resolvedPricesMap['GBPUSD=X'] || prices['GBPUSD=X'] || [],
-                liveSpx: livePrices && livePrices['^GSPC'],
-                liveSession: liveQuoteSessionDates && liveQuoteSessionDates['^GSPC'],
+                liveSpx: livePrices && livePrices[tk],
+                liveSession: liveQuoteSessionDates && liveQuoteSessionDates[tk],
             });
+            built.ticker = tk;
+            return built;
         }, [prices, resolvedPricesMap, livePrices, liveQuoteSessionDates]);
         const performanceChart = useMemo(() => {
             var _a, _b, _c;
@@ -14060,14 +14075,14 @@ function PortfolioApp() {
         // a stale Thursday close for every weekend/holiday date.
         // ^GSPC is now included in fetchLivePrices so Friday's close arrives via Yahoo Finance.
         const latestSPXNative = React.useMemo(() => {
-            const series = resolvedPricesMap['^GSPC'];
+            const series = resolvedPricesMap[spxGbpSeries.ticker] || resolvedPricesMap['^GSPC'];
             if (!Array.isArray(series) || series.length === 0) return null;
             for (let i = series.length - 1; i >= 0; i--) {
                 const c = Number(series[i]?.close);
                 if (Number.isFinite(c) && c > 0) return c;
             }
             return null;
-        }, [resolvedPricesMap]);
+        }, [resolvedPricesMap, spxGbpSeries]);
 
         const chartData = React.useMemo(() => {
             const todayStr = fmtDate(today);
