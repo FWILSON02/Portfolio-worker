@@ -1,7 +1,7 @@
 // Settings: Reload app, error boundaries, Settings sections and the More tab (MoreTab).
 // Loaded by index.html after app.js; shares its globals (no module system, no build step).
 
-// Settings → App: pulls the newest index.html, performance.js, app.js, settings.js, markets.js, balances.js, lifeadmin.js and pay.js past the browser's cache, then reloads. A Home Screen web app
+// Settings → App: pulls the newest index.html, performance.js, holdings.js, app.js, settings.js, markets.js, balances.js, lifeadmin.js and pay.js past the browser's cache, then reloads. A Home Screen web app
 // on iOS keeps serving cached files for a while after a deploy, and closing it from the app switcher doesn't clear that.
 // The reload comes back to Settings on the same tab (RELOAD_RETURN_KEY) so the new PR number shows (Fergus asked). When the
 // server still has this PR and the same files, nothing reloads: the merge just hasn't finished deploying yet.
@@ -27,14 +27,14 @@ function useReloadLatest() {
             const html = await res.text();
             const next = (html.match(/const APP_BUILD = (\d+);/) || [])[1];
             // The same PR number with other files (a changed ?v=) is still newer: the PR number alone once hid PR #85.
-            const files = h => [...h.matchAll(/src="((?:app|settings|markets|performance|balances|lifeadmin|pay)\.js[^"]*)"/g)].map(m => m[1]).join(' ');
+            const files = h => [...h.matchAll(/src="((?:app|settings|markets|performance|holdings|balances|lifeadmin|pay)\.js[^"]*)"/g)].map(m => m[1]).join(' ');
             const running = Array.from(document.querySelectorAll('script[src]')).map(el => el.getAttribute('src'))
-                .filter(src => /^(app|settings|markets|performance|balances|lifeadmin|pay)\.js/.test(src)).join(' ');
+                .filter(src => /^(app|settings|markets|performance|holdings|balances|lifeadmin|pay)\.js/.test(src)).join(' ');
             if (next && +next === APP_BUILD && files(html) === running) {
                 setMsg('Already on PR #' + APP_BUILD + '. If you just merged, the new version isn\u2019t live yet; try again in a minute.');
                 return;
             }
-            for (const m of html.matchAll(/src="((?:app|settings|markets|performance|balances|lifeadmin|pay)\.js[^"]*)"/g)) {
+            for (const m of html.matchAll(/src="((?:app|settings|markets|performance|holdings|balances|lifeadmin|pay)\.js[^"]*)"/g)) {
                 const r2 = await fetch(new URL(m[1], base).href, { cache: 'reload' }); if (!r2.ok) throw new Error('HTTP ' + r2.status);
             }
             setMsg(next ? 'Updating to PR #' + next + '…' : 'Reloading…');
