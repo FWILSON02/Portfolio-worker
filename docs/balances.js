@@ -448,13 +448,19 @@ function monthLabel(mk) { return MONTHS[Number(mk.slice(5, 7)) - 1] + ' ' + mk.s
 // Round months between t0 and t1 (month indexes) for the chart's x-axis, at most about five: every 1, 2, 3 or 6
 // months (January shows its year), or every 1, 2 or 5 years.
 function monthTicks(t0, t1) {
-    var step = [1, 2, 3, 6, 12, 24, 60].filter(function (k) { return (t1 - t0) / k <= 4; })[0] || 120;
-    var out = [];
-    for (var i = Math.ceil(t0 / step) * step; i <= t1; i += step) {
-        var y = Math.floor(i / 12), m = i % 12;
-        out.push({ i: i, label: step >= 12 || m === 0 ? String(y) : MONTHS[m] });
+    // The first month is always labelled with its year (Fergus: it says where the range starts, so the reading above
+    // needn't). Then round months, as many as fit in about five labels; ones too close to the first are left out.
+    var first = { i: t0, label: MONTHS[t0 % 12] + ' ' + Math.floor(t0 / 12) };
+    var steps = [1, 2, 3, 6, 12, 24, 60, 120];
+    for (var k = 0; k < steps.length; k++) {
+        var step = steps[k], out = [first];
+        for (var i = Math.ceil(t0 / step) * step; i <= t1; i += step) {
+            if (i - t0 < (t1 - t0) * 0.2) continue;
+            out.push({ i: i, label: step >= 12 || i % 12 === 0 ? String(Math.floor(i / 12)) : MONTHS[i % 12] });
+        }
+        if (out.length <= 5) return out;
     }
-    return out;
+    return [first];
 }
 function dayLabel(date) { return Number(date.slice(8, 10)) + ' ' + MONTHS[Number(date.slice(5, 7)) - 1] + ' ' + date.slice(0, 4); }
 
@@ -1328,18 +1334,22 @@ function Chart(props) {
             E(Segmented, { options: METRICS, value: metric, onChange: changeMetric, tight: true }),
             E(Segmented, { options: RANGES, value: range, onChange: function (v) { rState[1](v); reset(); }, tight: true })
         ),
-        // Reading of the chart: the focus month's figure (or each drawn group's), and its change from the base.
-        E('div', { style: { display: 'flex', alignItems: 'baseline', columnGap: 8, flexWrap: 'wrap', minHeight: 20, fontFamily: ui.rounded, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' } },
-            E('span', { style: { fontSize: 12, color: ui.C.zinc500 } }, !analysing && !scrub ? 'Since ' + monthLabel(pts[0].month) : monthLabel(focus.month)),
-            sel.length
-                ? lines.map(function (l) {
+        // Reading of the chart: the focus month's figure as a headline, with its month only when it isn't the latest (the
+        // x-axis labels where the range starts), then its change from the base on one line underneath.
+        sel.length
+            ? E('div', { style: { display: 'flex', alignItems: 'baseline', columnGap: 8, flexWrap: 'wrap', minHeight: 20, fontFamily: ui.rounded, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' } },
+                E('span', { style: { fontSize: 12, color: ui.C.zinc500 } }, monthLabel(focus.month)),
+                lines.map(function (l) {
                     return E('span', { key: l.gid, style: { fontSize: 12, color: l.color, filter: blur } }, lineLabel(l.gid) + ' ' + fmtGBP(l.val(focus)));
-                })
-                : [E('span', { key: 'v', style: { fontSize: 14, fontWeight: 600, color: ui.C.white, filter: blur } }, fmtGBP(focus[metric])),
-                   from && E('span', { key: 'd', style: { fontSize: 12, color: neutral ? ui.C.zinc400 : signColor(ui, change), filter: blur } }, fmtSigned(change)),
-                   from && E('span', { key: 'p', style: { fontSize: 12, color: neutral ? ui.C.zinc400 : signColor(ui, change) } }, fmtPct(pctChange(to[metric], from[metric]))),
-                   avg != null && E('span', { key: 'm', style: { fontSize: 12, color: neutral ? ui.C.zinc400 : signColor(ui, avg), filter: blur } }, fmtSigned(avg) + '/mo')]
-        ),
+                }))
+            : E('div', { style: { fontFamily: ui.rounded, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' } },
+                E('div', { style: { display: 'flex', alignItems: 'baseline', columnGap: 8 } },
+                    E('span', { style: { fontSize: 24, fontWeight: 700, color: ui.C.white, letterSpacing: -0.3, filter: blur } }, fmtGBP(focus[metric])),
+                    marked && E('span', { style: { fontSize: 12, color: ui.C.zinc500 } }, monthLabel(focus.month))),
+                E('div', { style: { display: 'flex', alignItems: 'baseline', columnGap: 10, minHeight: 17, fontSize: 13, color: ui.C.zinc400 } },
+                    from && E('span', { style: { color: neutral ? ui.C.zinc400 : signColor(ui, change), filter: blur } }, fmtSigned(change)),
+                    from && E('span', { style: { color: neutral ? ui.C.zinc400 : signColor(ui, change) } }, fmtPct(pctChange(to[metric], from[metric]))),
+                    avg != null && E('span', { style: { color: neutral ? ui.C.zinc400 : signColor(ui, avg), filter: blur } }, fmtSigned(avg) + '/mo'))),
         E('div', {
             ref: ref,
             className: 'chart-noselect', 'data-no-swipe': '', style: { position: 'relative', height: H, touchAction: 'none', marginTop: 4, cursor: 'crosshair' },

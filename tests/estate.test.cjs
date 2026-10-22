@@ -203,11 +203,12 @@ test('chart y-axis: round steps and labels', () => {
     assert.equal(E.axisLabel(0, 500, 1000), '£0');
 });
 
-test('chart x-axis: a few round months', () => {
+test('chart x-axis: the first month with its year, then a few round months', () => {
     const mi = (y, m) => y * 12 + m - 1;
     const labels = (a, b) => plain(E.monthTicks(a, b)).map(t => t.label);
-    assert.deepEqual(labels(mi(2024, 10), mi(2025, 10)), ['Oct', '2025', 'Apr', 'Jul', 'Oct']);
-    assert.deepEqual(labels(mi(2022, 10), mi(2025, 10)), ['2023', '2024', '2025']);
+    assert.deepEqual(labels(mi(2024, 10), mi(2025, 10)), ['Oct 2024', '2025', 'Apr', 'Jul', 'Oct']);
+    assert.deepEqual(labels(mi(2022, 10), mi(2025, 10)), ['Oct 2022', '2024', '2025']);   // 2023 too close to fit
+    assert.deepEqual(labels(mi(2024, 9), mi(2026, 10)), ['Sep 2024', 'Jul', '2026', 'Jul']);   // 3Y with 2 years of data
     assert.ok(labels(mi(2015, 1), mi(2025, 10)).length <= 5);
 });
 
