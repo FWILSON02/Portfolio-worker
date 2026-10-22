@@ -246,3 +246,15 @@ test('old Monzo links are dropped, so those accounts go back to being typed in',
     ], snapshots: [] }));
     assert.deepEqual(state.accounts.map(a => [a.group, a.appLinks]), [['current', []], ['investments', ['acct:ISA']]]);
 });
+
+test('perMonth: change between two points over the time between their dates', () => {
+    const a = { month: '2025-10', date: '2025-10-20', cash: 5000 };
+    const b = { month: '2026-10', date: '2026-10-20', cash: 2600 };
+    assert.equal(Math.round(E.perMonth(a, b, 'cash')), -200);          // −£2,400 over 12 months
+    // A latest point taken before payday counts the part-month, not a whole one.
+    const early = { month: '2026-10', date: '2026-10-05', cash: 2600 };
+    assert.ok(E.perMonth(a, early, 'cash') < -200);
+    // One month apart: that is the change itself, so none.
+    assert.equal(E.perMonth({ month: '2026-09', date: '2026-09-19', cash: 1 }, b, 'cash'), null);
+    assert.equal(E.perMonth(null, b, 'cash'), null);
+});
