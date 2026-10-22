@@ -70,10 +70,13 @@ test('every screen renders with data, with no errors', { skip: !playwright && 'P
     const closeSettings = async () => { await page.locator('.settings-sheet button:has(svg)').first().click(); await settle(); };
     const tab = async name => { await page.getByRole('tab', { name }).click(); await settle(1200); await check('open ' + name); };
 
+    // The phone last had prices three hours ago and has failed since: the strip at the top of Investments says so.
+    await page.addInitScript(k => { try { localStorage.setItem(k, JSON.stringify({ okAt: Date.now() - 3 * 36e5, failAt: Date.now() - 36e5, fresh: 5, requested: 5 })); } catch (e) {} }, 'feed_health_v1');
     await page.goto(SITE);
     await page.getByRole('tab', { name: 'Investments' }).waitFor();
     await settle(1500);
     await check('load with no data');
+    assert.equal(await page.locator('[data-feed-banner]').count(), 1, 'the price-feed strip should show');
 
     // Restore the backup (Estate, Cash Flow, Pay and prices) the way a file restore is done on the phone.
     await openSettings();
