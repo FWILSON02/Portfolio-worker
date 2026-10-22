@@ -18,7 +18,7 @@ test('APP_BUILD is this pull request\'s number', { skip: !pr && 'not a pull requ
 });
 
 // The app's own files are cached by the phone like the others; their ?v= moves with APP_BUILD so a new index.html never runs an old one.
-for (const f of ['app', 'settings', 'markets']) {
+for (const f of ['performance', 'app', 'settings', 'markets']) {
     test(f + '.js is loaded with ?v= set to APP_BUILD', () => {
         const m = html.match(new RegExp('<script src="' + f + '\\.js\\?v=(\\d+)"></script>'));
         assert.equal(+(m || [])[1], build, 'set <script src="' + f + '.js?v=' + build + '"> in docs/index.html');
