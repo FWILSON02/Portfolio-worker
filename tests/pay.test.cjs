@@ -153,7 +153,7 @@ test('take-home: the pension comes off before tax and NI (sacrifice), before tax
     assert.equal(Math.round(net.ni), Math.round(P.nationalInsurance(130000)));
     const ras = P.netPay(130000, 0, P.validTakeHome({ pct: 0.05, scheme: 'ras' }));
     assert.equal(ras.pension, 5200);               // 80% from pay, the pension adds the basic-rate 20%
-    assert.equal(Math.round(ras.tax), 43075);      // allowance from adjusted net income £123,500; basic band £6,500 wider
+    assert.equal(Math.round(ras.tax), 42832);      // allowance from adjusted net income £123,500; basic band and the £125,140 threshold £6,500 wider
     assert.ok(sac.net > ras.net && ras.net > 0);
     const bonusIn = P.netPay(100000, 20000, P.validTakeHome({ pct: 0.1, onBonus: true }));
     assert.equal(bonusIn.pension, 12000);

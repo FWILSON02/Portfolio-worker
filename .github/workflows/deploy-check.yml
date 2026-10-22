@@ -1,0 +1,28 @@
+name: Deploy check
+# The Home Screen app is only as new as what GitHub Pages serves. Twice a merge to main did not reach the live site (a Pages run
+# never started), and the phone stayed on the old build. This compares the script tags in main's index.html with the live ones
+# and fails, which emails Fergus, if they still differ well after the last merge.
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Live site against main
+        run: |
+          set -u
+          url="https://fwilson02.github.io/Portfolio-worker/"
+          tags() { grep -oE 'const APP_BUILD = [0-9]+;|<script src="[a-z]+\.js\?v=[0-9]+">' "$1"; }
+          curl -fsS --retry 3 -H 'Cache-Control: no-cache' "$url?nocache=$(date +%s)" -o "$RUNNER_TEMP/live.html"
+          tags docs/index.html > "$RUNNER_TEMP/main.tags"
+          tags "$RUNNER_TEMP/live.html" > "$RUNNER_TEMP/live.tags"
+          echo "main:"; cat "$RUNNER_TEMP/main.tags"
+          if diff -u "$RUNNER_TEMP/main.tags" "$RUNNER_TEMP/live.tags"; then echo "Live site matches main."; exit 0; fi
+          # A merge takes a few minutes to deploy: only a mismatch that has outlived that is a missed deploy.
+          age=$(( $(date +%s) - $(git log -1 --format=%ct) ))
+          if [ "$age" -lt 1200 ]; then echo "Last merge was ${age}s ago: still deploying, not a failure yet."; exit 0; fi
+          echo "::error::The live site is not serving main's build ${age}s after the last merge (a missed Pages deploy)."
+          exit 1
