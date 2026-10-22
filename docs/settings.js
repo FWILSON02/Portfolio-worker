@@ -333,6 +333,79 @@ function AlertsGroup() {
     );
 }
 
+// Settings → Diagnostics → Error log: what appLog (index.html) kept, newest first. Tap an entry for its detail; Copy puts
+// the lot on the clipboard to paste into a bug report.
+const APP_LOG_KIND = { crash: ['Crash', '#f87171'], error: ['Error', '#f87171'], warn: ['Warning', '#fbbf24'], price: ['Prices', '#fbbf24'] };
+function appLogText(entries) {
+    return ['Portfolio error log · running PR #' + APP_BUILD + ' · ' + navigator.userAgent].concat(entries.map(e =>
+        new Date(e.t).toISOString() + ' PR #' + (e.build == null ? '?' : e.build) + ' ' + e.kind + (e.n > 1 ? ' ×' + e.n : '') + ': ' + e.msg +
+        (e.detail ? '\n    ' + e.detail.split('\n').join('\n    ') : ''))).join('\n');
+}
+// Errors and crashes in the last day: what puts the amber dot on Diagnostics.
+function appLogRecentFaults() {
+    const since = Date.now() - 864e5;
+    return appLogRead().filter(e => (e.kind === 'crash' || e.kind === 'error') && e.t >= since).length;
+}
+function ErrorLogGroup() {
+    const [entries, setEntries] = React.useState(() => appLogRead().slice().reverse());
+    const [open, setOpen] = React.useState(-1);
+    const [msg, setMsg] = React.useState('');
+    React.useEffect(() => {
+        const on = () => setEntries(appLogRead().slice().reverse());
+        window.addEventListener('app-log', on);
+        return () => window.removeEventListener('app-log', on);
+    }, []);
+    const copy = () => {
+        const text = appLogText(entries);
+        const done = ok => setMsg(ok ? 'Copied' : 'Couldn’t copy');
+        try { navigator.clipboard.writeText(text).then(() => done(true), () => done(false)); } catch (e) { done(false); }
+    };
+    const btn = (label, onClick, color) => React.createElement('button', { onClick, style: { flex: 1, minHeight: 40, borderRadius: 8, fontFamily: sys, fontSize: 13,
+        background: 'transparent', border: '1px solid #27272a', color } }, label);
+    return React.createElement(Group, { title: 'Error log' },
+        entries.length === 0
+            ? React.createElement('div', { style: { padding: '13px 16px', fontFamily: sys, fontSize: 13, color: '#a1a1aa' } }, 'Nothing logged')
+            : React.createElement(React.Fragment, null,
+                entries.map((e, i) => {
+                    const [label, color] = APP_LOG_KIND[e.kind] || [e.kind, '#a1a1aa'];
+                    return React.createElement('button', { key: e.t + ':' + i, onClick: () => setOpen(open === i ? -1 : i),
+                        style: { display: 'block', width: '100%', textAlign: 'left', padding: '10px 16px', background: 'transparent', border: 'none',
+                                 borderBottom: '1px solid rgba(255,255,255,0.04)' } },
+                        React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', gap: 8, fontFamily: sys, fontSize: 11 } },
+                            React.createElement('span', { style: { color } }, label + (e.n > 1 ? ' ×' + e.n : '')),
+                            React.createElement('span', { style: { color: '#6b6b76' } }, relTime(e.t) + (e.build != null ? ' · PR #' + e.build : ''))),
+                        React.createElement('div', { style: { fontFamily: sys, fontSize: 12, color: '#e4e4e7', marginTop: 3, lineHeight: 1.4, wordBreak: 'break-word',
+                                                              ...(open === i ? {} : { display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }) } }, e.msg),
+                        open === i && e.detail && React.createElement('pre', { style: { margin: '6px 0 0', fontSize: 10, color: '#a1a1aa', whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.5 } }, e.detail));
+                }),
+                React.createElement('div', { style: { display: 'flex', gap: 8, padding: '10px 16px' } },
+                    btn(msg || 'Copy', copy, '#60a5fa'),
+                    btn('Clear', () => { appLogClear(); setOpen(-1); setMsg(''); }, '#a1a1aa'))));
+}
+
+// Settings → Diagnostics → Offline copy (docs/sw.js). On: the app opens with no signal. Off is the escape hatch if the
+// offline copy ever misbehaves; it stays off on this phone until turned back on.
+function OfflineCopyRow() {
+    const supported = 'serviceWorker' in navigator;
+    const [on, setOn] = React.useState(() => { try { return localStorage.getItem(SW_OFF_KEY) !== '1'; } catch (e) { return true; } });
+    const [active, setActive] = React.useState(() => supported && !!navigator.serviceWorker.controller);
+    const [busy, setBusy] = React.useState(false);
+    const toggle = async () => {
+        setBusy(true);
+        try {
+            if (on) { try { localStorage.setItem(SW_OFF_KEY, '1'); } catch (e) {} await swOff(); setOn(false); setActive(false); }
+            else { try { localStorage.removeItem(SW_OFF_KEY); } catch (e) {} const r = await swOn(); setOn(true); setActive(!!r); }
+        } finally { setBusy(false); }
+    };
+    const sub = !supported ? 'Not available in this browser'
+              : !SW_ENABLED ? 'Switched off in the app'
+              : !on ? 'Off: needs signal to open'
+              : active ? 'On: opens with no signal' : 'On from the next open';
+    return React.createElement(Group, null,
+        React.createElement(Row, { icon: HardDrive, iconColor: '#9da5b4', label: 'Offline copy', sub, last: true, disabled: !supported || !SW_ENABLED || busy, onClick: toggle,
+            right: React.createElement('span', { style: { fontFamily: sys, fontSize: 13, color: '#60a5fa' } }, on ? 'Turn off' : 'Turn on') }));
+}
+
 // Inside a Settings section a Group drops its own card and keeps its title as a small heading.
 const SettingsSectionCtx = React.createContext(false);
 function Group({ title, children }) {
@@ -890,9 +963,11 @@ function MoreTab(props) {
         return { text: `${n} of 4 keys set \u00b7 ` + (worker ? 'Worker set' : 'no Worker URL'), attention: !worker };
     })();
     const warnCount = (pricingWarnings || []).length;
+    const faultCount = appLogRecentFaults();
     const diagSummary = { text: hasParityMismatch ? 'Totals don\u2019t add up: check here'
-                              : warnCount ? `${warnCount} pricing warning${warnCount === 1 ? '' : 's'}` : 'Daily close check, cache, clear data',
-                          attention: !!hasParityMismatch || warnCount > 0 };
+                              : faultCount ? `${faultCount} error${faultCount === 1 ? '' : 's'} in the last day`
+                              : warnCount ? `${warnCount} pricing warning${warnCount === 1 ? '' : 's'}` : 'Error log, daily close check, offline copy',
+                          attention: !!hasParityMismatch || faultCount > 0 || warnCount > 0 };
 
     // ── Main More tab render ───────────────────────────────────────
     return React.createElement(React.Fragment, null,
@@ -1250,6 +1325,7 @@ function MoreTab(props) {
                     )
                 ),
                 React.createElement(SettingsSection, { id: 'diagnostics', icon: Wrench, color: '#9da5b4', title: 'Diagnostics', summary: diagSummary.text, attention: diagSummary.attention, open: openSection === 'diagnostics', onToggle: toggleSection },
+                    React.createElement(ErrorLogGroup, null),
                     React.createElement(Group, { title: 'Price checks' },
                         // Daily close check — which previous close each Today figure uses
                         (dailyCheckRows.length > 0 || (pricingWarnings && pricingWarnings.length > 0)) && React.createElement('div', { id: 'daily-close-check-panel', style: { padding: '13px 16px', borderBottom: '1px solid rgba(255,255,255,0.04)' } },
@@ -1411,6 +1487,7 @@ function MoreTab(props) {
                             )
                         )
                     ),
+                    React.createElement(OfflineCopyRow, null),
                     // ── Parity Sentinel Banner (Spec §IV 2.5 item 2) ──────────
                     // Only renders when accountGroups rollup != masterPortfolio.totalValue (> £0.01).
                     // Dashboard is never polluted — this lives exclusively in System Diagnostics.

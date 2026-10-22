@@ -832,6 +832,8 @@ function PortfolioApp() {
             const now = Date.now();
             feedHealthRef.current = feedHealthNext(feedHealthRef.current, ev, now);
             _dcSave(FEED_HEALTH_KEY, feedHealthRef.current);
+            // The error log keeps a refresh that priced under half the holdings (the strip's own amber rule).
+            if (ev && ev.ok && ev.requested >= 4 && ev.fresh * 2 < ev.requested) appLog('price', 'Only ' + ev.fresh + ' of ' + ev.requested + ' prices refreshed');
             const strip = feedBanner(feedHealthRef.current, now);
             setFeedStrip(prev => (prev ? prev.text : '') === (strip ? strip.text : '') && (prev ? prev.level : '') === (strip ? strip.level : '') ? prev : strip);
         }, []);
@@ -1113,6 +1115,7 @@ function PortfolioApp() {
                 // Failed fetch: never wipe existing data; only show failure on non-silent path.
                 if (!silent) setLiveStatus('fail');
                 recordFeed({ ok: false });
+                appLog('price', 'Live prices failed' + (navigator.onLine === false ? ' (offline)' : ''));
             }
 
             // ── Daily-close cross-check (Phase 2: fetch missing second-source data) ──

@@ -44,7 +44,9 @@ test('every screen renders with data, with no errors', { skip: !playwright && 'P
     t.after(() => browser.close());
     // iPhone 17 size, touch, in a fresh profile (empty IndexedDB and localStorage).
     const ctx = await browser.newContext({ viewport: { width: 402, height: 874 }, deviceScaleFactor: 2, hasTouch: true, isMobile: true,
-                                           timezoneId: 'Europe/London', locale: 'en-GB' });
+                                           timezoneId: 'Europe/London', locale: 'en-GB',
+                                           // The offline copy (docs/sw.js) would answer the app's requests before serve() sees them; tests/sw-browser.test.mjs covers it.
+                                           serviceWorkers: 'block' });
     const page = await ctx.newPage();
     const errors = [];
     page.on('pageerror', e => errors.push('uncaught: ' + (e.stack || e.message)));
