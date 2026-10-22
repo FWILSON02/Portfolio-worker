@@ -216,11 +216,13 @@ window.HelpCircle=_li([{t:'c',cx:12,cy:12,r:10},'M9.09 9a3 3 0 0 1 5.83 1c0 2-3 
 <!-- Cash Flow (pay and bills; formerly Life Admin) lives in its own file as well, loaded after balances.js (it uses the Estate
      mortgage and alert banner) and pay.js. Bump ?v= on change. -->
 <script src="lifeadmin.js?v=18"></script>
-<!-- The app's script lives in app.js. APP_BUILD is the pull request that last changed the app: Settings → App shows it,
+<!-- The app's scripts are app.js, settings.js and markets.js (no module system: they share globals, in this order). APP_BUILD is the pull request that last changed the app: Settings → App shows it,
      Reload app compares it with the server's, and CI (tests/build.test.cjs) checks it is this PR's number. Bump it in every PR,
-     and app.js's ?v= with it, so the Home Screen app never runs a cached app.js against a newer index.html. -->
-<script>const APP_BUILD = 100;</script>
-<script src="app.js?v=100"></script>
+     and the ?v= of those three with it, so the Home Screen app never runs a cached app.js against a newer index.html. -->
+<script>const APP_BUILD = 101;</script>
+<script src="app.js?v=101"></script>
+<script src="settings.js?v=101"></script>
+<script src="markets.js?v=101"></script>
 <script>
 class ErrorBoundary extends React.Component {
     constructor(props) { 
