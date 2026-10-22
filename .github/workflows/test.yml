@@ -9,7 +9,6 @@ jobs:
     env:
       # The render smoke test (tests/smoke.test.mjs) must run here, not be skipped.
       SMOKE_REQUIRED: '1'
-      NODE_PATH: ${{ runner.temp }}/smoke/node_modules
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -18,5 +17,6 @@ jobs:
       # Kept out of package.json so the Cloudflare Worker build stays as it is. The four CDN packages are the exact
       # versions docs/index.html pins, served to the app in place of the CDN.
       - run: npm install --prefix "$RUNNER_TEMP/smoke" --no-save --no-package-lock --no-audit --no-fund playwright@1.56.1 react@18.3.1 react-dom@18.3.1 xlsx@0.18.5 papaparse@5.4.1
+      - run: echo "NODE_PATH=$RUNNER_TEMP/smoke/node_modules" >> "$GITHUB_ENV"
       - run: '"$RUNNER_TEMP/smoke/node_modules/.bin/playwright" install --with-deps chromium'
       - run: npm test
