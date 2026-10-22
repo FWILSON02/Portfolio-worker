@@ -7307,7 +7307,7 @@ function BottomSheet({ context, onDismiss, sheetDragY, setSheetDragY, sheetDragS
                     React.createElement('div', { style: { fontFamily: serif, fontSize: 18, color: C.white, fontWeight: 500 } }, contextLabel),
                     React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
                         visibleCount > 0 && React.createElement('span', { style: { fontFamily: sys, fontSize: 11, color: C.zinc500 } }, `${visibleCount} positions`),
-                        React.createElement('button', { onClick: onDismiss, style: { color: C.zinc500, background: C.surfaceHigh, border: `1px solid ${C.border}`, borderRadius: 10, width: 32, height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center' } },
+                        React.createElement('button', { onClick: onDismiss, 'aria-label': 'Close', style: { color: C.zinc500, background: C.surfaceHigh, border: `1px solid ${C.border}`, borderRadius: 10, width: 32, height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center' } },
                             React.createElement(X, { style: { width: 14, height: 14 }, strokeWidth: 2 })
                         )
                     )
@@ -7556,7 +7556,7 @@ function Row({ icon: Icon, iconColor, iconBg, label, sub, right, onClick, isLabe
 // The pull request that last changed the app. Bump it in every PR so Settings → App shows which change the phone is
 // running (Fergus asked; the Estate ?v= number only moved when balances.js changed, so it looked stuck). CI checks it
 // matches the PR's number (tests/build.test.cjs): PR #85 forgot, and the phone kept saying PR #84.
-const APP_BUILD = 96;
+const APP_BUILD = 97;
 
 // Settings → App: pulls the newest index.html, balances.js, lifeadmin.js and pay.js past the browser's cache, then reloads. A Home Screen web app
 // on iOS keeps serving cached files for a while after a deploy, and closing it from the app switcher doesn't clear that.
@@ -7628,6 +7628,66 @@ function QuickTiles({ privacyMode, togglePrivacy, fetchLivePrices, liveStatus, l
                 React.createElement(React.Fragment, { key: 't' }, t('Reload app', C.blue)),
                 React.createElement(React.Fragment, { key: 's' }, sub('Running PR #' + APP_BUILD))])),
         msg && React.createElement('div', { style: { fontFamily: sys, fontSize: 12, color: C.zinc400, lineHeight: 1.45, padding: '8px 4px 0' } }, msg));
+}
+
+// ── Error boundaries: one broken screen never takes the app down ─────────────────────────────────────────────
+// Each tab, the Settings sheet, each Settings section and the holdings overlays sit in their own TabBoundary. A render
+// error shows a card in that place only; the tab bar, the other tabs, backup, restore and Reload app keep working.
+// resetKey: when it changes (another tab opened, a section reopened) the screen is tried again.
+// The card carries data-tab-error, which the render smoke test (tests/smoke.test.mjs) fails on.
+class TabBoundary extends React.Component {
+    constructor(props) { super(props); this.state = { error: null }; }
+    static getDerivedStateFromError(error) { return { error }; }
+    componentDidCatch(error, info) { console.error('[TabBoundary] ' + this.props.name + ' crashed:', error, info && info.componentStack); }
+    componentDidUpdate(prev) { if (this.state.error && prev.resetKey !== this.props.resetKey) this.setState({ error: null }); }
+    render() {
+        if (!this.state.error) return this.props.children;
+        return React.createElement(TabErrorCard, { name: this.props.name, error: this.state.error, screen: this.props.screen,
+            onClose: this.props.onClose, extra: this.props.extra, pad: this.props.pad, onRetry: () => this.setState({ error: null }) });
+    }
+}
+// screen: a tab id, for the tabs that open as a fixed screen under the tab bar (swiping still works from it).
+// onClose: for an overlay (holdings sheet, ticker detail), which shows the card at the bottom with a Close button.
+// pad: padding round the card, where the boundary replaces a screen that brought its own (the Settings sheet).
+function TabErrorCard({ name, error, screen, onClose, extra, pad, onRetry }) {
+    const btn = (label, onClick) => React.createElement('button', { onClick,
+        style: { flex: 1, minHeight: 44, borderRadius: 12, background: 'rgba(59,130,246,0.15)', border: '1px solid rgba(59,130,246,0.3)',
+                 color: C.blue, fontFamily: sys, fontSize: 14, WebkitTapHighlightColor: 'transparent' } }, label);
+    const card = React.createElement('div', { 'data-tab-error': name,
+        style: { background: '#11161f', border: '1px solid rgba(248,113,113,0.3)', borderRadius: 14, padding: '14px 16px', marginBottom: 12 } },
+        React.createElement('div', { style: { fontFamily: sys, fontSize: 15, fontWeight: 600, color: C.rose } }, name + ' hit an error'),
+        React.createElement('div', { style: { fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 11, color: C.zinc400, lineHeight: 1.45,
+                                              marginTop: 6, wordBreak: 'break-word' } }, String(error && error.message || error)),
+        React.createElement('div', { style: { display: 'flex', gap: 8, marginTop: 12 } },
+            btn('Try again', onRetry), onClose && btn('Close', onClose)));
+    const body = extra || pad ? React.createElement('div', { style: { padding: pad || 0 } }, card, extra) : card;
+    if (screen) return React.createElement('div', { 'data-swipe-tabs': '', 'data-tab-screen': screen,
+        style: { position: 'fixed', top: 'var(--topbar-h, 0px)', left: 0, right: 0, bottom: 0, zIndex: 9995, background: C.bg,
+                 overflowY: 'auto', padding: '12px 16px 32px' } }, body);
+    if (onClose) return React.createElement('div', {
+        style: { position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 10000, padding: '0 12px max(env(safe-area-inset-bottom), 12px)' } }, body);
+    return body;
+}
+// Settings when the sheet itself crashed: Reload app (the fix is usually a newer version) and the cloud backup, so a
+// backup or a restore is still one tap away. The restore summary lives outside the sheet, so it still opens.
+function SettingsRecovery({ backupNow, restore }) {
+    const [msg, go] = useReloadLatest();
+    return React.createElement('div', null,
+        React.createElement('div', { style: { marginBottom: 14 } },
+            React.createElement('button', { onClick: go,
+                style: { width: '100%', minHeight: 44, borderRadius: 12, background: '#11161f', border: '1px solid rgba(255,255,255,0.06)',
+                         color: C.blue, fontFamily: sys, fontSize: 14, fontWeight: 600 } }, 'Reload app · running PR #' + APP_BUILD),
+            msg && React.createElement('div', { style: { fontFamily: sys, fontSize: 12, color: C.zinc400, lineHeight: 1.45, padding: '8px 4px 0' } }, msg)),
+        backupNow && React.createElement(TabBoundary, { name: 'Cloud Backup' }, React.createElement(CloudBackupGroup, { backupNow, restore })));
+}
+// The whole-app crash screen (ErrorBoundary, at the end of this file) offers Reload app too.
+function ReloadLatestButton() {
+    const [msg, go] = useReloadLatest();
+    return React.createElement('div', null,
+        React.createElement('button', { onClick: go,
+            style: { marginTop: 24, padding: '12px 24px', background: 'rgba(59,130,246,0.15)', color: '#60a5fa', border: '1px solid rgba(59,130,246,0.4)',
+                     borderRadius: 8, cursor: 'pointer' } }, 'Reload latest version (running PR #' + APP_BUILD + ')'),
+        msg && React.createElement('div', { style: { marginTop: 10, color: '#a1a1aa' } }, msg));
 }
 
 // Settings → Backup → Estate only: the balances' import and exports (Fergus wanted every backup in one place).
@@ -7858,7 +7918,8 @@ function SettingsSection({ id, icon: Icon, color, title, summary, attention, ope
                 summary && React.createElement('div', { style: { fontFamily: sys, fontSize: 12, color: C.zinc500, marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } }, summary)),
             React.createElement('span', { style: { color: C.zinc600, fontSize: 18, lineHeight: 1, transform: open ? 'rotate(90deg)' : 'none', transition: 'transform 200ms ease' } }, '\u203a')),
         open && React.createElement('div', { style: { borderTop: '1px solid rgba(255,255,255,0.05)' } },
-            React.createElement(SettingsSectionCtx.Provider, { value: true }, children)));
+            React.createElement(SettingsSectionCtx.Provider, { value: true },
+                React.createElement(TabBoundary, { name: title, resetKey: open }, children))));
 }
 
 // One total: the portfolio plus employer equity (restricted capital and any modelled vested comp), with Today and
@@ -18415,10 +18476,12 @@ function PortfolioApp() {
         )),
 
         // ── Ticker detail modal
-        React.createElement(TickerModal, { selectedTicker, tickerDetail, privacyMode, setSelectedTicker, modalDragY, setModalDragY, modalDragStart }),
+        React.createElement(TabBoundary, { name: 'Ticker detail', resetKey: selectedTicker, onClose: () => setSelectedTicker(null) },
+            React.createElement(TickerModal, { selectedTicker, tickerDetail, privacyMode, setSelectedTicker, modalDragY, setModalDragY, modalDragStart })),
 
         // ── Holdings bottom sheet
-        sheetContext && React.createElement(BottomSheet, {
+        sheetContext && React.createElement(TabBoundary, { name: 'Holdings', resetKey: sheetContext, onClose: () => { setSheetContext(null); setSheetDragY(0); setSheetSearch(''); } },
+            React.createElement(BottomSheet, {
             context: sheetContext,
             onDismiss: () => { setSheetContext(null); setSheetDragY(0); setSheetSearch(''); },
             sheetDragY, setSheetDragY, sheetDragStart,
@@ -18427,31 +18490,34 @@ function PortfolioApp() {
             privacyMode, setSelectedTicker,
             totalValue: masterPortfolio.totalValue,
             restrictedDisplayRows,
-        }),
+        })),
 
         // ── Market Overview screen (read-only, does not feed portfolio valuation)
-        showMarketOverview && React.createElement(MarketOverviewScreen, {
-            rows:      marketRows,
-            status:    marketStatus,
-            updatedAt: marketAt,
-            error:     marketError,
-            onRefresh: function() { refreshMarketOverview({ silent: false, forceHistory: true }); },
-        }),
+        showMarketOverview && React.createElement(TabBoundary, { name: 'Markets', screen: 'markets', resetKey: activeTab },
+            React.createElement(MarketOverviewScreen, {
+                rows:      marketRows,
+                status:    marketStatus,
+                updatedAt: marketAt,
+                error:     marketError,
+                onRefresh: function() { refreshMarketOverview({ silent: false, forceHistory: true }); },
+            })),
 
         // ── Estate screen (balances.js). appValues lets investment and pension accounts prefill from the app.
-        showBalances && React.createElement(window.BalancesScreen, {
-            onClose:     () => setActiveTab('investments'),
-            privacyMode,
-            appValues:   balancesAppValues,
-            ui:          { C, sys, rounded },
-        }),
+        showBalances && React.createElement(TabBoundary, { name: 'Estate', screen: 'estate', resetKey: activeTab },
+            React.createElement(window.BalancesScreen, {
+                onClose:     () => setActiveTab('investments'),
+                privacyMode,
+                appValues:   balancesAppValues,
+                ui:          { C, sys, rounded },
+            })),
 
         // ── Cash Flow screen (lifeadmin.js): Pay (pay.js) and the bills.
-        showLifeAdmin && React.createElement(window.LifeAdminScreen, {
-            onClose:     () => setActiveTab('investments'),
-            privacyMode,
-            ui:          { C, sys, rounded },
-        }),
+        showLifeAdmin && React.createElement(TabBoundary, { name: 'Cash Flow', screen: 'lifeadmin', resetKey: activeTab },
+            React.createElement(window.LifeAdminScreen, {
+                onClose:     () => setActiveTab('investments'),
+                privacyMode,
+                ui:          { C, sys, rounded },
+            })),
 
         // ── Settings sheet (MoreTab)
         showSettings && React.createElement('div', {
@@ -18491,6 +18557,8 @@ function PortfolioApp() {
                     }, React.createElement(X, { style: { width: 16, height: 16 }, strokeWidth: 2 }))
                 ),
                 React.createElement('div', { className: 'ios-scroll', style: { flex: 1, paddingBottom: 'max(env(safe-area-inset-bottom), 20px)' } },
+                    React.createElement(TabBoundary, { name: 'Settings', resetKey: showSettings, pad: '16px 20px',
+                        extra: React.createElement(SettingsRecovery, { backupNow: cloudBackupNow, restore: cloudRestore }) },
                     React.createElement(MoreTab, {
                         transactions, prices, loadStatus, loadSource, fetchDebug,
                         cacheMeta, activeHoldings: activeHoldingsWithDelta, tickersUsed, livePrices, liveAt, liveStatus,
@@ -18517,7 +18585,7 @@ function PortfolioApp() {
                         // Settings → Estate → Import: close the sheet and open the Import view on the Estate tab.
                         cloudBackupNow, cloudRestore,
                         onEstateImport: hasBalances ? () => { setShowSettings(false); setSettingsDragY(0); setActiveTab('estate'); window.BalancesStore.openView('import'); } : null,
-                    })
+                    }))
                 )
             )
         ),
@@ -18578,12 +18646,12 @@ function PortfolioApp() {
                     // (The live-price refresh and the purge-and-rebuild buttons live in Settings → Data.)
                     // Privacy toggle
                     React.createElement('button', {
-                        onClick: togglePrivacy,
+                        onClick: togglePrivacy, 'aria-label': 'Privacy',
                         style: { color: privacyMode ? C.amber : C.zinc600, background: 'transparent', border: 'none', width: 32, height: 34, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }
                     }, React.createElement(privacyMode ? EyeOff : Eye, { style: { width: 18, height: 18 }, strokeWidth: 1.5 })),
                     // Settings
                     React.createElement('button', {
-                        onClick: () => setShowSettings(true),
+                        onClick: () => setShowSettings(true), 'aria-label': 'Settings',
                         style: { color: C.zinc600, background: 'transparent', border: 'none', width: 32, height: 34, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }
                     }, React.createElement(Settings, { style: { width: 18, height: 18 }, strokeWidth: 1.5 }))
                 )
@@ -18594,6 +18662,7 @@ function PortfolioApp() {
                 className: 'ios-scroll', 'data-tab-screen': 'investments',
                 style: { flex: 1, padding: '12px 16px 32px' }
             },
+              React.createElement(TabBoundary, { name: 'Investments', resetKey: activeTab },
                 // Maturity alerts (amber, then red near the date)
                 maturityAlerts && React.createElement(window.MaturityAlerts.Banner, { source: maturityAlerts, privacy: privacyMode }),
                 // Hero Card
@@ -18680,6 +18749,7 @@ function PortfolioApp() {
                         `⚠ ${Object.values(loadStatus).filter(s => s === 'fail').length} price source(s) failed — open Settings to retry`
                     )
                 )
+              )
             )
         )
         ); // end main return
@@ -18717,6 +18787,8 @@ class ErrorBoundary extends React.Component {
                 React.createElement('h2', { style: { color: '#ef4444', fontSize: '18px', marginBottom: '16px' } }, 'UI Crash Intercepted'),
                 React.createElement('div', { style: { marginBottom: '16px', color: '#fca5a5', fontWeight: 600 } }, this.state.error && this.state.error.toString()),
                 React.createElement('pre', { style: { whiteSpace: 'pre-wrap', color: '#a1a1aa', fontSize: '10px', lineHeight: 1.5 } }, this.state.errorInfo && this.state.errorInfo.componentStack),
+                // The fix is usually a newer version: fetch it rather than reload the broken one from the cache.
+                typeof ReloadLatestButton === 'function' && React.createElement(ReloadLatestButton, null),
                 React.createElement('button', {
                     onClick: () => window.location.reload(),
                     style: { marginTop: '24px', padding: '12px 24px', background: 'rgba(239,68,68,0.2)', color: '#f87171', border: '1px solid rgba(239,68,68,0.4)', borderRadius: '8px', cursor: 'pointer' }
