@@ -5003,6 +5003,39 @@ function markHistoryRefreshed(nowMs, pending) {
         pending: Array.isArray(pending) ? pending.slice().sort() : [] });
 }
 
+// ── Price-feed health: tells Fergus when Yahoo prices stop arriving (his ask) ───────────────────────────────────────
+// Every live-quote refresh records one event: ok (with how many fresh quotes survived the gate out of how many were asked
+// for) or failed. The record lives in localStorage so a reopened app still knows. feedBanner turns it into the strip at the
+// top of Investments: nothing while all is well, amber once the last success is 30 minutes old and a later attempt failed,
+// red after a day, and amber if a refresh worked for fewer than half of the holdings (Yahoo answering with gaps).
+const FEED_HEALTH_KEY = 'feed_health_v1';
+const FEED_STALE_MS = 30 * 60 * 1000;
+const FEED_RED_MS = 24 * 3600 * 1000;
+function feedHealthLoad() {
+    const o = _dcLoad(FEED_HEALTH_KEY);
+    return { okAt: Number(o.okAt) || null, failAt: Number(o.failAt) || null, fresh: Number(o.fresh) || 0, requested: Number(o.requested) || 0 };
+}
+function feedHealthNext(prev, ev, now) {
+    const p = prev || {};
+    return ev && ev.ok
+        ? { okAt: now, failAt: p.failAt || null, fresh: ev.fresh || 0, requested: ev.requested || 0 }
+        : { okAt: p.okAt || null, failAt: now, fresh: p.fresh || 0, requested: p.requested || 0 };
+}
+function feedSince(ms, now) {
+    const d = new Date(ms), t = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+    return new Date(now).toDateString() === d.toDateString() ? t
+        : d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }) + ' ' + t;
+}
+function feedBanner(h, now) {
+    if (!h || !h.okAt) return null;
+    if (h.failAt && h.failAt > h.okAt && now - h.okAt >= FEED_STALE_MS)
+        return { level: now - h.okAt >= FEED_RED_MS ? 'red' : 'amber',
+                 text: 'Prices haven\u2019t updated since ' + feedSince(h.okAt, now) + '. Yahoo isn\u2019t responding, so these are the last prices.' };
+    if (h.requested >= 4 && h.fresh * 2 < h.requested)
+        return { level: 'amber', text: 'Yahoo sent prices for only ' + h.fresh + ' of ' + h.requested + ' holdings; the rest are the last prices.' };
+    return null;
+}
+
 // Recent daily closes straight from Yahoo's chart endpoint, as { date, close }
 // rows dated in the exchange's own timezone, raw (unadjusted) closes, one row
 // per date — i.e. exactly the same shape and basis as the rows fetchLivePrices
@@ -5421,6 +5454,22 @@ function buildGiltLadderState(enriched, today, giltMarket, nowMs) {
 // ── Stage 1.4: Corporate Equity Overlay Components ────────────────────────────
 // Defined at global scope (alongside HeroCard, AccountCard) so they are stable
 // references that never remount on PortfolioApp re-render.
+
+// FeedBanner — the price-feed strip (see feedBanner): amber, or red after a day without prices. Top of Investments.
+function FeedBanner({ strip }) {
+    if (!strip) return null;
+    const red = strip.level === 'red', col = red ? C.rose : C.amber;
+    return React.createElement('div', {
+        role: 'status', 'data-feed-banner': strip.level,
+        style: {
+            display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 12, borderRadius: 12, padding: '12px 14px',
+            background: red ? 'rgba(239,68,68,0.08)' : 'rgba(251,191,36,0.08)',
+            border: '1px solid ' + (red ? 'rgba(239,68,68,0.20)' : 'rgba(251,191,36,0.22)'),
+        }
+    },
+        React.createElement(AlertCircle, { style: { width: 16, height: 16, color: col, flexShrink: 0, marginTop: 1 }, strokeWidth: 1.75 }),
+        React.createElement('div', { style: { fontFamily: sys, fontSize: 12, lineHeight: 1.5, color: col } }, strip.text));
+}
 
 // ActionAlertBanner — crimson warning strip for overdue vesting confirmations.
 // Returns null when currentActiveAlerts is empty so it takes no space.
@@ -9937,6 +9986,17 @@ function PortfolioApp() {
             }
         }, [inception, today, allPriceTickers, checkAssetOpenInLast3M, compConfigs, externalHoldings, fileCurrencyMap]);
 
+        // Price-feed health (feedBanner). State only changes when the strip itself would, so a 15 s poll never re-renders the app.
+        const feedHealthRef = React.useRef(null);
+        if (feedHealthRef.current == null) feedHealthRef.current = feedHealthLoad();
+        const [feedStrip, setFeedStrip] = useState(() => feedBanner(feedHealthRef.current, Date.now()));
+        const recordFeed = useCallback((ev) => {
+            const now = Date.now();
+            feedHealthRef.current = feedHealthNext(feedHealthRef.current, ev, now);
+            _dcSave(FEED_HEALTH_KEY, feedHealthRef.current);
+            const strip = feedBanner(feedHealthRef.current, now);
+            setFeedStrip(prev => (prev ? prev.text : '') === (strip ? strip.text : '') && (prev ? prev.level : '') === (strip ? strip.level : '') ? prev : strip);
+        }, []);
         const fetchLivePricesCore = useCallback(async (opts = {}, runId = 0) => {
             const silent = !!opts.silent;
             const forceSources = normaliseForceSources(opts); // manual re-check: which sources may bypass their cache (and spend quota)
@@ -9955,6 +10015,7 @@ function PortfolioApp() {
             // Useful when Today P&L looks wrong — reveals which Yahoo field was chosen.
             const DEBUG_LIVE_PREV_CLOSE = false;
             const newLive = {};
+            let gatedFresh = null;   // quotes that survived the live gate, before any last-good carry-forward
             const newPrevClose = {};
             // Full recent daily-close series per ticker, captured from the 5-day chart.
             // Stored so the previous-close resolver can pick the correct prior session by
@@ -10143,6 +10204,7 @@ function PortfolioApp() {
                     expectedCurrencies: configCurrencyMap,
                 });
                 Object.keys(newLive).forEach(k => { if (!(k in gate.accepted)) delete newLive[k]; });
+                gatedFresh = Object.keys(newLive).length;
                 // Record today's currency for every accepted fresh quote.
                 const acceptedCcy = {};
                 Object.keys(newLive).forEach(k => { const n = normaliseQuoteCurrency(newQuoteCurrency[k]); if (n) acceptedCcy[k] = n; });
@@ -10208,9 +10270,12 @@ function PortfolioApp() {
 
                 // Always affirm ok status; never reset it on silent refresh.
                 setLiveStatus('ok');
+                recordFeed({ ok: true, fresh: gatedFresh == null ? Object.keys(newLive).length : gatedFresh,
+                             requested: new Set(activeTickers.concat(['GBPUSD=X', '^GSPC', BENCH_TR_TICKER])).size });
             } else {
                 // Failed fetch: never wipe existing data; only show failure on non-silent path.
                 if (!silent) setLiveStatus('fail');
+                recordFeed({ ok: false });
             }
 
             // ── Daily-close cross-check (Phase 2: fetch missing second-source data) ──
@@ -14898,6 +14963,8 @@ function PortfolioApp() {
                 style: { flex: 1, padding: '12px 16px 32px' }
             },
               React.createElement(TabBoundary, { name: 'Investments', resetKey: activeTab },
+                // Price feed health: first, above every other alert (Fergus: alerts go at the very top)
+                React.createElement(FeedBanner, { strip: feedStrip }),
                 // Maturity alerts (amber, then red near the date)
                 maturityAlerts && React.createElement(window.MaturityAlerts.Banner, { source: maturityAlerts, privacy: privacyMode }),
                 // Hero Card
