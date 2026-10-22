@@ -174,6 +174,46 @@ test('take-home for Cash Flow: the base of the year under way a month at a time,
     assert.equal(P.validateState({ years, takeHome: { pct: 0.05, scheme: 'nonsense' } }).takeHome.scheme, 'sacrifice');
 });
 
+test('marginal rate: one figure for pay (tax and NI) and one for savings (tax only), with the 60% band and share vests in it', () => {
+    const rate = (rowsIn, th) => {
+        const years = rowsIn.map(y => P.validYear(y));
+        const m = P.marginalOf({ years, takeHome: th || P.validTakeHome({}) }, P.computeYears(years));
+        return m && [round(m.pay, 3), round(m.saving, 3)];
+    };
+    assert.deepEqual(rate([{ year: 2026, base: 80000 }]), [0.42, 0.4]);                          // higher rate + 2% NI
+    assert.deepEqual(rate([{ year: 2025, base: 90000, bonus: 20000 }, { year: 2026, base: 90000 }]), [0.62, 0.6]);   // £110k: allowance taper
+    assert.deepEqual(rate([{ year: 2026, base: 135000 }]), [0.47, 0.45]);                       // additional rate
+    // £90k plus a £25k vest is £115k: the vest takes the next pound into the 60% band.
+    assert.deepEqual(rate([{ year: 2026, base: 90000 }]), [0.42, 0.4]);
+    assert.deepEqual(rate([{ year: 2026, base: 90000, shares: 1000, price: 25, currency: 'GBP' }]), [0.62, 0.6]);
+    assert.equal(P.marginalOf({ years: [] }, []), null);
+});
+
+test('take-home: share vests on the year\'s row come after tax and NI on top of the base and latest bonus', () => {
+    const years = [{ year: 2025, base: 100000, bonus: 10000 }, { year: 2026, base: 100000, shares: 2000, price: 20, currency: 'USD', fx: 1.25 }].map(y => P.validYear(y));
+    const state = { years, takeHome: P.validTakeHome({}) };
+    const th = P.takeHomeOf(state, P.computeYears(years));
+    assert.equal(th.vest.gross, 32000);                                   // 2,000 × $20 at $1.25 to the pound
+    assert.equal(round(th.vest.net, 2), round(P.netPay(100000, 10000, state.takeHome, { vest: 32000 }).net - P.netPay(100000, 10000, state.takeHome).net, 2));
+    assert.ok(th.vest.net > 32000 * 0.4 && th.vest.net < 32000 * 0.5);   // 62% up to £125,140 and 47% above it
+    assert.equal(th.monthly, th.worked);                                  // vests stay out of the monthly figure
+    const none = P.takeHomeOf({ years: [P.validYear({ year: 2026, base: 100000 })], takeHome: state.takeHome }, P.computeYears([P.validYear({ year: 2026, base: 100000 })]));
+    assert.equal(none.vest, null);
+});
+
+test('gilts and share plans take the marginal rate from Pay; their own figures only stand in without it', () => {
+    const saved = ctx.PayStore;
+    ctx.PayStore = { marginal: () => null };                  // no pay figures yet
+    assert.equal(app.giltTaxRate(), 0.45);
+    assert.equal(app.vestingTaxRate({ estimated_vesting_tax_rate: 0.3 }), 0.3);
+    assert.equal(app.vestingTaxRate({}), 0);
+    ctx.PayStore = { marginal: () => ({ pay: 0.62, saving: 0.6 }) };
+    try {
+        assert.equal(app.giltTaxRate(), 0.6);
+        assert.equal(app.vestingTaxRate({ estimated_vesting_tax_rate: 0.3 }), 0.62);
+    } finally { ctx.PayStore = saved; }
+});
+
 test('take-home: payslip deductions come off before tax and NI, before tax only, or after tax', () => {
     const th = deductions => P.validTakeHome({ pct: 0.05, scheme: 'sacrifice', deductions });
     const none = P.netPay(80000, 0, th([]));

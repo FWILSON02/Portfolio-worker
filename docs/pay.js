@@ -219,6 +219,8 @@ var PayStore = {
         return true;
     },
     deleteAll: function () { return saveState(emptyState()); },
+    // The marginal tax rates { pay, saving } the gilts and share plans use; null until there is a year with a base.
+    marginal: function () { return marginalOf(_state, computeYears(_state.years)); },
     // The Cash Flow line: the latest year with its bonus known (with how it compares to the year before), the year under
     // way after it, and take-home pay (takeHomeOf). All null when there is no pay yet.
     headline: function () {
@@ -343,12 +345,15 @@ function incomeTax(taxable, ani, band) {
 function nationalInsurance(pay) {
     return Math.max(0, Math.min(pay, TAX.niUpper) - TAX.niFrom) * TAX.niMain + Math.max(0, pay - TAX.niUpper) * TAX.niUpperRate;
 }
+// x: more income on top of the pay, as { vest, saving }. vest: share vests, taxed and charged NI like pay (but nothing goes
+// into the pension from it); saving: interest such as gilt coupons, which adds to taxable income and ANI but has no NI.
 // A year's pay → { gross, pension, tax, ni, deductions, net }. pension: what comes out of pay for it (relief at source:
 // 80% of the contribution, the pension adding the other 20%). deductions: the payslip's others over the year, each
 // { name, kind, annual }; pre-tax ones come off before tax (and NI, for 'sacrifice'), post-tax ones after.
-function netPay(base, bonus, th) {
+function netPay(base, bonus, th, x) {
     th = th || validTakeHome({});
-    var gross = (base || 0) + (bonus || 0);
+    var vest = (x && x.vest) || 0, saving = (x && x.saving) || 0;
+    var gross = (base || 0) + (bonus || 0) + vest;
     var contrib = th.pct * ((base || 0) + (th.onBonus ? bonus || 0 : 0));
     var deductions = (th.deductions || []).map(function (d) { return { name: d.name, kind: d.kind, annual: d.monthly * 12 }; });
     var sum = function (kind) { return deductions.reduce(function (t, d) { return t + (d.kind === kind ? d.annual : 0); }, 0); };
@@ -357,9 +362,28 @@ function netPay(base, bonus, th) {
     if (th.scheme === 'sacrifice') { taxable -= contrib; niPay -= contrib; ani = taxable; }
     else if (th.scheme === 'netpay') { taxable -= contrib; ani = taxable; }
     else { fromPay = contrib * 0.8; ani = taxable - contrib; band = contrib; }
-    taxable = Math.max(0, taxable); niPay = Math.max(0, niPay);
+    taxable = Math.max(0, taxable + saving); niPay = Math.max(0, niPay); ani += saving;
     var tax = incomeTax(taxable, ani, band), ni = nationalInsurance(niPay);
     return { gross: gross, pension: fromPay, tax: tax, ni: ni, deductions: deductions, net: gross - fromPay - tax - ni - sac - pre - post };
+}
+// The year's share vests in pounds: the shares on a year's row at their award price (dollars at the year's rate).
+function vestGross(y) {
+    if (!y || !(y.shares > 0) || !(y.price > 0)) return 0;
+    return y.shares * y.price / (y.currency === 'GBP' ? 1 : y.fxRate || fxFor(y).rate);
+}
+// One marginal tax rate for the whole app (Fergus asked): what the next pound would cost on this year's income, base plus
+// the latest bonus plus the year's share vests, so the 60% band between £100k and £125,140 shows up when he is in it.
+// pay: income tax plus NI on the next pound of pay or a vest; saving: income tax alone on the next pound of interest (gilt
+// coupons). Worked out from the same netPay as take-home, a £1,000 step each.
+function marginalOf(state, rows) {
+    var s = summary(rows), y = s.current || s.latest;
+    if (!y || !(y.base > 0)) return null;
+    var th = state.takeHome || validTakeHome({});
+    var lastBonus = rows.filter(function (r) { return r.bonus > 0; }).pop();
+    var bonus = lastBonus ? lastBonus.bonus : 0, vest = vestGross(y), step = 1000;
+    var at = netPay(y.base, bonus, th, { vest: vest });
+    var morePay = netPay(y.base, bonus, th, { vest: vest + step }), moreSaving = netPay(y.base, bonus, th, { vest: vest, saving: step });
+    return { year: y.year, pay: (morePay.tax - at.tax + morePay.ni - at.ni) / step, saving: (moreSaving.tax - at.tax) / step };
 }
 // Take-home for Cash Flow: the base salary of the year under way (else the latest year), a month at a time, and the
 // latest known bonus after tax and pension on top of it (paid once, so kept out of the monthly figure).
@@ -370,8 +394,12 @@ function takeHomeOf(state, rows) {
     var lastBonus = rows.filter(function (r) { return r.bonus > 0; }).pop() || null;
     var bonus = lastBonus ? { year: lastBonus.year, gross: lastBonus.bonus, net: netPay(y.base, lastBonus.bonus, th).net - year.net } : null;
     var worked = year.net / 12;
+    // Share vests on top of the base and that bonus, after tax and NI: lumpy, so kept out of the monthly figure.
+    var vg = vestGross(y), bonusG = lastBonus ? lastBonus.bonus : 0;
+    var vest = vg > 0 ? { year: y.year, shares: y.shares, stockName: y.stockName, gross: vg,
+                          net: netPay(y.base, bonusG, th, { vest: vg }).net - netPay(y.base, bonusG, th).net } : null;
     return { year: y.year, base: y.base, annual: year, worked: worked, payslip: th.payslip, monthly: th.payslip || worked,
-             settings: th, set: !!state.takeHome, bonus: bonus };
+             settings: th, set: !!state.takeHome, bonus: bonus, vest: vest, marginal: marginalOf(state, rows) };
 }
 
 // ── Paste from a spreadsheet ─────────────────────────────────────────────────
@@ -748,6 +776,11 @@ function TakeHomeCard(props) {
         t.bonus && E('div', { style: { fontFamily: ui.sys, fontSize: 12.5, color: ui.C.zinc600, marginTop: 8, lineHeight: 1.45 } },
             'Bonus: ', E('span', { style: { filter: p ? 'blur(6px)' : 'none' } }, fmtGBP(t.bonus.gross)), ' (' + t.bonus.year + ') is about ',
             E('span', { style: { filter: p ? 'blur(6px)' : 'none', color: ui.C.zinc400 } }, fmtGBP(t.bonus.net)), ' after tax' + (t.settings.onBonus && t.settings.pct ? ' and pension' : '') + ', on top, when paid.'),
+        t.vest && E('div', { style: { fontFamily: ui.sys, fontSize: 12.5, color: ui.C.zinc600, marginTop: 8, lineHeight: 1.45 } },
+            'Share vests: ', E('span', { style: { filter: p ? 'blur(6px)' : 'none' } }, fmtShares(t.vest.shares) + (t.vest.stockName ? ' ' + t.vest.stockName : '') + ' (' + fmtGBP(t.vest.gross) + ')'),
+            ' in ' + t.vest.year + ' are about ', E('span', { style: { filter: p ? 'blur(6px)' : 'none', color: ui.C.zinc400 } }, fmtGBP(t.vest.net)), ' after tax and NI, on top.'),
+        t.marginal && E('div', { style: { fontFamily: ui.sys, fontSize: 12.5, color: ui.C.zinc600, marginTop: 8, lineHeight: 1.45 } },
+            'Marginal rate: ' + fmtPct(t.marginal.pay) + ' on pay and vests (with NI), ' + fmtPct(t.marginal.saving) + ' on gilt coupons. Gilts and share plans use these.'),
         !t.set && E('div', { style: { fontFamily: ui.sys, fontSize: 12.5, color: ui.C.amber, marginTop: 8, lineHeight: 1.45 } },
             'Pension not set yet, so none is taken off. Tap Edit to add it.'),
         E('div', { style: { fontFamily: ui.sys, fontSize: 11.5, color: ui.C.zinc700, marginTop: 8, lineHeight: 1.4 } },
@@ -1114,7 +1147,7 @@ window.PayView = PayView;
 window.PayStore = PayStore;
 window.PayIcon = PayIcon;
 // For tests only: the pure parts, no UI.
-window.__payInternals = { netPay: netPay, incomeTax: incomeTax, nationalInsurance: nationalInsurance, takeHomeOf: takeHomeOf, validTakeHome: validTakeHome,
+window.__payInternals = { netPay: netPay, incomeTax: incomeTax, nationalInsurance: nationalInsurance, takeHomeOf: takeHomeOf, marginalOf: marginalOf, validTakeHome: validTakeHome,
     validateState: validateState, validYear: validYear, reviewFigures: reviewFigures, reviewYearOf: reviewYearOf, parsePaste: parsePaste, mergeYears: mergeYears, computeYears: computeYears,
     summary: summary, fxFor: fxFor, headerKey: headerKey, stockNameOf: stockNameOf };
 })();
