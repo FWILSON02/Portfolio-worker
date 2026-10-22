@@ -339,7 +339,7 @@ function incomeTax(taxable, ani, band) {
     var pa = Math.max(0, TAX.allowance - Math.max(0, ani - TAX.taperFrom) / 2);
     var above = Math.max(0, taxable - pa);
     var basic = Math.min(above, TAX.basicBand + (band || 0));
-    var additional = Math.max(0, taxable - TAX.additionalFrom);
+    var additional = Math.max(0, taxable - TAX.additionalFrom - (band || 0));   // relief at source widens this threshold too
     return basic * TAX.basic + Math.max(0, above - basic - additional) * TAX.higher + additional * TAX.additional;
 }
 function nationalInsurance(pay) {
