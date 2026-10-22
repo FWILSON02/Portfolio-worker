@@ -46,10 +46,10 @@ function loadApp() {
     // In index.html's order: Cash Flow (lifeadmin.js) uses Pay (pay.js).
     vm.runInContext(fs.readFileSync(path.join(DOCS, 'pay.js'), 'utf8'), ctx, { filename: 'pay.js' });
     vm.runInContext(fs.readFileSync(path.join(DOCS, 'lifeadmin.js'), 'utf8'), ctx, { filename: 'lifeadmin.js' });
-    // The app is performance.js, app.js, settings.js and markets.js, loaded in index.html's order. Their consts are global lexical
+    // The app is performance.js, holdings.js, app.js, settings.js and markets.js, loaded in index.html's order. Their consts are global lexical
     // bindings, which are not properties of the context: a lookup defined first reaches them for the tests.
     vm.runInContext('globalThis.__lookup = n => eval(n);', ctx, { filename: 'load.cjs' });
-    for (const f of ['performance.js', 'app.js', 'settings.js', 'markets.js']) {
+    for (const f of ['performance.js', 'holdings.js', 'app.js', 'settings.js', 'markets.js']) {
         vm.runInContext(fs.readFileSync(path.join(DOCS, f), 'utf8'), ctx, { filename: f });
     }
     const app = new Proxy(ctx, { get: (t, name) => (name in t || typeof name !== 'string' ? t[name] : t.__lookup(name)) });
