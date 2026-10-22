@@ -40,17 +40,18 @@ function loadApp() {
     vm.createContext(ctx);
 
     const html = fs.readFileSync(path.join(DOCS, 'index.html'), 'utf8');
-    // The app's script is app.js; index.html only sets APP_BUILD (a global const, like in the browser).
-    const main = fs.readFileSync(path.join(DOCS, 'app.js'), 'utf8');
+    // The app's scripts are in docs/; index.html only sets APP_BUILD (a global const, like in the browser).
     vm.runInContext(html.match(/<script>(const APP_BUILD = \d+;)<\/script>/)[1], ctx, { filename: 'index.html' });
     vm.runInContext(fs.readFileSync(path.join(DOCS, 'balances.js'), 'utf8'), ctx, { filename: 'balances.js' });
     // In index.html's order: Cash Flow (lifeadmin.js) uses Pay (pay.js).
     vm.runInContext(fs.readFileSync(path.join(DOCS, 'pay.js'), 'utf8'), ctx, { filename: 'pay.js' });
     vm.runInContext(fs.readFileSync(path.join(DOCS, 'lifeadmin.js'), 'utf8'), ctx, { filename: 'lifeadmin.js' });
-    // The app's script is one try { } block, so its consts and async functions live in that block. A lookup added at the
-    // top of the block reaches them for the tests.
-    if (!/^\s*try\{/.test(main)) throw new Error('app.js no longer starts with try{; update tests/load.cjs');
-    vm.runInContext(main.replace(/^\s*try\{/, 'try{ globalThis.__lookup = n => eval(n);'), ctx, { filename: 'app.js' });
+    // The app is app.js plus settings.js and markets.js, loaded in index.html's order. Their consts are global lexical
+    // bindings, which are not properties of the context: a lookup defined first reaches them for the tests.
+    vm.runInContext('globalThis.__lookup = n => eval(n);', ctx, { filename: 'load.cjs' });
+    for (const f of ['app.js', 'settings.js', 'markets.js']) {
+        vm.runInContext(fs.readFileSync(path.join(DOCS, f), 'utf8'), ctx, { filename: f });
+    }
     const app = new Proxy(ctx, { get: (t, name) => (name in t || typeof name !== 'string' ? t[name] : t.__lookup(name)) });
     return { app, estate: ctx.__balancesInternals, lifeAdmin: ctx.__lifeAdminInternals, pay: ctx.__payInternals, ctx };
 }

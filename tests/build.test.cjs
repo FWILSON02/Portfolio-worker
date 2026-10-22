@@ -17,7 +17,10 @@ test('APP_BUILD is this pull request\'s number', { skip: !pr && 'not a pull requ
     assert.equal(build, +pr[1], 'bump APP_BUILD in docs/index.html to ' + (pr && pr[1]));
 });
 
-// app.js is cached by the phone like the other files; its ?v= moves with APP_BUILD so a new index.html never runs an old app.js.
-test('app.js is loaded with ?v= set to APP_BUILD', () => {
-    assert.equal(+(html.match(/<script src="app\.js\?v=(\d+)"><\/script>/) || [])[1], build, 'set <script src="app.js?v=' + build + '"> in docs/index.html');
-});
+// The app's own files are cached by the phone like the others; their ?v= moves with APP_BUILD so a new index.html never runs an old one.
+for (const f of ['app', 'settings', 'markets']) {
+    test(f + '.js is loaded with ?v= set to APP_BUILD', () => {
+        const m = html.match(new RegExp('<script src="' + f + '\\.js\\?v=(\\d+)"></script>'));
+        assert.equal(+(m || [])[1], build, 'set <script src="' + f + '.js?v=' + build + '"> in docs/index.html');
+    });
+}
