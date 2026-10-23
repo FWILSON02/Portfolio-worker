@@ -1451,7 +1451,6 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
     const bubbleIdx = scrubIdx != null ? scrubIdx : (stickyIdx != null && stickyIdx < data.length ? stickyIdx : null);
     const scrubPt = bubbleIdx != null ? data[bubbleIdx] : null;
     const scrubV  = scrubPt ? lineV(bubbleIdx) : null;
-    const scrubRaw = scrubPt ? scrubPt.rawValue : null;
     const scrubX  = bubbleIdx != null && data.length > 1 ? xP(bubbleIdx) : null;
     const scrubY  = scrubV != null ? yP(scrubV) : null;
 
@@ -1505,20 +1504,17 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
         }
     }
 
-    // Compute displayed delta (from period start or scrub vs period start)
-    const displayV = scrubIdx != null ? scrubV : lastV;
-    const displayDelta = firstV > 0 && displayV != null ? (displayV - firstV) / firstV : null;
-    const displayAbs0  = displayV != null && firstV != null ? displayV - firstV : null;
-    // While pressing in "vs last press", the chip (like the pop-out) shows the compared range's move, not the window's
-    // (the holding's, when one is drawn).
+    // The chip's move. While the table is open it covers the table's range (window start or the compared day -> the focus
+    // day), also after the finger lifts, so it always agrees with the table's Portfolio figure. Otherwise it is window start
+    // -> the pressed day while pressing, else the whole window. Read off the drawn line (the holding's, when one is drawn).
+    const _rangeOn = tableOpen && hasData && focusIdx != null && hiIdx > loIdx && lineV(loIdx) != null && lineV(hiIdx) != null;
+    const chipFrom = _rangeOn ? lineV(loIdx) : firstV;
+    const chipTo   = _rangeOn ? lineV(hiIdx) : (scrubIdx != null ? scrubV : lastV);
+    const displayDeltaShown = chipFrom > 0 && chipTo != null ? (chipTo - chipFrom) / chipFrom : null;
+    const displayAbs = chipTo != null && chipFrom != null ? chipTo - chipFrom : null;
+    // The pop-out's move in "vs last press": the compared range (the holding's, when one is drawn).
     const segOf = vals => (segActive && vals[loIdx] > 0 && vals[hiIdx] > 0) ? vals[hiIdx] / vals[loIdx] - 1 : null;
-    // In £ the table's total is pounds: the chip shows that move and its % of the value on the earlier day.
-    const _segBase = gbp && tableContrib && data[loIdx] ? data[loIdx][yKey] : null;
-    const segDelta = showHold ? segOf(holdVals)
-        : !tableContrib ? null : !gbp ? tableContrib.total : (_segBase > 0 ? tableContrib.total / _segBase : null);
-    const _segShown = scrubIdx != null && segActive && tableContrib && segDelta != null;
-    const displayDeltaShown = _segShown ? segDelta : displayDelta;
-    const displayAbs = _segShown && gbp ? tableContrib.total : displayAbs0;
+    const segDelta = showHold ? segOf(holdVals) : (tableContrib && !gbp ? tableContrib.total : null);
     const shortTk = tk => (tk.length > 9 ? tk.slice(0, 8) + '\u2026' : tk);
 
     function hitTest(clientX, clientY) {
@@ -1643,8 +1639,9 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
                 fmtRangeDate(T.startDate) + ' → ' + fmtRangeDate(T.endDate) + (spanTxt ? ' (' + spanTxt + ')' : '')),
             // Grey while a holding is drawn instead of the portfolio; tapping it brings the portfolio line back.
             gcell('pl', 2, 1, { fontFamily: mono, fontSize: 12, fontWeight: 700, color: showHold ? C.zinc600 : lineCol }, 'Portfolio'),
-            gcell('pv', 3, 1, { fontFamily: mono, fontSize: 12, fontWeight: 700, color: showHold ? C.zinc600 : lineCol, textAlign: 'right',
-                fontVariantNumeric: 'tabular-nums' }, gbp ? fmtGbpN(T.total) : fmtPctN(T.total, 2)),
+            React.createElement('span', { key: 'pv', 'data-range-total': '', style: { gridColumn: 3, gridRow: 1, whiteSpace: 'nowrap',
+                fontFamily: mono, fontSize: 12, fontWeight: 700, color: showHold ? C.zinc600 : lineCol, textAlign: 'right',
+                fontVariantNumeric: 'tabular-nums' } }, gbp ? fmtGbpN(T.total) : fmtPctN(T.total, 2)),
             showHold ? React.createElement('button', { key: 'pback', onClick: () => setSel([]), 'aria-label': 'Show the portfolio line',
                 style: { gridColumn: '2 / span 2', gridRow: 1, alignSelf: 'stretch', margin: '-8px -4px', padding: 0, border: 'none',
                          background: 'transparent', cursor: 'pointer' } }) : null,
@@ -1992,7 +1989,7 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
                                 }
 
                                 // Original layout: value (top) + date (bottom)
-                                const _valStr = fmtChartVal(scrubRaw != null && mode === 'value' ? scrubRaw : _portIdx);
+                                const _valStr = fmtChartVal(mode === 'twr' ? _portIdx : scrubV);
                                 return React.createElement('g', null,
                                     React.createElement('rect', {
                                         x: bx, y: by, width: bW, height: bH,
@@ -2018,6 +2015,7 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
             // Period return chip (top-right overlay). Left out while several holdings are drawn: one figure could not say
             // which line it belongs to (the table's Held return and the pop-out give each one's).
             hasData && extraLines.length === 0 && React.createElement('div', {
+                'data-chart-move': '',
                 style: {
                     position: 'absolute', top: 2, right: 0,
                     fontFamily: sys, fontSize: 13, fontWeight: 700,
