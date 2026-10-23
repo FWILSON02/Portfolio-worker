@@ -120,6 +120,32 @@ test('every screen renders with data, with no errors', { skip: !playwright && 'P
     // Investments: the account's holdings sheet.
     await tab('Investments');
     assert.ok((await page.locator('body').innerText()).includes('SPXT'), 'the chart should name its benchmark SPXT');
+
+    // The £ chart's move (top right) is the table's range, also after the press ends: From start, then Custom. Each press
+    // ends with the mouse off the chart, as a lifted finger would be (a mouse still over the chart keeps scrubbing).
+    await page.getByRole('button', { name: '£', exact: true }).click();
+    await settle();
+    await page.getByRole('button', { name: 'Analyse' }).click();
+    await settle();
+    const chart = await page.locator('.chart-noselect').boundingBox();
+    const press = async fx => { await page.mouse.move(chart.x + chart.width * fx, chart.y + chart.height / 2); await page.mouse.down(); await page.mouse.up(); await page.mouse.move(chart.x + chart.width / 2, chart.y - 40); await settle(400); };
+    const moves = async () => {
+        const pounds = s => (s.match(/[+−-]£[\d,]+/) || [''])[0].replace('−', '-');
+        return [pounds(await page.locator('[data-chart-move]').innerText()), pounds(await page.locator('[data-range-total]').innerText())];
+    };
+    await press(0.3);
+    await press(0.8);
+    await check('£ chart, two days pressed');
+    let [chip, table] = await moves();
+    assert.ok(table, 'the £ table should show a total');
+    assert.equal(chip, table, 'From start: the chart\'s move should be the table\'s');
+    await page.getByRole('button', { name: 'Custom' }).click();
+    await settle();
+    [chip, table] = await moves();
+    assert.equal(chip, table, 'Custom: the chart\'s move should be the table\'s after the press ends');
+    await page.getByRole('button', { name: 'Hide contributors' }).click();
+    await page.getByRole('button', { name: '%', exact: true }).click();
+    await settle();
     await page.getByText('ISA', { exact: true }).first().click();
     await settle(1000); await check('holdings sheet');
     await page.getByRole('button', { name: 'Close' }).first().click();
