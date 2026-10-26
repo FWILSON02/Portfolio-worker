@@ -181,3 +181,35 @@ test('the exchange holiday calendars cover next year from December', () => {
     const missing = Object.keys(calendars).filter(k => calendars[k].holidays && !calendars[k].years.includes(need));
     assert.deepEqual(missing, [], 'add ' + need + '\'s holidays to EXCHANGE_CALENDARS in docs/providers.js');
 });
+
+// ── Gilt closes (giltsyield.com snapshots) ──
+// Times in UTC; London is UTC+0 from 25 Oct 2026. Fri 23 Oct 2026 is BST (UTC+1).
+test('gilt closes: a stored close is never replaced by a later weekend or pre-open fetch', () => {
+    const at = iso => Date.parse(iso);
+    let c = { v: 1, snaps: {}, meta: {} };
+    c = app.gyRecordSnapshots(c, { TX30: { dirty: 84.10 } }, at('2026-10-23T16:00:00Z'));   // Fri 17:00 BST: Friday's close
+    c = app.gyRecordSnapshots(c, { TX30: { dirty: 84.10 } }, at('2026-10-24T10:00:00Z'));   // Saturday: same session, kept
+    c = app.gyRecordSnapshots(c, { TX30: { dirty: 84.02 } }, at('2026-10-26T07:30:00Z'));   // Mon 07:30: Monday's early price
+    c = app.gyRecordSnapshots(c, { TX30: { dirty: 84.00 } }, at('2026-10-26T15:10:00Z'));   // Mon intraday
+    assert.equal(c.snaps.TX30['2026-10-23'].dirty, 84.10);
+    assert.equal(c.snaps.TX30['2026-10-23'].t, at('2026-10-23T16:00:00Z'));
+    const mk = app.gyMarketFor(c, 'TX30', at('2026-10-26T15:16:00Z'));
+    assert.equal(mk.session, '2026-10-26');
+    assert.equal(mk.dirty, 84.00);
+    assert.equal(mk.prevCloseDirty, 84.10);
+});
+
+test('gilt closes: a pre-open fetch still fills a missing close, and replaces an intraday price', () => {
+    const at = iso => Date.parse(iso);
+    let c = app.gyRecordSnapshots({ v: 1, snaps: {}, meta: {} }, { TX30: { dirty: 84.05 } }, at('2026-10-23T13:00:00Z'));   // Fri intraday
+    assert.equal(c.snaps.TX30['2026-10-23'].final, false);
+    c = app.gyRecordSnapshots(c, { TX30: { dirty: 84.10 } }, at('2026-10-26T07:30:00Z'));
+    assert.equal(c.snaps.TX30['2026-10-23'].dirty, 84.10);
+    assert.equal(c.snaps.TX30['2026-10-23'].final, true);
+});
+
+test('gilt closes: restoring a backup keeps the first close stored for a session', () => {
+    const first = { dirty: 84.10, t: 1000, final: true }, later = { dirty: 84.02, t: 2000, final: true };
+    assert.equal(app.mergeGiltSnapshots({ snaps: { TX30: { '2026-10-23': first } } }, { TX30: { '2026-10-23': later } }).snaps.TX30['2026-10-23'].dirty, 84.10);
+    assert.equal(app.mergeGiltSnapshots({ snaps: { TX30: { '2026-10-23': later } } }, { TX30: { '2026-10-23': first } }).snaps.TX30['2026-10-23'].dirty, 84.10);
+});

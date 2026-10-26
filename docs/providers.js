@@ -321,6 +321,8 @@ function _gyLondon(ms) {
 // Which London trading session a price belongs to, and whether it is that session's final price. A weekend fetch is
 // Friday's close; a weekday fetch before 08:00 is the previous weekday's close; a weekday fetch from 16:45 is today's
 // close; anything in between is intraday. (UK bank holidays are not modelled: the check below is simply conservative.)
+// A pre-08:00 fetch is only a stand-in for a close: giltsyield.com can already carry the new day's early prices by then,
+// so gyRecordSnapshots never lets one replace a close that is already stored.
 function gySessionOf(ms) {
     const p = _gyLondon(ms), dow = _gyDow(p.date);
     let d = p.date;
@@ -342,6 +344,9 @@ function gyRecordSnapshots(cache, accepted, ms) {
     const s = gySessionOf(ms);
     for (const [tk, a] of Object.entries(accepted || {})) {
         const byS = Object.assign({}, c.snaps[tk] || {});
+        // A stored close is never replaced. A weekend or pre-08:00 fetch is labelled as that close too, so otherwise a Monday
+        // 07:30 fetch could overwrite Friday's close with Monday's early price and Monday's move would read as nil all day.
+        if (byS[s.session] && byS[s.session].final) continue;
         byS[s.session] = { dirty: a.dirty, t: ms, final: s.final, isin: a.isin || null, maturity: a.maturity || null, coupon: Number.isFinite(a.coupon) ? a.coupon : null };
         const keys = Object.keys(byS).sort();
         while (keys.length > GY_KEEP_SESSIONS) delete byS[keys.shift()];
@@ -404,7 +409,8 @@ function mergeGiltSnapshots(cache, incomingSnaps) {
             if (!cur) { byS[sess] = e; continue; }
             if (cur.final && !e.final) continue;                      // a stored close beats a not-yet-final price
             if (e.final && !cur.final) { byS[sess] = e; continue; }
-            if (e.t > cur.t) byS[sess] = e;                           // otherwise the later fetch wins
+            if (e.final) { if (e.t < cur.t) byS[sess] = e; continue; } // two closes: the first one stored stands (see gyRecordSnapshots)
+            if (e.t > cur.t) byS[sess] = e;                           // two intraday prices: the later fetch wins
         }
         const keys = Object.keys(byS).sort();
         while (keys.length > GY_KEEP_SESSIONS) delete byS[keys.shift()];
