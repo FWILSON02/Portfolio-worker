@@ -2921,7 +2921,9 @@ function PortfolioApp() {
             const dir = swipeDirRef.current;
             swipeDirRef.current = 0;
             const el = dir && document.querySelector('[data-tab-screen="' + activeTab + '"]');
-            if (el && el.animate) el.animate([{ transform: 'translateX(' + (dir * 28) + '%)', opacity: 0.3 }, { transform: 'none', opacity: 1 }],
+            // A slide only, in whole pixels: a fade (opacity) or a fractional offset makes iPhone Safari draw the screen's
+            // first view soft, and it stays soft at the top until scrolled.
+            if (el && el.animate) el.animate([{ transform: 'translateX(' + Math.round(dir * 0.28 * window.innerWidth) + 'px)' }, { transform: 'none' }],
                                               { duration: 320, easing: 'cubic-bezier(0.22, 0.8, 0.3, 1)' });
         }, [activeTab]);
         React.useEffect(() => {
@@ -2952,32 +2954,6 @@ function PortfolioApp() {
         const showBalances = activeTab === 'estate' && hasBalances;
         const hasLifeAdmin = typeof window.LifeAdminScreen === 'function';
         const showLifeAdmin = activeTab === 'lifeadmin' && hasLifeAdmin;
-        // The tab list scrolls sideways; fades mark an edge with more tabs past it, and the open tab is kept in view.
-        const tabListRef = React.useRef(null);
-        const [tabFade, setTabFade] = React.useState({ l: false, r: false });
-        const updateTabFade = React.useCallback(() => {
-            const el = tabListRef.current;
-            if (!el) return;
-            const l = el.scrollLeft > 2, r = el.scrollLeft + el.clientWidth < el.scrollWidth - 2;
-            setTabFade(f => (f.l === l && f.r === r ? f : { l, r }));
-        }, []);
-        const tabFadeMask = tabFade.l || tabFade.r
-            ? 'linear-gradient(to right, ' + (tabFade.l ? 'transparent 0, #000 22px' : '#000 0') + ', ' + (tabFade.r ? '#000 calc(100% - 22px), transparent 100%' : '#000 100%') + ')'
-            : 'none';
-        React.useLayoutEffect(() => {
-            const el = tabListRef.current;
-            const tab = el && el.querySelector('[data-tab-id="' + activeTab + '"]');
-            if (tab) {
-                const pad = 24, left = tab.offsetLeft, right = left + tab.offsetWidth;
-                const to = left - pad < el.scrollLeft ? left - pad : right + pad > el.scrollLeft + el.clientWidth ? right + pad - el.clientWidth : null;
-                if (to != null) el.scrollTo({ left: Math.max(0, to), behavior: 'smooth' });
-            }
-            updateTabFade();
-        }, [activeTab, updateTabFade]);
-        React.useEffect(() => {
-            window.addEventListener('resize', updateTabFade);
-            return () => window.removeEventListener('resize', updateTabFade);
-        }, [updateTabFade]);
         // The tab bar's height, published as --topbar-h so the Estate and Cash Flow screens open below it.
         const topBarRef = React.useRef(null);
         React.useLayoutEffect(() => {
@@ -3783,12 +3759,10 @@ function PortfolioApp() {
                 style: { position: 'sticky', top: 0, zIndex: 60, background: C.surface, borderBottom: '1px solid ' + C.border,
                          paddingLeft: 12, paddingRight: 14, display: 'flex', alignItems: 'flex-end', gap: 6, flexShrink: 0 }
             },
-                // The tabs scroll sideways when they don't all fit (Fergus asked, when Pay made five); the edge that hides
-                // more tabs fades out. The bar sits 1px over the border below so the open tab joins its screen.
-                React.createElement('div', { role: 'tablist', ref: tabListRef, className: 'tab-scroll', onScroll: updateTabFade,
-                    style: { position: 'relative', display: 'flex', alignItems: 'flex-end', gap: 2, minWidth: 0, flex: '1 1 auto', marginBottom: -1,
-                             overflowX: 'auto', overflowY: 'hidden', overscrollBehaviorX: 'contain', WebkitOverflowScrolling: 'touch',
-                             WebkitMaskImage: tabFadeMask, maskImage: tabFadeMask } },
+                // A plain row, not a sideways scroller: three tabs fit, and on iOS a scrolling (and, at an edge, masked)
+                // layer drew the tab labels soft. The bar sits 1px over the border below so the open tab joins its screen.
+                React.createElement('div', { role: 'tablist',
+                    style: { display: 'flex', alignItems: 'flex-end', gap: 2, minWidth: 0, flex: '1 1 auto', marginBottom: -1 } },
                     [
                         { id: 'investments', label: 'Investments', color: C.amber,
                           icon: React.createElement(TrendingUp, { style: { width: 13, height: 13, flexShrink: 0 }, strokeWidth: 2 }) },
@@ -3802,7 +3776,7 @@ function PortfolioApp() {
                             key: t.id, role: 'tab', 'aria-selected': on, 'aria-label': t.label, 'data-tab-id': t.id,
                             onClick: () => tapTab(t.id),
                             style: {
-                                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, flex: '0 0 auto',
+                                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, flex: '0 1 auto', minWidth: 0,
                                 height: 36, padding: '0 9px',
                                 // The active tab takes the page colour and drops its bottom edge, so it joins the screen below.
                                 background: on ? C.bg : 'transparent',
@@ -3811,7 +3785,7 @@ function PortfolioApp() {
                                 color: on ? t.color : C.zinc600, fontFamily: sys, fontSize: 12.5, fontWeight: on ? 650 : 500,
                                 letterSpacing: '0.01em', whiteSpace: 'nowrap', overflow: 'hidden',
                             }
-                        }, t.icon, React.createElement('span', null, t.label));
+                        }, t.icon, React.createElement('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis' } }, t.label));
                     })
                 ),
                 React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 0, flexShrink: 0, marginRight: -7, height: 36 } },
