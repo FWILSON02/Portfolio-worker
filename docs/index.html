@@ -51,7 +51,11 @@
         @keyframes settings-slide-in { from { transform: translateX(100%); } to { transform: translateX(0); } }
         @keyframes settings-fade-in { from { opacity: 0; } to { opacity: 1; } }
         .settings-slide { animation: settings-slide-in 220ms cubic-bezier(0.16, 1, 0.3, 1); }
-        .safe-top { padding-top: max(env(safe-area-inset-top), 12px); }
+        /* Since iOS 27 a Home Screen app gets a system blur over the status bar and a band below it, which no page setting
+           turns off. The top headers start that much lower there, so their text sits below the blur. */
+        :root { --top-clear: 0px; }
+        @media (display-mode: standalone) { :root { --top-clear: 28px; } }
+        .safe-top { padding-top: calc(max(env(safe-area-inset-top), 12px) + var(--top-clear)); }
         .safe-bottom-nav { padding-bottom: max(env(safe-area-inset-bottom), 16px); }
         .safe-bottom-modal { padding-bottom: max(env(safe-area-inset-bottom), 12px); }
         * { -webkit-overflow-scrolling: touch; }
@@ -156,22 +160,12 @@
         }
         /* 3. Div/span overlays need cursor:pointer so iOS fires the onClick       */
         .ios-tap-backdrop { cursor: pointer; }
-        /* iOS 26/27 Home Screen apps: the system draws a blur over the top of the screen, which put the tab bar under it.
-           A page cannot turn it off; a fixed strip painted at the very top edge, outside the app's own fixed root, stops
-           iOS drawing it (found on an iOS 27 iPhone: tips.ojapp.app/en/ios-27-pwa-top-blur-workaround-2). The strip is the
-           tab bar's colour, so it is not seen. */
-        .top-edge { display: none; }
-        @media (display-mode: standalone) {
-          .top-edge { display: block; position: fixed; top: 0; left: 0; right: 0; height: 11px; z-index: 10001;
-                      background: #0d1218; pointer-events: none; }
-        }
       
   </style>
 </head>
 <body class="dark">
 <div id="_err" style="display:none;position:fixed;inset:0;background:#1a0000;color:#ff6b6b;font-family:monospace;font-size:13px;padding:24px;z-index:9999;white-space:pre-wrap;overflow:auto"></div>
 <div id="root"></div>
-<div class="top-edge" aria-hidden="true"></div>
 <script crossorigin="anonymous" src="https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js" integrity="sha384-DGyLxAyjq0f9SPpVevD6IgztCFlnMF6oW/XQGmfe+IsZ8TqEiDrcHkMLKI6fiB/Z"></script>
 <script crossorigin="anonymous" src="https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js" integrity="sha384-gTGxhz21lVGYNMcdJOyq01Edg0jhn/c22nsx0kyqP0TxaV5WVdsSH1fSDUf5YJj1"></script>
 <script crossorigin="anonymous" src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" integrity="sha384-vtjasyidUo0kW94K5MXDXntzOJpQgBKXmE7e2Ga4LG0skTTLeBi97eFAXsqewJjw"></script>
@@ -254,17 +248,17 @@ window.HelpCircle=_li([{t:'c',cx:12,cy:12,r:10},'M9.09 9a3 3 0 0 1 5.83 1c0 2-3 
 <!-- The app's scripts are core.js, providers.js, sync.js, widgets.js, components.js, performance.js, holdings.js, app.js, settings.js and markets.js (no module system: they share globals, in this order). APP_BUILD is the pull request that last changed the app: Settings → App shows it,
      Reload app compares it with the server's, and CI (tests/build.test.cjs) checks it is this PR's number. Bump it in every PR,
      and the ?v= of those ten with it, so the Home Screen app never runs a cached app.js against a newer index.html. -->
-<script>const APP_BUILD = 124;</script>
-<script src="core.js?v=124"></script>
-<script src="providers.js?v=124"></script>
-<script src="sync.js?v=124"></script>
-<script src="widgets.js?v=124"></script>
-<script src="components.js?v=124"></script>
-<script src="performance.js?v=124"></script>
-<script src="holdings.js?v=124"></script>
-<script src="app.js?v=124"></script>
-<script src="settings.js?v=124"></script>
-<script src="markets.js?v=124"></script>
+<script>const APP_BUILD = 125;</script>
+<script src="core.js?v=125"></script>
+<script src="providers.js?v=125"></script>
+<script src="sync.js?v=125"></script>
+<script src="widgets.js?v=125"></script>
+<script src="components.js?v=125"></script>
+<script src="performance.js?v=125"></script>
+<script src="holdings.js?v=125"></script>
+<script src="app.js?v=125"></script>
+<script src="settings.js?v=125"></script>
+<script src="markets.js?v=125"></script>
 <script>
 class ErrorBoundary extends React.Component {
     constructor(props) { 
