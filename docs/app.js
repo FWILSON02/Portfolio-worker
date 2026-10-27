@@ -3421,7 +3421,7 @@ function PortfolioApp() {
             @keyframes sheet-up { from { transform: translateY(100%); } to { transform: translateY(0); } }
             .sheet-up { animation: sheet-up 420ms cubic-bezier(0.22, 1, 0.36, 1); }
             .ios-scroll { overflow-y: auto; -webkit-overflow-scrolling: touch; scroll-behavior: smooth; overscroll-behavior-y: contain; }
-            .safe-top { padding-top: max(env(safe-area-inset-top), 12px); }
+            .safe-top { padding-top: calc(max(env(safe-area-inset-top), 12px) + var(--top-clear, 0px)); }
             .safe-bottom { padding-bottom: max(env(safe-area-inset-bottom), 8px); }
             .ticker-sheet { border-radius: 20px 20px 0 0; animation: sheet-up 420ms cubic-bezier(0.22, 1, 0.36, 1); }
             .settings-sheet { border-radius: 20px 20px 0 0; animation: sheet-up 420ms cubic-bezier(0.22, 1, 0.36, 1); }
@@ -3765,9 +3765,9 @@ function PortfolioApp() {
             style: { position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column' }
         },
             // ── Tab bar — stays at the top on every tab, like browser tabs: Investments / Estate / Cash Flow, then
-            // privacy and settings. Fixed, full width and opaque from the very top of the screen: iOS 26 blurs the strip under
-            // the status bar unless a fixed bar like this sits there (a sticky bar inside this scroller didn't count, so the
-            // tabs were drawn blurred). The Investments content and the Estate and Cash Flow screens start below it (--topbar-h).
+            // privacy and settings. Fixed to the top of the screen; safe-top keeps the tabs below the status bar and, in the
+            // Home Screen app, below iOS's blur under it. The Investments content and the Estate and Cash Flow screens start
+            // below it (--topbar-h).
             React.createElement('div', {
                 ref: topBarRef,
                 className: 'safe-top',
