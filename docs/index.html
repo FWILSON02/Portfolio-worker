@@ -11,6 +11,7 @@
   <link rel="icon" type="image/png" sizes="512x512" href="app-icon-512.png">
 
   <title>Portfolio Performance</title>
+  <script>try{if(navigator.standalone||matchMedia('(display-mode: standalone)').matches)document.documentElement.classList.add('standalone');}catch(e){}</script>
   <style>
     /* Charts you press and hold: stop iOS selecting text or showing the callout under the finger. */
     .chart-noselect, .chart-noselect * { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
@@ -52,9 +53,11 @@
         @keyframes settings-fade-in { from { opacity: 0; } to { opacity: 1; } }
         .settings-slide { animation: settings-slide-in 220ms cubic-bezier(0.16, 1, 0.3, 1); }
         /* Since iOS 27 a Home Screen app gets a system blur over the status bar and a band below it, which no page setting
-           turns off. The top headers start that much lower there, so their text sits below the blur. */
-        :root { --top-clear: 0px; }
-        @media (display-mode: standalone) { :root { --top-clear: 28px; } }
+           turns off. The top headers start that much lower there (html.standalone, set below), so their text sits below the
+           blur. --topbar-h is the tab bar's height (top padding + 36px row + 1px border), worked out here rather than
+           measured, so the Investments content and the Estate and Cash Flow screens always start exactly below it. */
+        :root { --top-clear: 0px; --topbar-h: calc(max(env(safe-area-inset-top), 12px) + var(--top-clear) + 37px); }
+        html.standalone { --top-clear: 28px; }
         .safe-top { padding-top: calc(max(env(safe-area-inset-top), 12px) + var(--top-clear)); }
         .safe-bottom-nav { padding-bottom: max(env(safe-area-inset-bottom), 16px); }
         .safe-bottom-modal { padding-bottom: max(env(safe-area-inset-bottom), 12px); }
@@ -248,17 +251,17 @@ window.HelpCircle=_li([{t:'c',cx:12,cy:12,r:10},'M9.09 9a3 3 0 0 1 5.83 1c0 2-3 
 <!-- The app's scripts are core.js, providers.js, sync.js, widgets.js, components.js, performance.js, holdings.js, app.js, settings.js and markets.js (no module system: they share globals, in this order). APP_BUILD is the pull request that last changed the app: Settings → App shows it,
      Reload app compares it with the server's, and CI (tests/build.test.cjs) checks it is this PR's number. Bump it in every PR,
      and the ?v= of those ten with it, so the Home Screen app never runs a cached app.js against a newer index.html. -->
-<script>const APP_BUILD = 125;</script>
-<script src="core.js?v=125"></script>
-<script src="providers.js?v=125"></script>
-<script src="sync.js?v=125"></script>
-<script src="widgets.js?v=125"></script>
-<script src="components.js?v=125"></script>
-<script src="performance.js?v=125"></script>
-<script src="holdings.js?v=125"></script>
-<script src="app.js?v=125"></script>
-<script src="settings.js?v=125"></script>
-<script src="markets.js?v=125"></script>
+<script>const APP_BUILD = 126;</script>
+<script src="core.js?v=126"></script>
+<script src="providers.js?v=126"></script>
+<script src="sync.js?v=126"></script>
+<script src="widgets.js?v=126"></script>
+<script src="components.js?v=126"></script>
+<script src="performance.js?v=126"></script>
+<script src="holdings.js?v=126"></script>
+<script src="app.js?v=126"></script>
+<script src="settings.js?v=126"></script>
+<script src="markets.js?v=126"></script>
 <script>
 class ErrorBoundary extends React.Component {
     constructor(props) { 
