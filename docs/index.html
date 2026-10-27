@@ -42,6 +42,10 @@
         .num-tabular { font-variant-numeric: tabular-nums; }
         @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
         .pulse-dot { animation: pulse-dot 2s ease-in-out infinite; }
+        /* Market Movers title when Markets data is live: a slow neon breathe. text-shadow only (no filter), so the text stays crisp. */
+        @keyframes markets-live-glow { 0%, 100% { text-shadow: 0 0 3px rgba(74,222,128,0.35); } 50% { text-shadow: 0 0 6px rgba(74,222,128,0.9), 0 0 14px rgba(74,222,128,0.45); } }
+        .markets-live-glow { animation: markets-live-glow 3.2s ease-in-out infinite; }
+        @media (prefers-reduced-motion: reduce) { .markets-live-glow { animation: none; text-shadow: 0 0 6px rgba(74,222,128,0.6); } }
         @keyframes spin { to { transform: rotate(360deg); } }
         .spinning { animation: spin 1s linear infinite; }
         @keyframes settings-slide-in { from { transform: translateX(100%); } to { transform: translateX(0); } }
@@ -240,17 +244,17 @@ window.HelpCircle=_li([{t:'c',cx:12,cy:12,r:10},'M9.09 9a3 3 0 0 1 5.83 1c0 2-3 
 <!-- The app's scripts are core.js, providers.js, sync.js, widgets.js, components.js, performance.js, holdings.js, app.js, settings.js and markets.js (no module system: they share globals, in this order). APP_BUILD is the pull request that last changed the app: Settings → App shows it,
      Reload app compares it with the server's, and CI (tests/build.test.cjs) checks it is this PR's number. Bump it in every PR,
      and the ?v= of those ten with it, so the Home Screen app never runs a cached app.js against a newer index.html. -->
-<script>const APP_BUILD = 122;</script>
-<script src="core.js?v=122"></script>
-<script src="providers.js?v=122"></script>
-<script src="sync.js?v=122"></script>
-<script src="widgets.js?v=122"></script>
-<script src="components.js?v=122"></script>
-<script src="performance.js?v=122"></script>
-<script src="holdings.js?v=122"></script>
-<script src="app.js?v=122"></script>
-<script src="settings.js?v=122"></script>
-<script src="markets.js?v=122"></script>
+<script>const APP_BUILD = 121;</script>
+<script src="core.js?v=121"></script>
+<script src="providers.js?v=121"></script>
+<script src="sync.js?v=121"></script>
+<script src="widgets.js?v=121"></script>
+<script src="components.js?v=121"></script>
+<script src="performance.js?v=121"></script>
+<script src="holdings.js?v=121"></script>
+<script src="app.js?v=121"></script>
+<script src="settings.js?v=121"></script>
+<script src="markets.js?v=121"></script>
 <script>
 class ErrorBoundary extends React.Component {
     constructor(props) { 

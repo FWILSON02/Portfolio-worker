@@ -3140,6 +3140,19 @@ function PortfolioApp() {
             return function() { clearInterval(timer); };
         }, [showMarketOverview, refreshMarketOverview]);
 
+        // Market Movers title glows green while Markets data is fresh and ready to open (Fergus, 2026-10-27):
+        // a finished refresh (ok or partial) newer than the prefetch staleness window. Loading, failed, offline
+        // or stale data gets no glow; the timeout re-renders when the data ages out of the window.
+        const [, setMarketsLiveTick] = React.useState(0);
+        const marketsLive = (marketStatus === 'ok' || marketStatus === 'partial') && marketAt != null
+                            && (Date.now() - marketAt) < MARKET_PREFETCH_STALE_MS;
+        React.useEffect(function() {
+            if (!marketsLive) return;
+            var t = setTimeout(function() { setMarketsLiveTick(function(n) { return n + 1; }); },
+                               MARKET_PREFETCH_STALE_MS - (Date.now() - marketAt) + 50);
+            return function() { clearTimeout(t); };
+        }, [marketsLive, marketAt]);
+
         // ── Background prefetch ──────────────────────────────────────────────
         // Refresh Markets as the app opens (and when it returns to the foreground), whether
         // or not the screen is ever visited, so it is ready when Market Movers is tapped.
@@ -3855,7 +3868,7 @@ function PortfolioApp() {
 
                 // ── Phase 3: Insights Panel (before accounts) ───────────────
                 transactions.length > 0 && insightsData && React.createElement(InsightsPanel, { data: insightsData, privacyMode, lastSpotRefreshAt,
-                                                                                  onOpenMarkets: () => setShowMarketOverview(true) }),
+                                                                                  marketsLive, onOpenMarkets: () => setShowMarketOverview(true) }),
 
                 // ── Phase 4: Account Cards Stack ────────────────────────────
                 transactions.length > 0 && accountGroups.length > 0 && React.createElement('div', {
