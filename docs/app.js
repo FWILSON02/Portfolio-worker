@@ -2921,7 +2921,9 @@ function PortfolioApp() {
             const dir = swipeDirRef.current;
             swipeDirRef.current = 0;
             const el = dir && document.querySelector('[data-tab-screen="' + activeTab + '"]');
-            if (el && el.animate) el.animate([{ transform: 'translateX(' + (dir * 28) + '%)', opacity: 0.3 }, { transform: 'none', opacity: 1 }],
+            // A slide only, in whole pixels: a fade (opacity) or a fractional offset makes iPhone Safari draw the screen's
+            // first view soft, and it stays soft at the top until scrolled.
+            if (el && el.animate) el.animate([{ transform: 'translateX(' + Math.round(dir * 0.28 * window.innerWidth) + 'px)' }, { transform: 'none' }],
                                               { duration: 320, easing: 'cubic-bezier(0.22, 0.8, 0.3, 1)' });
         }, [activeTab]);
         React.useEffect(() => {
