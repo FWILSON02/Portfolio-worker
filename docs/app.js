@@ -2954,17 +2954,6 @@ function PortfolioApp() {
         const showBalances = activeTab === 'estate' && hasBalances;
         const hasLifeAdmin = typeof window.LifeAdminScreen === 'function';
         const showLifeAdmin = activeTab === 'lifeadmin' && hasLifeAdmin;
-        // The tab bar's height, published as --topbar-h so the Estate and Cash Flow screens open below it.
-        const topBarRef = React.useRef(null);
-        React.useLayoutEffect(() => {
-            const el = topBarRef.current;
-            if (!el) return;
-            const publish = () => document.documentElement.style.setProperty('--topbar-h', el.offsetHeight + 'px');
-            publish();
-            const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(publish) : null;
-            if (ro) ro.observe(el);
-            return () => { if (ro) ro.disconnect(); };
-        }, []);
 
         // ── Pricing badge (main header) ──────────────────────────────────────
         // Same classification the Settings "Daily close check" grid uses (see
@@ -3769,9 +3758,9 @@ function PortfolioApp() {
             // Home Screen app, below iOS's blur under it. The Investments content and the Estate and Cash Flow screens start
             // below it (--topbar-h).
             React.createElement('div', {
-                ref: topBarRef,
                 className: 'safe-top',
-                style: { position: 'fixed', top: 0, left: 0, right: 0, zIndex: 60, background: C.surface, borderBottom: '1px solid ' + C.border,
+                // Its height is --topbar-h (index.html), the same value the screens below it start at.
+                style: { position: 'fixed', top: 0, left: 0, right: 0, height: 'var(--topbar-h)', zIndex: 60, background: C.surface, borderBottom: '1px solid ' + C.border,
                          paddingLeft: 12, paddingRight: 14, display: 'flex', alignItems: 'flex-end', gap: 6, flexShrink: 0 }
             },
                 // A plain row, not a sideways scroller: three tabs fit, and on iOS a scrolling (and, at an edge, masked)
