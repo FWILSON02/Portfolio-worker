@@ -3765,11 +3765,13 @@ function PortfolioApp() {
             style: { position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column' }
         },
             // ── Tab bar — stays at the top on every tab, like browser tabs: Investments / Estate / Cash Flow, then
-            // privacy and settings. Sticky over the Investments scroll; the Estate and Cash Flow screens open below it.
+            // privacy and settings. Fixed, full width and opaque from the very top of the screen: iOS 26 blurs the strip under
+            // the status bar unless a fixed bar like this sits there (a sticky bar inside this scroller didn't count, so the
+            // tabs were drawn blurred). The Investments content and the Estate and Cash Flow screens start below it (--topbar-h).
             React.createElement('div', {
                 ref: topBarRef,
                 className: 'safe-top',
-                style: { position: 'sticky', top: 0, zIndex: 60, background: C.surface, borderBottom: '1px solid ' + C.border,
+                style: { position: 'fixed', top: 0, left: 0, right: 0, zIndex: 60, background: C.surface, borderBottom: '1px solid ' + C.border,
                          paddingLeft: 12, paddingRight: 14, display: 'flex', alignItems: 'flex-end', gap: 6, flexShrink: 0 }
             },
                 // A plain row, not a sideways scroller: three tabs fit, and on iOS a scrolling (and, at an edge, masked)
@@ -3819,7 +3821,7 @@ function PortfolioApp() {
             // Scrollable content
             React.createElement('div', {
                 className: 'ios-scroll', 'data-tab-screen': 'investments',
-                style: { flex: 1, padding: '12px 16px 32px' }
+                style: { flex: 1, padding: 'calc(var(--topbar-h, 0px) + 12px) 16px 32px' }
             },
               React.createElement(TabBoundary, { name: 'Investments', resetKey: activeTab },
                 // Price feed health: first, above every other alert (Fergus: alerts go at the very top)
