@@ -159,22 +159,21 @@ function getMsApiKey()   { try { return (localStorage.getItem(MS_APIKEY_STORAGE)
 function setMsApiKey(k)  { try { localStorage.setItem(MS_APIKEY_STORAGE, String(k || '').trim()); } catch {} }
 
 // ── giltsyield.com: market prices for the gilt ladder ─────────────────────────────────────────────────────────
-// GET /api/portfolio/pl/<portfolio>/?apikey=KEY returns a CSV with one row per gilt booked in a (dummy) giltsyield
-// portfolio. `dirty_price` is the dirty price per £100 nominal (clean + accrued, T+1 settlement), so it does not depend
-// on the position size booked there. The file carries NO timestamp: the app dates each price itself (when it fetched it,
-// as a London trading session) and never uses one older than GY_MAX_AGE_MS. Anything implausible is rejected and the gilt is
-// left unpriced (there is no model estimate).
+// GET /api/bond/price/<TICKER>/<YYYY-MM-DD>/ (the endpoint giltsyield.com's own pricer uses) returns one gilt's price for a
+// trade date as JSON: `dirty_price` per £100 nominal (clean + accrued, T+1 settlement), the gilt's ISIN, maturity and coupon,
+// and `updated_at`, the London time of the market data behind it. giltsyield.com publishes about one price a day, at no fixed
+// time, so the price for today is often still yesterday's: when there is none yet for a date the reply carries the latest
+// earlier one, with an older `updated_at`. The app therefore dates every price by `updated_at`, never by when it fetched it
+// (fetch-time dating showed a stale price as today's, so Today read +£0; Oct 2026). Anything implausible is rejected and the
+// gilt is left unpriced (there is no model estimate).
 const GY_APIKEY_STORAGE    = 'giltsyield_api_key';
-const GY_PORTFOLIO_STORAGE = 'giltsyield_portfolio';
 const GY_CACHE_KEY         = 'giltsyield_snapshots_v1';
 const GY_MIN_INTERVAL_MS   = 10 * 60 * 1000;          // automatic fetches are at least this far apart
-const GY_MAX_AGE_MS        = 4 * 24 * 3600 * 1000;    // a stored price older than this is not used (long weekend + a day)
+const GY_MAX_AGE_MS        = 4 * 24 * 3600 * 1000;    // a price from a session older than this is not used (long weekend + a day)
 const GY_DIRTY_MIN = 50, GY_DIRTY_MAX = 130;          // per £100 nominal; outside this is not a gilt price
 const GY_KEEP_SESSIONS = 12;
 function getGyApiKey()     { try { return (localStorage.getItem(GY_APIKEY_STORAGE) || '').trim(); } catch { return ''; } }
 function setGyApiKey(k)    { try { localStorage.setItem(GY_APIKEY_STORAGE, String(k || '').trim()); } catch {} }
-function getGyPortfolio()  { try { return (localStorage.getItem(GY_PORTFOLIO_STORAGE) || '').trim() || 'Ferg'; } catch { return 'Ferg'; } }
-function setGyPortfolio(p) { try { localStorage.setItem(GY_PORTFOLIO_STORAGE, String(p || '').trim()); } catch {} }
 
 // ── Secrets file import (Settings → Data → Import Secrets File): API keys, backup token and passphrase, login hints ───────────────────────────────────────────────────────────
 // A small CSV — setting,value — filled in once, privately, and loaded in one go instead of pasting each key into its field.
@@ -190,8 +189,6 @@ const API_KEY_SETTINGS = [
       get: () => getMsApiKey(), apply: v => setMsApiKey(v) },
     { id: 'gy',  name: 'giltsyield_api_key',    label: 'giltsyield.com API key',   short: 'giltsyield',    kind: 'key',  aliases: ['giltsyield', 'giltsyieldkey'],
       get: () => getGyApiKey(), apply: v => setGyApiKey(v) },
-    { id: 'gyp', name: 'giltsyield_portfolio',  label: 'giltsyield portfolio name', short: 'giltsyield portfolio', kind: 'text', aliases: ['giltsyieldportfolioname'],
-      get: () => getGyPortfolio(), apply: v => setGyPortfolio(v) },
     { id: 'wk',  name: 'cloudflare_worker_url', label: 'Cloudflare Worker URL',    short: 'Worker URL',    kind: 'url',  aliases: ['workerurl', 'cloudflareworker'],
       get: () => getWorkerUrl(), apply: v => setWorkerUrl(v) },
     // Cloud backup (see runCloudBackup). The passphrase may have spaces, so it gets its own check.
@@ -200,6 +197,8 @@ const API_KEY_SETTINGS = [
     { id: 'cbp', name: 'cloud_backup_passphrase', label: 'Cloud backup passphrase', short: 'Backup passphrase', kind: 'pass', aliases: ['backuppassphrase'],
       get: () => getCloudBackupPass(), apply: v => { setCloudBackupPass(v); saveCloudBackupState(loadCloudBackupState()); } },
 ];
+// Settings the app no longer uses: a row for one is skipped without comment, so an older secrets file still imports cleanly.
+const RETIRED_API_KEY_SETTINGS = new Set(['giltsyieldportfolio', 'giltsyieldportfolioname']);
 function _akNorm(s) { return String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9]/g, ''); }
 // Returns a reason string when a value is not acceptable for its setting, else null.
 function _akCheck(entry, v) {
@@ -210,7 +209,7 @@ function _akCheck(entry, v) {
         if (!/^https:\/\/[^\s]+$/i.test(v)) return 'must be a full https:// address';
     } else if (entry.kind === 'pass') {
         if (v.length < 8 || v.length > 200) return 'should be 8 to 200 characters';
-    } else if (!/^[A-Za-z0-9 _.-]{1,60}$/.test(v)) return 'has characters a portfolio name should not';
+    }
     return null;
 }
 // text → { updates:[{id,label,short,value}], hints:[{account,hint}], blank:[short], unknown:[row numbers], invalid:[{short,reason}], error }.
@@ -238,6 +237,7 @@ function parseApiKeyCsv(text) {
         const hm = /^\s*(?:login[\s_-]*)?hint\s*[:\-–]\s*(\S.*?)\s*$/i.exec(String(rows[r][iN] == null ? '' : rows[r][iN]));
         if (hm) { hints.set(_akNorm(hm[1]), { account: hm[1], hint: String(rows[r][iV] == null ? '' : rows[r][iV]).trim().slice(0, 300) }); continue; }
         const entry = byName[_akNorm(rows[r][iN])];
+        if (!entry && RETIRED_API_KEY_SETTINGS.has(_akNorm(rows[r][iN]))) continue;
         if (!entry) { res.unknown.push(r + 1); continue; }                  // reported by row number: a stray key must never be echoed
         latest.set(entry.id, { entry, value: String(rows[r][iV] == null ? '' : rows[r][iV]).trim() });
     }
@@ -318,11 +318,10 @@ function _gyLondon(ms) {
     const g = t => (parts.find(p => p.type === t) || {}).value;
     return { date: g('year') + '-' + g('month') + '-' + g('day'), minutes: parseInt(g('hour'), 10) * 60 + parseInt(g('minute'), 10) };
 }
-// Which London trading session a price belongs to, and whether it is that session's final price. A weekend fetch is
-// Friday's close; a weekday fetch before 08:00 is the previous weekday's close; a weekday fetch from 16:45 is today's
-// close; anything in between is intraday. (UK bank holidays are not modelled: the check below is simply conservative.)
-// A pre-08:00 fetch is only a stand-in for a close: giltsyield.com can already carry the new day's early prices by then,
-// so gyRecordSnapshots never lets one replace a close that is already stored.
+// The London trading session at a moment, and whether that session has closed: at a weekend it is Friday's (closed);
+// before 08:00 on a weekday it is the previous weekday's (closed); from 16:45 it is today's (closed); in between, today's
+// (open). It decides whether a dated price can still change, and which session is "today". (UK bank holidays are not
+// modelled: the check is simply conservative.)
 function gySessionOf(ms) {
     const p = _gyLondon(ms), dow = _gyDow(p.date);
     let d = p.date;
@@ -339,30 +338,38 @@ function loadGyCache() {
     return { v: 1, snaps: {}, meta: {} };
 }
 function saveGyCache(c) { try { localStorage.setItem(GY_CACHE_KEY, JSON.stringify(c)); } catch {} }
+// accepted: { TK: { cur, prev } } from fetchGiltsyieldPrices, each a gyParseBondPrice result (prev may be null). Both are
+// stored under the session their data is from, replacing what was there: giltsyield.com revises its prices, and the latest
+// reply is its current view. A stored session later than `cur` was dated by an older version of the app (by fetch time),
+// so it is dropped. Only a session that has closed (gySessionOf) is final.
 function gyRecordSnapshots(cache, accepted, ms) {
     const c = { v: 1, snaps: Object.assign({}, cache.snaps), meta: Object.assign({}, cache.meta) };
-    const s = gySessionOf(ms);
+    const now = gySessionOf(ms);
+    const entry = (a, final) => ({ dirty: a.dirty, t: ms, asOf: a.asOf || null, final, isin: a.isin || null, maturity: a.maturity || null,
+                                   coupon: Number.isFinite(a.coupon) ? a.coupon : null });
     for (const [tk, a] of Object.entries(accepted || {})) {
+        if (!a || !a.cur) continue;
         const byS = Object.assign({}, c.snaps[tk] || {});
-        // A stored close is never replaced. A weekend or pre-08:00 fetch is labelled as that close too, so otherwise a Monday
-        // 07:30 fetch could overwrite Friday's close with Monday's early price and Monday's move would read as nil all day.
-        if (byS[s.session] && byS[s.session].final) continue;
-        byS[s.session] = { dirty: a.dirty, t: ms, final: s.final, isin: a.isin || null, maturity: a.maturity || null, coupon: Number.isFinite(a.coupon) ? a.coupon : null };
+        for (const sess of Object.keys(byS)) if (sess > a.cur.session) delete byS[sess];
+        byS[a.cur.session] = entry(a.cur, a.cur.session < now.session || (a.cur.session === now.session && now.final));
+        if (a.prev && a.prev.session < a.cur.session) byS[a.prev.session] = entry(a.prev, true);
         const keys = Object.keys(byS).sort();
         while (keys.length > GY_KEEP_SESSIONS) delete byS[keys.shift()];
         c.snaps[tk] = byS;
     }
     return c;
 }
-// Latest stored price for a gilt (null when none, or older than GY_MAX_AGE_MS) plus the previous session's FINAL price,
-// which is what makes a daily change honest: it is only ever measured against a price the app itself stored as a close.
+// Latest stored price for a gilt (null when none, or from a session older than GY_MAX_AGE_MS) plus the previous session's
+// FINAL price, which is what makes a daily change honest: a move is only ever measured between two dated closes, and it is
+// tagged with the session it belongs to (`session`), which may be before today.
 function gyMarketFor(cache, ticker, nowMs) {
     const byS = cache && cache.snaps && cache.snaps[ticker];
     if (!byS) return null;
     const sessions = Object.keys(byS).sort();
     if (!sessions.length) return null;
     const curSession = sessions[sessions.length - 1], cur = byS[curSession];
-    if (!cur || !Number.isFinite(cur.dirty) || !Number.isFinite(cur.t) || (nowMs - cur.t) > GY_MAX_AGE_MS) return null;
+    if (!cur || !Number.isFinite(cur.dirty) || !Number.isFinite(cur.t) || (nowMs - cur.t) > GY_MAX_AGE_MS
+        || (nowMs - Date.parse(curSession + 'T16:30:00Z')) > GY_MAX_AGE_MS) return null;
     const prevSession = _gyPrevWeekday(curSession), prev = byS[prevSession];
     return { dirty: cur.dirty, t: cur.t, session: curSession, final: !!cur.final, isin: cur.isin || null, maturity: cur.maturity || null, coupon: cur.coupon,
              prevCloseDirty: (prev && prev.final && Number.isFinite(prev.dirty)) ? prev.dirty : null, prevSession };
@@ -389,6 +396,7 @@ function validateGiltSnapshots(raw) {
             if (!_GY_SESSION_RE.test(sess) || !(dirty >= GY_DIRTY_MIN && dirty <= GY_DIRTY_MAX) || !(Number.isFinite(t) && t > 0 && t <= latestOk)) { out.rejected++; continue; }
             clean[sess] = {
                 dirty, t, final: e.final === true,
+                asOf: (typeof e.asOf === 'string' && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(e.asOf)) ? e.asOf : null,
                 isin: (typeof e.isin === 'string' && e.isin) ? e.isin : null,
                 maturity: (typeof e.maturity === 'string' && e.maturity) ? e.maturity : null,
                 coupon: (e.coupon != null && Number.isFinite(Number(e.coupon))) ? Number(e.coupon) : null,
@@ -409,8 +417,7 @@ function mergeGiltSnapshots(cache, incomingSnaps) {
             if (!cur) { byS[sess] = e; continue; }
             if (cur.final && !e.final) continue;                      // a stored close beats a not-yet-final price
             if (e.final && !cur.final) { byS[sess] = e; continue; }
-            if (e.final) { if (e.t < cur.t) byS[sess] = e; continue; } // two closes: the first one stored stands (see gyRecordSnapshots)
-            if (e.t > cur.t) byS[sess] = e;                           // two intraday prices: the later fetch wins
+            if (e.t > cur.t) byS[sess] = e;                           // otherwise the later fetch wins (giltsyield.com revises)
         }
         const keys = Object.keys(byS).sort();
         while (keys.length > GY_KEEP_SESSIONS) delete byS[keys.shift()];
@@ -436,9 +443,58 @@ function _gyCsvRows(text) {
     if (f !== '' || row.length) { row.push(f); rows.push(row); }
     return rows;
 }
-// One request for every gilt booked in the giltsyield portfolio. Returns { ok, accepted:{TK:{dirty,isin,maturity,coupon}}, rejected:[{ticker,reason}] }
-// or { ok:false, error }. Rows are only range-checked here; each price is checked against the ladder's own maturity and coupon
-// (taken from the ledger) at the moment it is used — see gyCheckAgainstRegistry.
+// One gilt's reply from /api/bond/price/ → { session, dirty, asOf, isin, maturity, coupon } or { error }. `session` is the London
+// date of `updated_at` (the data's own time), capped at the requested date; a reply with no usable `updated_at` is refused,
+// since an undated price is exactly what showed a stale price as today's.
+function gyParseBondPrice(o, requestedISO) {
+    if (!o || typeof o !== 'object') return { error: 'no data' };
+    const m = /^(\d{4}-\d{2}-\d{2})[ T]\d{2}:\d{2}/.exec(String(o.updated_at || ''));
+    if (!m) return { error: 'no updated_at time' };
+    const dirty = Number(o.market_dirty_price != null ? o.market_dirty_price : o.dirty_price);
+    if (!(dirty >= GY_DIRTY_MIN && dirty <= GY_DIRTY_MAX)) return { error: 'dirty price ' + o.dirty_price + ' is outside ' + GY_DIRTY_MIN + '\u2013' + GY_DIRTY_MAX };
+    let session = m[1] < requestedISO ? m[1] : requestedISO;
+    while (_gyDow(session) === 0 || _gyDow(session) === 6) session = _gyAddDays(session, -1);
+    return { session, dirty, asOf: m[0].replace('T', ' '), isin: String(o.isin_code || '').trim(), maturity: String(o.maturity_date || '').slice(0, 10),
+             coupon: o.coupon != null ? Number(o.coupon) : NaN };   // coupon in percent, e.g. 0.125
+}
+// For each gilt: its latest price (asked for today's London date) and the close of the session before that price's
+// session. Returns { ok, accepted:{TK:{cur, prev}}, rejected:[{ticker,reason}] } or { ok:false, error }. `prev` is null when
+// giltsyield.com has no price dated that session (then there is no honest daily move). Each price is checked against the
+// ladder's own maturity and coupon (from the ledger) when it is used — see gyCheckAgainstRegistry.
+async function fetchGiltsyieldPrices(tickers, signal, nowMs) {
+    const key = getGyApiKey();
+    if (!key) return { ok: false, error: 'no API key set' };
+    const todayISO = _gyLondon(nowMs || Date.now()).date;
+    const get = async (tk, iso) => {
+        const url = 'https://giltsyield.com/api/bond/price/' + encodeURIComponent(tk) + '/' + iso + '/?apikey=' + encodeURIComponent(key);
+        const res = await proxyFetch(url, signal, { purpose: 'gilt prices', allowHttpError: true });
+        const text = await res.text();
+        if (res.status === 403 && /host not allowed/i.test(text)) throw new Error('the Cloudflare Worker does not allow giltsyield.com yet \u2014 it redeploys when main changes, so check the latest merge went live');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        let o; try { o = JSON.parse(text); } catch { throw new Error('giltsyield.com returned a web page, not data'); }
+        return gyParseBondPrice(o, iso);
+    };
+    const accepted = {}, rejected = [];
+    let firstError = null;
+    await Promise.all((tickers || []).map(async tk => {
+        try {
+            let cur = await get(tk, todayISO);
+            if (cur.error) { rejected.push({ ticker: tk, reason: cur.error }); return; }
+            const prevISO = _gyPrevWeekday(cur.session);
+            // An earlier session's price is asked for again on its own date, so its dirty price carries that session's
+            // settlement (T+1) and the daily move is not padded with extra days of accrued interest.
+            const [again, p] = await Promise.all([cur.session < todayISO ? get(tk, cur.session) : null, get(tk, prevISO)]);
+            if (again && !again.error && again.session === cur.session) cur = again;
+            accepted[tk] = { cur, prev: (!p.error && p.session === prevISO) ? p : null };
+        } catch (e) {
+            const msg = paScrub((e && e.message) || 'request failed');
+            if (!firstError) firstError = msg;
+            rejected.push({ ticker: tk, reason: msg });
+        }
+    }));
+    if (!Object.keys(accepted).length && firstError) return { ok: false, error: firstError };
+    return { ok: true, accepted, rejected };
+}
 
 // ── Gilt registry from the ledger ─────────────────────────────────────────────────────────────────────────────
 // A conventional gilt bought through the broker is described as e.g. "Treasury 0.375% 22/10/2030 Gilt 35754 @ 84.40499":
@@ -449,6 +505,7 @@ function _gyCsvRows(text) {
 // purchaseDate (quantity-weighted over the buys) are kept on the entry but no longer drive any valuation: a gilt is valued from its
 // market price only.
 let _giltUnrecognised = [];
+let _giltHeld = [];          // gilt tickers the ledger still holds (net nominal > 0): the ones to fetch prices for
 const _GILT_DESC_RE = /Treasury\s+(\d+(?:\.\d+)?)%\s+(\d{2})\/(\d{2})\/(\d{2}|\d{4})\s+Gilt\b/i;
 function deriveLedgerGilts(rows) {
     const dim = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
@@ -494,6 +551,7 @@ function deriveLedgerGilts(rows) {
         };
     }
     _giltUnrecognised = Array.from(unrec).filter(tk => !GILT_LADDER_REGISTRY[tk] && (net[tk] || 0) > 0.5);   // only gilts still held
+    _giltHeld = Object.keys(net).filter(tk => GILT_LADDER_REGISTRY[tk] && net[tk] > 0.5).sort();
 }
 // A market price is believed only if giltsyield.com and the ledger agree on WHICH gilt it is. Maturity and coupon come
 // from two independent places (the CSV; the ledger description or the hand-written registry entry), plus the ISIN when
@@ -506,39 +564,6 @@ function gyCheckAgainstRegistry(m, reg) {
     if (Number.isFinite(m.coupon) && Math.abs(m.coupon / 100 - reg.couponRate) > 1e-6) return 'coupon ' + m.coupon + '% does not match the ledger gilt (' + (reg.couponRate * 100) + '%)';
     return null;
 }
-async function fetchGiltsyieldPrices(signal) {
-    const key = getGyApiKey(), port = getGyPortfolio();
-    if (!key) return { ok: false, error: 'no API key set' };
-    const url = 'https://giltsyield.com/api/portfolio/pl/' + encodeURIComponent(port) + '/?apikey=' + encodeURIComponent(key);
-    let res;
-    try { res = await proxyFetch(url, signal, { purpose: 'gilt prices', allowHttpError: true }); }
-    catch (e) { return { ok: false, error: paScrub((e && e.message) || 'request failed') }; }
-    const text = await res.text();
-    if (res.status === 403 && /host not allowed/i.test(text)) return { ok: false, error: 'the Cloudflare Worker does not allow giltsyield.com yet \u2014 it redeploys when main changes, so check the latest merge went live' };
-    if (!res.ok) return { ok: false, error: 'HTTP ' + res.status + (res.status === 401 || res.status === 403 ? ' (check the API key)' : '') };
-    if (/^\s*</.test(text)) return { ok: false, error: 'giltsyield.com returned a web page, not data (wrong key or portfolio name?)' };
-    const rows = _gyCsvRows(text);
-    if (rows.length < 2) return { ok: false, error: 'empty response (is the portfolio name right, and does it hold gilts?)' };
-    const head = rows[0].map(h => String(h).trim().toLowerCase());
-    const iT = head.indexOf('ticker'), iD = head.indexOf('dirty_price'), iI = head.indexOf('isin_code'), iM = head.indexOf('maturity_date');
-    if (iT < 0 || iD < 0) return { ok: false, error: 'unexpected columns: ' + head.slice(0, 8).join(', ') };
-    const iC = head.indexOf('coupon');
-    const accepted = {}, rejected = [];
-    for (const r of rows.slice(1)) {
-        const tk = String(r[iT] || '').trim().toUpperCase();
-        if (!tk) continue;
-        const dirty = parseFloat(r[iD]);
-        if (!Number.isFinite(dirty) || dirty < GY_DIRTY_MIN || dirty > GY_DIRTY_MAX) { rejected.push({ ticker: tk, reason: 'dirty price ' + r[iD] + ' is outside ' + GY_DIRTY_MIN + '\u2013' + GY_DIRTY_MAX }); continue; }
-        accepted[tk] = {
-            dirty,
-            isin: iI >= 0 ? String(r[iI] || '').trim() : '',
-            maturity: iM >= 0 ? String(r[iM] || '').trim().slice(0, 10) : '',
-            coupon: iC >= 0 ? parseFloat(r[iC]) : NaN,       // percent, e.g. 0.125
-        };
-    }
-    return { ok: true, accepted, rejected };
-}
-
 function _dcUp(s) { return String(s || '').toUpperCase().trim(); }
 
 // Gilts, money-market funds and other internal codes — never priced externally.
@@ -2098,7 +2123,7 @@ function buildDailyCheckDiagnostics(ctx) {
     // Full audit trail of every Marketstack attempt (failures in detail) — API key scrubbed.
     const msLog = loadMsLog();
     out.marketstack = { keySet: !!getMsApiKey(), budget: loadMsBudget(), symbolFormat: loadMsFormat(), summary: summariseMsLog(msLog), attemptLog: msLog };
-    { const gyc = loadGyCache(); out.giltsyield = { keySet: !!getGyApiKey(), portfolio: getGyPortfolio(), meta: gyc.meta, snapshots: gyc.snaps }; }
+    { const gyc = loadGyCache(); out.giltsyield = { keySet: !!getGyApiKey(), held: _giltHeld, meta: gyc.meta, snapshots: gyc.snaps }; }
     // The same kind of trail for every source, recorded at the network layer (API keys scrubbed).
     out.providerAudit = paSnapshot();
 

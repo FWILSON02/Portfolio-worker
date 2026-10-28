@@ -472,7 +472,6 @@ function MoreTab(props) {
     const [avKeyInput, setAvKeyInput] = React.useState(getAvApiKey() || '');
     const [msKeyInput, setMsKeyInput] = React.useState(getMsApiKey() || '');
     const [gyKeyInput, setGyKeyInput] = React.useState(getGyApiKey() || '');
-    const [gyPortInput, setGyPortInput] = React.useState(getGyPortfolio());
     // Import API keys from a CSV (see parseApiKeyCsv). The fields below are refreshed from storage afterwards so they show
     // the new state at once; a value is only ever written through the same setters the fields use.
     const handleApiKeyCSV = async (file) => {
@@ -491,7 +490,7 @@ function MoreTab(props) {
             res = { updates: [], blank: [], unknown: [], invalid: [], error: (e && e.message === 'big') ? 'That file is too big to be a secrets file.' : 'Could not read that file.' };
         }
         setTdKeyInput(getTdApiKey()); setAvKeyInput(getAvApiKey()); setMsKeyInput(getMsApiKey()); setGyKeyInput(getGyApiKey());
-        setGyPortInput(getGyPortfolio()); setWorkerInput(getWorkerUrl() || '');
+        setWorkerInput(getWorkerUrl() || '');
         setApiKeyMsg(describeApiKeyImport(res));
     };
     // Recomputed whenever dailyCheckStatus changes — i.e. right after any cycle that
@@ -1297,13 +1296,6 @@ function MoreTab(props) {
                                 autoComplete: 'off', autoCapitalize: 'off', autoCorrect: 'off', spellCheck: false,
                                 onChange: e => { setGyKeyInput(e.target.value); setGyApiKey(e.target.value); },
                                 style: { width: '100%', boxSizing: 'border-box', background: '#0a0e14', border: '1px solid #27272a', borderRadius: 10, padding: '10px 14px', fontFamily: sys, fontSize: 12, color: '#a1a1aa' }
-                            }),
-                            React.createElement('input', {
-                                type: 'text', value: gyPortInput,
-                                placeholder: 'giltsyield portfolio name',
-                                autoComplete: 'off', autoCapitalize: 'off', autoCorrect: 'off', spellCheck: false,
-                                onChange: e => { setGyPortInput(e.target.value); setGyPortfolio(e.target.value); },
-                                style: { width: '100%', boxSizing: 'border-box', marginTop: 8, background: '#0a0e14', border: '1px solid #27272a', borderRadius: 10, padding: '10px 14px', fontFamily: sys, fontSize: 12, color: '#a1a1aa' }
                             }),
                             React.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 10, marginTop: 10 } },
                                 React.createElement('button', {

@@ -66,13 +66,14 @@ function PortfolioApp() {
         if (!getGyApiKey()) { setGiltFetchState({ status: 'nokey' }); return; }
         if (!getWorkerUrl()) { setGiltFetchState({ status: 'fail', error: 'no Worker URL set' }); return; }
         if (typeof navigator !== 'undefined' && navigator.onLine === false) { if (manual) setGiltFetchState({ status: 'fail', error: 'offline' }); return; }
+        if (!_giltHeld.length) return;           // ledger not loaded yet, or no gilts held: nothing to price
         const c0 = loadGyCache();
         const now = Date.now();
         if (!manual && c0.meta.lastAttempt && (now - c0.meta.lastAttempt) < GY_MIN_INTERVAL_MS) return;
         giltInFlight.current = true;
         setGiltFetchState({ status: 'fetching' });
         try {
-            const res = await fetchGiltsyieldPrices();
+            const res = await fetchGiltsyieldPrices(_giltHeld, undefined, now);
             let c = loadGyCache();
             c.meta = Object.assign({}, c.meta, { lastAttempt: now });
             if (res.ok) {
