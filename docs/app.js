@@ -694,12 +694,12 @@ function PortfolioApp() {
             return false;
         };
 
-        // Determines whether a ticker had an open position at any point in the trailing 90 days.
-        // Used to skip daily price fetches and live quotes for long-closed positions.
+        // Determines whether a ticker had an open position at any point in the trailing 90 days (or `days`, when given).
+        // Used to skip live quotes for long-closed positions, and (with DAILY_HISTORY_DAYS) daily price fetches.
         // Benchmarks and FX pairs always return true — they're always needed for chart calculations.
-        const checkAssetOpenInLast3M = useCallback((ticker) => {
+        const checkAssetOpenInLast3M = useCallback((ticker, days) => {
             if (ticker === '^GSPC' || ticker === BENCH_TR_TICKER || ticker === 'GBPUSD=X') return true;
-            const ninetyDaysAgo = new Date(today.getTime() - 90 * 86400 * 1000);
+            const windowStart = new Date(today.getTime() - (days || 90) * 86400 * 1000);
             let cumulativeUnits = 0;
             const assetTrades = enriched
                 .filter(t => t.instrument?.ticker === ticker)
@@ -708,7 +708,7 @@ function PortfolioApp() {
                 const qty = parseFloat((t.quantity || '').replace(/,/g, '')) || 0;
                 if (t.category === 'buy' || t.category === 'transfer_in') cumulativeUnits += qty;
                 else if (t.category === 'sell' || t.category === 'transfer_out') cumulativeUnits -= qty;
-                if (t.parsedDate >= ninetyDaysAgo && cumulativeUnits > 0.001) return true;
+                if (t.parsedDate >= windowStart && cumulativeUnits > 0.001) return true;
             }
             return cumulativeUnits > 0.001;
         }, [enriched, today]);
@@ -745,12 +745,12 @@ function PortfolioApp() {
                 else { setLoadStatus(loadingStatus); setFetchDebug({}); }
 
                 // ── Phase 1: fetch every ticker in parallel (pure results, no shared writes) ──
-                // Full refresh every time: weekly closes from inception plus a 90-day daily
+                // Full refresh every time: weekly closes from inception plus a DAILY_HISTORY_DAYS daily
                 // tail, from ONE fetch session, replacing the stored series over that range
                 // (mergeHistorySeries). Adjusted closes are restated at each ex-dividend
                 // date, so a series must never be stitched from fetches made on different
                 // days. If the weekly fetch fails, the stored series is kept untouched.
-                const ninetyDaysAgo = fmtDate(new Date(today.getTime() - 90 * 86400 * 1000));
+                const dailyFrom = fmtDate(new Date(today.getTime() - DAILY_HISTORY_DAYS * 86400 * 1000));
                 const tickerResults = await Promise.all(allTickers.map(async ticker => {
                     const existing = currentPrices[ticker];
                     const opts = seriesOpts(ticker);
@@ -770,15 +770,16 @@ function PortfolioApp() {
                     if (weekly.source === 'synthetic') {
                         return { ticker, prices: existing || [], status: 'ok', source: 'synthetic', debug: weekly.attempts, refreshed: false };
                     }
-                    // Daily tail: open positions, declared market tickers (e.g. Citi), FX and the benchmark.
-                    const wantDaily = checkAssetOpenInLast3M(ticker) || opts.yahooIsMarketSymbol
+                    // Daily tail: positions open at any point in the daily window, declared market tickers (e.g. Citi), FX
+                    // and the benchmark.
+                    const wantDaily = checkAssetOpenInLast3M(ticker, DAILY_HISTORY_DAYS) || opts.yahooIsMarketSymbol
                         || ticker === 'GBPUSD=X' || ticker === '^GSPC' || ticker === BENCH_TR_TICKER;
                     let daily = null, dailyErr = null;
                     if (wantDaily) {
-                        try { daily = await fetchPriceSeries(ticker, ninetyDaysAgo, toDate, 'daily', opts); }
+                        try { daily = await fetchPriceSeries(ticker, dailyFrom, toDate, 'daily', opts); }
                         catch (e) { dailyErr = (e.attempts && e.attempts[0] && e.attempts[0].msg) || e.message; }
                     }
-                    // Weekly alone would replace the stored 90-day daily tail with Friday bars, so with a stored series
+                    // Weekly alone would replace the stored daily tail with Friday bars, so with a stored series
                     // a failed daily fetch is a failed refresh: keep the series and retry later today.
                     if (dailyErr && existing?.length) {
                         return { ticker, prices: existing, refreshed: false, status: 'ok', source: loadSourceRef.current[ticker] || 'yahoo',

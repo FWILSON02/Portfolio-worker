@@ -1030,7 +1030,7 @@ function MoreTab(props) {
                         React.createElement(Row, {
                             icon: RefreshCw, iconColor: '#60a5fa',
                             label: loading ? 'Fetching Historical…' : 'Refresh Historical Prices',
-                            sub: 'Yahoo · weekly + 90-day daily closes · needs network',
+                            sub: 'Yahoo · weekly + 1-year daily closes · needs network',
                             onClick: fetchAllPrices,
                             disabled: loading || allPriceTickers.filter(t => t !== 'GBPUSD=X').length === 0,
                             right: loading ? React.createElement('div', { className: 'spinning', style: { width: 16, height: 16, borderRadius: '50%', border: '2px solid #1c1c1f', borderTopColor: '#60a5fa' } }) : React.createElement('span', { style: { color: '#6b6b76', fontSize: 16 } }, '›'),

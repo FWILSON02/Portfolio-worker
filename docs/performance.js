@@ -38,10 +38,10 @@ function computeWeeklyDates({ inception, today }) {
     const d = new Date(inception);
     // align to monday
     d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
-    // Daily granularity for the last 90 days so 3M chart shows a smooth daily line;
-    // weekly step for everything older to keep the array manageable.
-    const ninetyDaysAgo = new Date(today);
-    ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+    // Daily granularity for the last DAILY_HISTORY_DAYS (the stored history's daily stretch), so every chart up to 1Y
+    // is a daily line; weekly step for everything older.
+    const dailyFrom = new Date(today);
+    dailyFrom.setDate(dailyFrom.getDate() - DAILY_HISTORY_DAYS);
     while (d <= today) {
         const dow = d.getUTCDay();
         // Skip weekends in the daily granularity window — markets are closed Sat/Sun.
@@ -49,8 +49,8 @@ function computeWeeklyDates({ inception, today }) {
         if (dow !== 0 && dow !== 6) {
             dates.push(fmtDate(d));
         }
-        if (d >= ninetyDaysAgo) {
-            d.setUTCDate(d.getUTCDate() + 1); // daily for last 90 days
+        if (d >= dailyFrom) {
+            d.setUTCDate(d.getUTCDate() + 1); // daily for the last DAILY_HISTORY_DAYS
         } else {
             d.setUTCDate(d.getUTCDate() + 7); // weekly before that (always Monday)
         }
@@ -694,7 +694,7 @@ function computeRisk({ performanceChart, cashRate }) {
     if (performanceChart.length < 3)
         return null;
     // Risk statistics use a WEEKLY sample of the rows (the history is weekly for older data and daily for the
-    // last ~90 days; mixing the two made 'weekly' returns, volatility and drawdown inconsistent).
+    // last ~year; mixing the two made 'weekly' returns, volatility and drawdown inconsistent).
     const wkRows = sampleWeeklyRows(performanceChart);
     const n = wkRows.length;
     if (n < 3)

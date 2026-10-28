@@ -29,7 +29,10 @@ function SvgResponsive({ height: heightProp, children }) {
     return (React.createElement("div", { ref: ref, style: { width: '100%', height: heightProp, display: 'block' } }, width > 0 && height > 0 && React.cloneElement(children, { width, height })));
 }
 // ── Calendar-aware x-axis ticks (shared by every time-series chart) ──────────────────────────────────
-// The history rows are NOT evenly spaced in time (weekly before ~3 months ago, daily since), so the charts
+// How far back stored price history is daily. Older history is weekly (Friday closes). A year plus two weeks, so the 1Y
+// chart and its starting close are daily too. The daily fetch and the chart's date spine both use it.
+const DAILY_HISTORY_DAYS = 380;
+// The history rows are NOT evenly spaced in time (weekly before ~a year ago, daily since), so the charts
 // place points by DATE, and ticks are placed at real calendar positions: weekdays / Mondays for short windows,
 // month starts (every 1, 2, 3, 6 or 12 months, whichever fits) for longer ones. Returns [{ t, label }].
 const _TICK_MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -446,7 +449,7 @@ function buildSpxGbpSeries(opts) {
     return { rows, dropped: cleaned.dropped, liveUsed, rowsWithoutFx };
 }
 // One row per calendar week (the last row of each week), plus the first row as the starting point. The history is
-// weekly for older data and daily for the last ~90 days, so risk statistics are computed on this weekly sample:
+// weekly for older data and daily for the last ~year, so risk statistics are computed on this weekly sample:
 // every step is then about one week, and annualising by steps-per-year is valid.
 function sampleWeeklyRows(rows) {
     if (!rows || rows.length < 2) return rows ? rows.slice() : [];
