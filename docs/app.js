@@ -3130,7 +3130,7 @@ function PortfolioApp() {
             return function() { clearInterval(timer); };
         }, [showMarketOverview, refreshMarketOverview]);
 
-        // Market Movers title glows green while Markets data is fresh and ready to open (Fergus, 2026-10-27):
+        // Market Movers title glows while Markets data is fresh and ready to open (Fergus, 2026-10-27; colour from moversGlow):
         // a finished refresh (ok or partial) newer than the prefetch staleness window. Loading, failed, offline
         // or stale data gets no glow; the timeout re-renders when the data ages out of the window.
         const [, setMarketsLiveTick] = React.useState(0);
@@ -3290,6 +3290,11 @@ function PortfolioApp() {
             const totalPct = totalAbs != null && basis > 0 ? totalAbs / basis : null;
             return { value, todayAbs, todayPct, totalAbs, totalPct };
         }, [masterPortfolio, currentCompState, restrictedPositions, heroTodayPnl]);
+
+        // Market Movers title glow colour follows the hero's Today (Fergus, 2026-10-28): green when up, red when down.
+        // It still glows only while Markets data is live; a flat or unknown Today gets no glow.
+        const moversGlow = !marketsLive || heroCombined.todayAbs == null || heroCombined.todayAbs === 0 ? null
+                           : heroCombined.todayAbs > 0 ? 'up' : 'down';
 
         // Live values the Balances update form can prefill from: each account card, then each restricted scheme.
         const balancesAppValues = React.useMemo(() => {
@@ -3860,7 +3865,7 @@ function PortfolioApp() {
 
                 // ── Phase 3: Insights Panel (before accounts) ───────────────
                 transactions.length > 0 && insightsData && React.createElement(InsightsPanel, { data: insightsData, privacyMode, lastSpotRefreshAt,
-                                                                                  marketsLive, onOpenMarkets: () => setShowMarketOverview(true) }),
+                                                                                  moversGlow, onOpenMarkets: () => setShowMarketOverview(true) }),
 
                 // ── Phase 4: Account Cards Stack ────────────────────────────
                 transactions.length > 0 && accountGroups.length > 0 && React.createElement('div', {
