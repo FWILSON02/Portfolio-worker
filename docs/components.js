@@ -1346,7 +1346,7 @@ const PortfolioChart = React.memo(function PortfolioChart({ data, timeframe, set
     const yTicks = hasData ? niceYTicks(yLo, yHi, 4) : [];
 
     // X positions follow the DATE, not the row number. The history spine is weekly for older data and daily for the
-    // last ~90 days, so index spacing squashed months of recent history against a few wide old weeks (an uneven
+    // last ~year, so index spacing squashed months of recent history against a few wide old weeks (an uneven
     // month axis and a misleading slope). Falls back to index spacing only if a row has no parseable date.
     const _tOf = d => (typeof d === 'string' && /^\d{4}-\d{2}-\d{2}/.test(d)) ? Date.parse(d.slice(0, 10) + 'T12:00:00Z') : NaN;
     const _times = hasData ? data.map(d => _tOf(d.date)) : [];

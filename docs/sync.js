@@ -901,7 +901,7 @@ function backfillHistoryGapsFromSecondSource(rows, ticker) {
 // later the same day. (The day used to be marked done as soon as ANY ticker
 // refreshed, so a run where FX refreshed but the LSE lines failed left those
 // lines a session behind until the next day.)
-const HISTORY_SCHEMA_VERSION = 2;   // v2: exchange-local dates, Friday-dated weekly bars, completed bars only
+const HISTORY_SCHEMA_VERSION = 3;   // v2: exchange-local dates, Friday-dated weekly bars, completed bars only; v3: daily tail 90 days → DAILY_HISTORY_DAYS
 const HISTORY_REFRESH_KEY    = 'history_refresh_state';
 function londonDateStr(nowMs) { return exchangeLocalDate(Math.floor((nowMs || Date.now()) / 1000), 'Europe/London', 0); }
 function _historyRefreshToday(nowMs) {
