@@ -182,34 +182,59 @@ test('the exchange holiday calendars cover next year from December', () => {
     assert.deepEqual(missing, [], 'add ' + need + '\'s holidays to EXCHANGE_CALENDARS in docs/providers.js');
 });
 
-// ── Gilt closes (giltsyield.com snapshots) ──
-// Times in UTC; London is UTC+0 from 25 Oct 2026. Fri 23 Oct 2026 is BST (UTC+1).
-test('gilt closes: a stored close is never replaced by a later weekend or pre-open fetch', () => {
-    const at = iso => Date.parse(iso);
-    let c = { v: 1, snaps: {}, meta: {} };
-    c = app.gyRecordSnapshots(c, { TX30: { dirty: 84.10 } }, at('2026-10-23T16:00:00Z'));   // Fri 17:00 BST: Friday's close
-    c = app.gyRecordSnapshots(c, { TX30: { dirty: 84.10 } }, at('2026-10-24T10:00:00Z'));   // Saturday: same session, kept
-    c = app.gyRecordSnapshots(c, { TX30: { dirty: 84.02 } }, at('2026-10-26T07:30:00Z'));   // Mon 07:30: Monday's early price
-    c = app.gyRecordSnapshots(c, { TX30: { dirty: 84.00 } }, at('2026-10-26T15:10:00Z'));   // Mon intraday
-    assert.equal(c.snaps.TX30['2026-10-23'].dirty, 84.10);
-    assert.equal(c.snaps.TX30['2026-10-23'].t, at('2026-10-23T16:00:00Z'));
-    const mk = app.gyMarketFor(c, 'TX30', at('2026-10-26T15:16:00Z'));
-    assert.equal(mk.session, '2026-10-26');
-    assert.equal(mk.dirty, 84.00);
-    assert.equal(mk.prevCloseDirty, 84.10);
+// ── Gilt prices (giltsyield.com /api/bond/price/, dated by updated_at) ──
+// Shaped like real replies; prices are illustrative.
+const gyReply = (dirty, updatedAt, extra) => Object.assign({ dirty_price: dirty, market_dirty_price: dirty, updated_at: updatedAt,
+    isin_code: 'GB00TEST0001', maturity_date: '2030-10-22', coupon: 0.375 }, extra || {});
+
+test('gilt prices: a price is dated by its data time, not by when it was asked for', () => {
+    // Asked for Wednesday 28 Oct at 13:13, but the newest data is Tuesday 14:05: it is Tuesday's price.
+    const p = app.gyParseBondPrice(gyReply(84.047, '2026-10-27 14:05'), '2026-10-28');
+    assert.equal(p.session, '2026-10-27');
+    assert.equal(p.asOf, '2026-10-27 14:05');
+    // Asked for Saturday: Friday's data is Friday's session.
+    assert.equal(app.gyParseBondPrice(gyReply(84.0, '2026-10-23 16:40'), '2026-10-24').session, '2026-10-23');
+    // Never later than the date asked for, and a weekend date is never a session.
+    assert.equal(app.gyParseBondPrice(gyReply(84.0, '2026-10-26 01:00'), '2026-10-24').session, '2026-10-23');
+    // Undated or implausible replies are refused.
+    assert.ok(app.gyParseBondPrice(gyReply(84.0, ''), '2026-10-28').error);
+    assert.ok(app.gyParseBondPrice(gyReply(12, '2026-10-27 14:05'), '2026-10-28').error);
 });
 
-test('gilt closes: a pre-open fetch still fills a missing close, and replaces an intraday price', () => {
+test('gilt prices: Today is the move between two dated closes, tagged with its session', () => {
     const at = iso => Date.parse(iso);
-    let c = app.gyRecordSnapshots({ v: 1, snaps: {}, meta: {} }, { TX30: { dirty: 84.05 } }, at('2026-10-23T13:00:00Z'));   // Fri intraday
-    assert.equal(c.snaps.TX30['2026-10-23'].final, false);
-    c = app.gyRecordSnapshots(c, { TX30: { dirty: 84.10 } }, at('2026-10-26T07:30:00Z'));
-    assert.equal(c.snaps.TX30['2026-10-23'].dirty, 84.10);
-    assert.equal(c.snaps.TX30['2026-10-23'].final, true);
+    const cur = app.gyParseBondPrice(gyReply(84.047, '2026-10-27 14:05'), '2026-10-28');
+    const prev = app.gyParseBondPrice(gyReply(84.015, '2026-10-26 20:06'), '2026-10-26');
+    // An older app dated a fetch by its time: a stale '2026-10-28' entry holding Tuesday's price. It must go.
+    let c = { v: 1, snaps: { TX30: { '2026-10-28': { dirty: 84.047, t: at('2026-10-28T09:00:00Z'), final: false } } }, meta: {} };
+    c = app.gyRecordSnapshots(c, { TX30: { cur, prev } }, at('2026-10-28T13:13:00Z'));
+    assert.deepEqual(plain(Object.keys(c.snaps.TX30).sort()), ['2026-10-26', '2026-10-27']);
+    assert.equal(c.snaps.TX30['2026-10-27'].final, true);       // Tuesday has closed
+    const mk = app.gyMarketFor(c, 'TX30', at('2026-10-28T13:14:00Z'));
+    assert.equal(mk.session, '2026-10-27');
+    assert.equal(mk.dirty, 84.047);
+    assert.equal(mk.prevCloseDirty, 84.015);
 });
 
-test('gilt closes: restoring a backup keeps the first close stored for a session', () => {
-    const first = { dirty: 84.10, t: 1000, final: true }, later = { dirty: 84.02, t: 2000, final: true };
-    assert.equal(app.mergeGiltSnapshots({ snaps: { TX30: { '2026-10-23': first } } }, { TX30: { '2026-10-23': later } }).snaps.TX30['2026-10-23'].dirty, 84.10);
-    assert.equal(app.mergeGiltSnapshots({ snaps: { TX30: { '2026-10-23': later } } }, { TX30: { '2026-10-23': first } }).snaps.TX30['2026-10-23'].dirty, 84.10);
+test('gilt prices: a revised price replaces the stored one; no dated previous close means no move', () => {
+    const at = iso => Date.parse(iso);
+    let c = app.gyRecordSnapshots({ v: 1, snaps: {}, meta: {} },
+        { TX30: { cur: app.gyParseBondPrice(gyReply(84.02, '2026-10-26 20:06'), '2026-10-26'), prev: null } }, at('2026-10-26T20:10:00Z'));
+    assert.equal(app.gyMarketFor(c, 'TX30', at('2026-10-26T20:11:00Z')).prevCloseDirty, null);
+    c = app.gyRecordSnapshots(c, { TX30: { cur: app.gyParseBondPrice(gyReply(84.01, '2026-10-26 20:06'), '2026-10-27'), prev: null } }, at('2026-10-27T07:00:00Z'));
+    assert.equal(c.snaps.TX30['2026-10-26'].dirty, 84.01);
+    // A price whose session is more than four days old is not used at all.
+    assert.equal(app.gyMarketFor(c, 'TX30', at('2026-11-02T12:00:00Z')), null);
+});
+
+test('gilt prices: restoring a backup keeps the later fetch', () => {
+    const older = { dirty: 84.10, t: 1000, final: true }, newer = { dirty: 84.02, t: 2000, final: true };
+    assert.equal(app.mergeGiltSnapshots({ snaps: { TX30: { '2026-10-23': older } } }, { TX30: { '2026-10-23': newer } }).snaps.TX30['2026-10-23'].dirty, 84.02);
+    assert.equal(app.mergeGiltSnapshots({ snaps: { TX30: { '2026-10-23': newer } } }, { TX30: { '2026-10-23': older } }).snaps.TX30['2026-10-23'].dirty, 84.02);
+});
+
+test('secrets file: the retired giltsyield portfolio row is skipped quietly', () => {
+    const r = app.parseApiKeyCsv('setting,value\ngiltsyield_portfolio,Ferg\n');
+    assert.equal(r.unknown.length, 0);
+    assert.equal(r.updates.length, 0);
 });
