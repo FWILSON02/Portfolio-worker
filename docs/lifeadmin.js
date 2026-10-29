@@ -935,8 +935,8 @@ function CashFlowCard(props) {
                 E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc600, marginTop: 3 } }, left == null ? '' : actual ? 'C&C ' + (left < 0 ? 'down ' : 'up ') + per.unit : (left < 0 ? 'short ' : 'left ') + per.unit)),
             E('div', { style: { display: 'flex', flexDirection: 'column', gap: 6, flexShrink: 0, width: 150 } },
                 E(Segmented, { options: PERIODS, value: props.period, onChange: props.onPeriod, fill: true }),
-                a && E(SwitchRow, { label: 'C&C avg', on: actual, onChange: function (v) { props.onView(v ? 'actual' : 'plan'); } }),
-                f.bonus != null && E(Segmented, { options: BONUS_OPTIONS, value: !!props.bonus, onChange: props.onBonus, fill: true }))),
+                f.bonus != null && E(Segmented, { options: BONUS_OPTIONS, value: !!props.bonus, onChange: props.onBonus, fill: true }),
+                a && E(SwitchRow, { label: 'C&C avg', on: actual, onChange: function (v) { props.onView(v ? 'actual' : 'plan'); } }))),
         // Actual: the take-home split into the bills, what else left C&C, and what stayed.
         actual && E('div', { style: { display: 'flex', height: 6, borderRadius: 3, overflow: 'hidden', gap: 2, marginTop: 12 } },
             E('div', { style: { flex: Math.max(a.out, 0.001), background: ui.C.rose } }),
