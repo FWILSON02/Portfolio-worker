@@ -320,6 +320,23 @@ function cashFlow(t, th, period, withBonus) {
     var out = t.mine[per.key];
     return { pay: pay, bonus: bonus, inflow: inflow, out: out, left: inflow == null ? null : inflow - out };
 }
+// Plan is the sums above; Actual is what C&C (current accounts and credit cards on Estate) really did over the last
+// DRIFT_MONTHS months, the drift Estate's chart shows at 6M (Fergus asked to see it beside the plan). Remembered.
+var VIEWS = [{ id: 'plan', label: 'Plan' }, { id: 'actual', label: 'Actual' }];
+var VIEW_KEY = 'lifeadmin_view', DRIFT_MONTHS = 6;
+function savedView() { try { return localStorage.getItem(VIEW_KEY) === 'actual' ? 'actual' : 'plan'; } catch (e) { return 'plan'; } }
+// HSBC pays the bonus with March's pay: a window holding a March payday has the bonus in its C&C.
+var BONUS_MONTH = '03';
+// Actual against the plan for the same months. drift: BalancesStore.cashDrift(). pay: take-home over the window (the
+// latest bonus spread over it when one was paid in it); bills: his part; actual: C&C's change; other: what left C&C
+// that isn't a listed bill (spending, and any transfer into savings or investments), so pay − bills − other = actual.
+function actualFlow(t, th, period, drift) {
+    if (!th || !drift || !(drift.months > 0)) return null;
+    var mult = period === 'year' ? 12 : 1;
+    var bonusIn = !!(th.bonus && drift.paydays.some(function (d) { return d.slice(5, 7) === BONUS_MONTH; }));
+    var pay = th.monthly + (bonusIn ? th.bonus.net / drift.months : 0), bills = t.mine.monthly, actual = drift.perMonth;
+    return { pay: pay * mult, out: bills * mult, actual: actual * mult, other: (pay - bills - actual) * mult, bonusIn: bonusIn };
+}
 var SORTS = [{ id: 'cost', label: 'Biggest' }, { id: 'renews', label: 'Renews' }, { id: 'name', label: 'A–Z' }];
 function sortBills(bills, how) {
     var list = bills.slice();
@@ -906,23 +923,35 @@ var BONUS_OPTIONS = [{ id: false, label: 'Salary' }, { id: true, label: '+ Bonus
 function CashFlowCard(props) {
     var ui = useUI(), p = props.privacy, per = periodOf(props.period), th = props.pay && props.pay.takeHome;
     var f = cashFlow(props.totals, th, props.period, props.bonus);
-    var left = f.left, used = f.inflow > 0 ? Math.min(1, f.out / f.inflow) : null;
+    var a = actualFlow(props.totals, th, props.period, props.drift), actual = a && props.view === 'actual';
+    var left = actual ? a.actual : f.left, used = f.inflow > 0 ? Math.min(1, f.out / f.inflow) : null;
     return E('div', { style: cardStyle(ui, { padding: '14px 16px' }) },
         E('div', { style: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 } },
             E('div', { style: { minWidth: 0 } },
                 E('div', { style: capsLabel(ui) }, 'Cash flow'),
                 E('div', { style: Object.assign(money(ui, 30, p, left != null && left < 0 ? ui.C.rose : ui.C.white), { marginTop: 6, lineHeight: 1.05 }) },
                     left == null ? '—' : (left < 0 ? '−' : '') + fmtGBP(Math.abs(left))),
-                E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc600, marginTop: 3 } }, left == null ? '' : (left < 0 ? 'short ' : 'left ') + per.unit)),
+                E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc600, marginTop: 3 } }, left == null ? '' : actual ? 'C&C ' + (left < 0 ? 'down ' : 'up ') + per.unit : (left < 0 ? 'short ' : 'left ') + per.unit)),
             E('div', { style: { display: 'flex', flexDirection: 'column', gap: 6, flexShrink: 0, width: 150 } },
                 E(Segmented, { options: PERIODS, value: props.period, onChange: props.onPeriod, fill: true }),
-                f.bonus != null && E(Segmented, { options: BONUS_OPTIONS, value: !!props.bonus, onChange: props.onBonus, fill: true }))),
+                a && E(Segmented, { options: VIEWS, value: props.view, onChange: props.onView, fill: true }),
+                // Actual already holds whatever was paid in, so the bonus switch is for the plan only.
+                !actual && f.bonus != null && E(Segmented, { options: BONUS_OPTIONS, value: !!props.bonus, onChange: props.onBonus, fill: true }))),
+        // Actual: the take-home split into the bills, what else left C&C, and what stayed.
+        actual && E('div', { style: { display: 'flex', height: 6, borderRadius: 3, overflow: 'hidden', gap: 2, marginTop: 12 } },
+            E('div', { style: { flex: Math.max(a.out, 0.001), background: ui.C.rose } }),
+            a.other > 0 && E('div', { style: { flex: a.other, background: OTHER_COLOR } }),
+            a.actual > 0 && E('div', { style: { flex: a.actual, background: PAY_GREEN, opacity: 0.55 } })),
+        actual && E('div', { style: { display: 'flex', gap: 8, marginTop: 12 } },
+            props.pay && E(OpenButton, { label: 'Pay', color: PAY_GREEN, value: a.pay, sign: '+', privacy: p, onOpen: props.onPay }),
+            E(OpenButton, { label: 'Bills', color: ui.C.rose, value: a.out, sign: '−', privacy: p, onOpen: props.onHousehold })),
+        actual && E(FigureRow, { label: 'Not in bills', color: OTHER_COLOR, value: Math.abs(a.other), sign: a.other > 0 ? '−' : '+', privacy: p }),
         // Money in, split into the part the bills take and what's left.
-        used != null && E('div', { style: { display: 'flex', height: 6, borderRadius: 3, overflow: 'hidden', gap: 2, marginTop: 12 } },
+        !actual && used != null && E('div', { style: { display: 'flex', height: 6, borderRadius: 3, overflow: 'hidden', gap: 2, marginTop: 12 } },
             E('div', { style: { flex: Math.max(used, 0.001), background: ui.C.rose } }),
             used < 1 && E('div', { style: { flex: 1 - used, background: PAY_GREEN, opacity: 0.55 } })),
         // Pay and Bills open whole pages, so they're drawn as buttons (Fergus: plain links didn't look tappable).
-        E('div', { style: { display: 'flex', gap: 8, marginTop: 12 } },
+        !actual && E('div', { style: { display: 'flex', gap: 8, marginTop: 12 } },
             props.pay && E(OpenButton, { label: 'Pay', color: PAY_GREEN, value: f.inflow, sign: '+', add: !th, privacy: p, onOpen: props.onPay }),
             E(OpenButton, { label: 'Bills', color: ui.C.rose, value: f.out, sign: '−', privacy: p, onOpen: props.onHousehold })));
 }
@@ -938,6 +967,15 @@ function OpenButton(props) {
         props.add ? E('span', { style: { color: TEAL } }, 'Add')
             : E('span', { style: money(ui, 14, props.privacy, ui.C.white, 600) }, props.value == null ? '—' : props.sign + fmtGBP(props.value)),
         E(ChevronIcon, { style: { width: 15, height: 15, color: ui.C.zinc500, flexShrink: 0 }, strokeWidth: 2.2 }));
+}
+
+// A figure on the cash flow card that opens nothing: drawn like OpenButton's contents, without the button.
+function FigureRow(props) {
+    var ui = useUI();
+    return E('div', { style: { display: 'flex', alignItems: 'center', gap: 7, height: 36, padding: '0 12px', marginTop: 4, fontFamily: ui.sys, fontSize: 14, color: ui.C.zinc400 } },
+        E('span', { style: { width: 8, height: 8, borderRadius: 2, background: props.color, flexShrink: 0 } }),
+        E('span', { style: { flex: 1 } }, props.label),
+        E('span', { style: money(ui, 14, props.privacy, ui.C.white, 600) }, props.sign + fmtGBP(props.value)));
 }
 
 // The household's bills (Your bills on the top card opens it): the total, who pays it, and each category.
@@ -1073,14 +1111,18 @@ function BillRow(props) {
 }
 
 var PAY_GREEN = '#34d399';
-var WIFE_COLOR = '#e879f9';   // not Mortgage's pink, which sits in the same card
+var WIFE_COLOR = '#e879f9';
+var OTHER_COLOR = '#fb923c';  // Actual's money out that isn't a listed bill   // not Mortgage's pink, which sits in the same card
 
 var _sort = 'cost';
 var _openId = null;
 // What Fergus looks at every day comes first (he asked): renewal alerts, the cash flow figures, then the bills. The household split and categories are a tap away (Your bills), like Pay (Take-home pay).
 function MainView(props) {
     var ui = useUI();
-    var sort = React.useState(_sort), open = React.useState(_openId), period = React.useState(savedPeriod), bonus = React.useState(savedBonus);
+    var sort = React.useState(_sort), open = React.useState(_openId), period = React.useState(savedPeriod), bonus = React.useState(savedBonus), view = React.useState(savedView);
+    function setView(v) { try { localStorage.setItem(VIEW_KEY, v); } catch (e) {} view[1](v); }
+    var estate = useEstateState(), store = window.BalancesStore;
+    var drift = React.useMemo(function () { return store && store.cashDrift ? store.cashDrift(DRIFT_MONTHS) : null; }, [estate, store]);
     function setPeriod(v) { try { localStorage.setItem(PERIOD_KEY, v); } catch (e) {} period[1](v); }
     function setBonus(v) { try { localStorage.setItem(BONUS_KEY, v ? '1' : '0'); } catch (e) {} bonus[1](v); }
     var hints = React.useState(loginHints)[0];
@@ -1088,6 +1130,7 @@ function MainView(props) {
     var t = React.useMemo(function () { return totals(bills, props.share); }, [bills, props.share]);
     var Banner = window.MaturityAlerts && window.MaturityAlerts.Banner;
     var hero = E(CashFlowCard, { totals: t, pay: pay, privacy: props.privacy, period: period[0], onPeriod: setPeriod, bonus: bonus[0], onBonus: setBonus,
+                                 view: view[0], onView: setView, drift: drift,
                                  onPay: props.onPay, onHousehold: props.onHousehold });
     if (!bills.length) {
         return E('div', { style: { padding: '12px 16px' } },
@@ -1818,6 +1861,6 @@ window.LifeAdminColor = TEAL;
 window.__lifeAdminInternals = { validateState: validateState, validBill: validBill, validLink: validLink, parsePaste: parsePaste, parseDate: parseDate,
     parseMoney: parseMoney, costFrom: costFrom, mergeBills: mergeBills, resolveBill: resolveBill, resolveAll: resolveAll, totals: totals,
     sortBills: sortBills, renewalAlerts: renewalAlerts, hintFor: hintFor, guessCategory: guessCategory, subLine: subLine,
-    myPart: myPart, shareOf: shareOf, cashFlow: cashFlow,
+    myPart: myPart, shareOf: shareOf, cashFlow: cashFlow, actualFlow: actualFlow,
     validUsage: validUsage, parseUsagePaste: parseUsagePaste, mergeUsage: mergeUsage, usageStats: usageStats, monthCost: monthCost, fuelCost: fuelCost, isEnergyBill: isEnergyBill, m3ToKwh: m3ToKwh };
 })();

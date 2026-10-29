@@ -423,6 +423,11 @@ var BalancesStore = {
         return saveState(Object.assign({}, _state, { alertWindows: validWindows(next) }));
     },
     relTime: function (ts) { return relTime(ts); },
+    // Cash Flow → Actual: C&C's change a month over the last `months` months (see cashDrift).
+    // null without a current account or credit card (C&C would be a flat £0).
+    cashDrift: function (months) {
+        return _state.accounts.some(function (a) { return cardId(a) === 'cash'; }) ? cashDrift(buildSeries(_state), months) : null;
+    },
     // Asks the Estate screen to open a view ('import'); picked up when it mounts or, if open, straight away.
     openView: function (v) { _pendingView = v; window.dispatchEvent(new Event('estate-open-view')); },
     // Replaces the balances with the ones from a backup. Returns false (and changes nothing) when invalid.
@@ -1197,6 +1202,22 @@ function perMonth(from, to, metric) {
     if (!from || !to || Math.abs(monthIndex(to.month) - monthIndex(from.month)) < 2) return null;
     var months = Math.abs(Date.parse(to.date) - Date.parse(from.date)) / 864e5 / (365.25 / 12);
     return months > 0 ? (to[metric] - from[metric]) / months : null;
+}
+// C&C's average change a month over the last `months` months, as Estate's chart reads it at that range (Cash Flow's
+// Actual shows it). paydays: the paydays after the first point up to the latest, so Cash Flow can tell whether a
+// bonus landed in the window. null with less than two months of entries.
+function cashDrift(series, months) {
+    var last = series[series.length - 1];
+    if (!last) return null;
+    var from = series.filter(function (p) { return monthIndex(p.month) >= monthIndex(last.month) - months; })[0];
+    var pm = perMonth(from, last, 'cash');
+    if (pm == null) return null;
+    var paydays = [];
+    for (var m = monthIndex(from.month); m <= monthIndex(last.month); m++) {
+        var pd = paydayOf(Math.floor(m / 12) + '-' + String(m % 12 + 1).padStart(2, '0'));
+        if (pd > from.date && pd <= last.date) paydays.push(pd);
+    }
+    return { perMonth: pm, from: from.date, to: last.date, months: (Date.parse(last.date) - Date.parse(from.date)) / 864e5 / (365.25 / 12), paydays: paydays };
 }
 // A group's figure at a point (share applied; only the accounts in the metric): what a drawn group line plots.
 // 'a:<id>' is a single account (e.g. just the mortgage), drawn on its own.
@@ -2385,7 +2406,7 @@ window.BalancesIcon = WalletIcon;
 window.MaturityAlerts = { Banner: MaturityBanner, investmentAlerts: investmentAlerts, today: todayISO, kinds: ALERT_KINDS, max: WINDOW_MAX,
                           make: makeAlert, sort: byDate };
 // For tests only: the pure parts, no UI.
-window.__balancesInternals = { applyLinked: applyLinked, parseJsonBackup: parseJsonBackup, buildJson: buildJson, parseImport: parseImport, importToState: importToState, runChecks: runChecks, buildSeries: buildSeries, parseAmount: parseAmount, buildCsv: buildCsv,
+window.__balancesInternals = { cashDrift: cashDrift, applyLinked: applyLinked, parseJsonBackup: parseJsonBackup, buildJson: buildJson, parseImport: parseImport, importToState: importToState, runChecks: runChecks, buildSeries: buildSeries, parseAmount: parseAmount, buildCsv: buildCsv,
     resolveTimeline: resolveTimeline, paydayOf: paydayOf, validLink: validLink, hintName: hintName, termValue: termValue, termRuns: termRuns, monthTicks: monthTicks, niceStep: niceStep, axisLabel: axisLabel, totalsFor: totalsFor, indexAccounts: indexAccounts, withPartial: withPartial, liveLinked: liveLinked,
     grow: grow, workDown: workDown, validLoan: validLoan, loanOwed: loanOwed, assetValue: assetValue, validateState: validateState, breakdown: breakdown, groupValue: groupValue, perMonth: perMonth,
     alertStage: alertStage, alertWindows: alertWindows, validWindows: validWindows, estateAlerts: estateAlerts, investmentAlerts: investmentAlerts, silenceAlert: silenceAlert, silenced: silenced, readSilence: readSilence };

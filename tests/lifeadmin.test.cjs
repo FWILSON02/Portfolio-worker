@@ -350,3 +350,19 @@ test('cashFlow: take-home less his part of the bills, the bonus only when switch
     f = L.cashFlow(t, null, 'month', true);
     assert.equal(f.inflow, null); assert.equal(f.left, null); assert.equal(f.out, 1000);
 });
+
+test('actualFlow: C&C drift beside the plan; what left C&C outside the bills is the gap', () => {
+    const t = { mine: { monthly: 5000, annual: 60000 } };
+    const th = { monthly: 5100, bonus: { year: 2025, net: 24000 } };
+    const drift = { perMonth: -900, months: 6, paydays: ['2026-05-20', '2026-06-19', '2026-07-20', '2026-08-20', '2026-09-18', '2026-10-20'] };
+    let a = L.actualFlow(t, th, 'month', drift);
+    assert.equal(a.pay, 5100); assert.equal(a.out, 5000); assert.equal(a.actual, -900); assert.equal(a.other, 1000); assert.equal(a.bonusIn, false);
+    a = L.actualFlow(t, th, 'year', drift);
+    assert.equal(a.actual, -10800); assert.equal(a.other, 12000);
+    // A March payday in the window: the bonus landed in C&C, so it counts in the pay, spread over the window.
+    a = L.actualFlow(t, th, 'month', Object.assign({}, drift, { paydays: ['2026-03-20'] }));
+    assert.equal(a.bonusIn, true); assert.equal(a.pay, 9100); assert.equal(a.other, 5000);
+    assert.equal(a.pay - a.out - a.other, a.actual);
+    assert.equal(L.actualFlow(t, null, 'month', drift), null);
+    assert.equal(L.actualFlow(t, th, 'month', null), null);
+});

@@ -259,3 +259,19 @@ test('perMonth: change between two points over the time between their dates', ()
     assert.equal(E.perMonth({ month: '2026-09', date: '2026-09-19', cash: 1 }, b, 'cash'), null);
     assert.equal(E.perMonth(null, b, 'cash'), null);
 });
+
+test('cashDrift: C&C a month over the last N months, with the paydays in between', () => {
+    const series = [
+        { month: '2026-03', date: '2026-03-20', cash: 9000 },
+        { month: '2026-04', date: '2026-04-20', cash: 9000 },
+        { month: '2026-07', date: '2026-07-20', cash: 6000 },
+        { month: '2026-10', date: '2026-10-20', cash: 3600 },
+    ];
+    const d = E.cashDrift(series, 6);
+    assert.equal(d.from, '2026-04-20'); assert.equal(d.to, '2026-10-20');
+    assert.ok(Math.abs(d.perMonth + 900) < 5);                         // −£5,400 over 183 days
+    assert.equal(d.paydays.length, 6); assert.ok(!d.paydays.some(p => p.slice(5, 7) === '03'));
+    assert.ok(E.cashDrift(series, 12).paydays.length === 7);   // from March's payday: not counted, it is the start
+    assert.equal(E.cashDrift(series.slice(-1), 6), null);
+    assert.equal(E.cashDrift([], 6), null);
+});
