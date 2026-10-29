@@ -697,7 +697,7 @@ function CompactMetricGrid({ todayAbs, todayPct, totalAbs, totalPct, cash, priva
         }
     },
         // TODAY
-        E('span', { key: 'tl', style: lbl }, vals.todayLabel || 'Today'),
+        E('span', { key: 'tl', style: lbl }, 'Today'),
         E('span', { key: 'ta', style: num(13, signColor(todayAbs), { filter: blur }) },
             isValidNumber(todayAbs) ? fmtA(todayAbs) : '—'),
         E('span', { key: 'tp', style: num(13, signColor(todayPct), { ...pctCell }) },
