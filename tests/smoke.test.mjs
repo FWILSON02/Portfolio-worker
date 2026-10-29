@@ -107,12 +107,12 @@ test('every screen renders with data, with no errors', { skip: !playwright && 'P
 
     for (const name of ['Investments', 'Estate', 'Cash Flow']) await tab(name);
 
-    // Cash Flow's Actual: C&C's drift from Estate, with what left it outside the bills.
-    await page.getByRole('button', { name: 'Actual', exact: true }).click();
+    // Cash Flow's C&C avg switch: C&C's drift from Estate, with what left it outside the bills.
+    await page.getByRole('switch', { name: 'C&C avg' }).click();
     await settle(); await check('Cash Flow Actual');
     assert.ok((await page.locator('body').innerText()).includes('Not in bills'), 'Actual should show what left C&C outside the bills');
     assert.ok(await page.getByRole('button', { name: '+ Bonus', exact: true }).count() === 1, 'Actual keeps the Salary / + Bonus switch');
-    await page.getByRole('button', { name: 'Plan', exact: true }).click();
+    await page.getByRole('switch', { name: 'C&C avg' }).click();
     await settle();
 
     // Cash Flow's own pages: Pay and the bills.
