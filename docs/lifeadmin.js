@@ -320,9 +320,8 @@ function cashFlow(t, th, period, withBonus) {
     var out = t.mine[per.key];
     return { pay: pay, bonus: bonus, inflow: inflow, out: out, left: inflow == null ? null : inflow - out };
 }
-// Plan is the sums above; Actual is what C&C (current accounts and credit cards on Estate) really did over the last
-// DRIFT_MONTHS months, the drift Estate's chart shows at 6M (Fergus asked to see it beside the plan). Remembered.
-var VIEWS = [{ id: 'plan', label: 'Plan' }, { id: 'actual', label: 'Actual' }];
+// The C&C avg switch: off, the sums above; on, what C&C (current accounts and credit cards on Estate) really did over
+// the last DRIFT_MONTHS months, the drift Estate's chart shows at 6M (Fergus asked to see it beside the plan). Remembered.
 var VIEW_KEY = 'lifeadmin_view', DRIFT_MONTHS = 6;
 function savedView() { try { return localStorage.getItem(VIEW_KEY) === 'actual' ? 'actual' : 'plan'; } catch (e) { return 'plan'; } }
 // HSBC pays the bonus with March's pay: a window holding a March payday has the bonus in its C&C.
@@ -936,7 +935,7 @@ function CashFlowCard(props) {
                 E('div', { style: { fontFamily: ui.sys, fontSize: 13, color: ui.C.zinc600, marginTop: 3 } }, left == null ? '' : actual ? 'C&C ' + (left < 0 ? 'down ' : 'up ') + per.unit : (left < 0 ? 'short ' : 'left ') + per.unit)),
             E('div', { style: { display: 'flex', flexDirection: 'column', gap: 6, flexShrink: 0, width: 150 } },
                 E(Segmented, { options: PERIODS, value: props.period, onChange: props.onPeriod, fill: true }),
-                a && E(Segmented, { options: VIEWS, value: props.view, onChange: props.onView, fill: true }),
+                a && E(SwitchRow, { label: 'C&C avg', on: actual, onChange: function (v) { props.onView(v ? 'actual' : 'plan'); } }),
                 f.bonus != null && E(Segmented, { options: BONUS_OPTIONS, value: !!props.bonus, onChange: props.onBonus, fill: true }))),
         // Actual: the take-home split into the bills, what else left C&C, and what stayed.
         actual && E('div', { style: { display: 'flex', height: 6, borderRadius: 3, overflow: 'hidden', gap: 2, marginTop: 12 } },
@@ -1032,12 +1031,21 @@ function Chip(props) {
                                                           borderRadius: 999, padding: '3px 10px', cursor: 'pointer', flexShrink: 0 } }, props.children);
 }
 // An on/off switch, iOS style.
+// small: sized to sit in a Segmented's row (the cash flow card's C&C avg).
 function Switch(props) {
-    var on = !!props.on;
+    var on = !!props.on, w = props.small ? 36 : 46, h = props.small ? 22 : 28, k = h - 6;
     return E('button', { role: 'switch', 'aria-checked': on, 'aria-label': props.label, onClick: function (e) { e.stopPropagation(); props.onChange(!on); },
-        style: { width: 46, height: 28, borderRadius: 14, border: 'none', padding: 0, flexShrink: 0, cursor: 'pointer', position: 'relative',
+        style: { width: w, height: h, borderRadius: h / 2, border: 'none', padding: 0, flexShrink: 0, cursor: 'pointer', position: 'relative',
                  background: on ? TEAL : '#3f3f46', transition: 'background 200ms ease' } },
-        E('span', { style: { position: 'absolute', top: 3, left: on ? 21 : 3, width: 22, height: 22, borderRadius: '50%', background: '#fff', transition: 'left 200ms ease' } }));
+        E('span', { style: { position: 'absolute', top: 3, left: on ? w - k - 3 : 3, width: k, height: k, borderRadius: '50%', background: '#fff', transition: 'left 200ms ease' } }));
+}
+// A label and a small switch in a Segmented's frame, so it lines up with the toggles above and below it; the whole row taps.
+function SwitchRow(props) {
+    var ui = useUI();
+    return E('div', { onClick: function () { props.onChange(!props.on); },
+        style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'rgba(0,0,0,0.3)', borderRadius: 9, padding: '3px 4px 3px 10px',
+                 cursor: 'pointer', fontFamily: ui.sys, fontSize: 12, fontWeight: 600, color: props.on ? ui.C.white : ui.C.zinc600, WebkitTapHighlightColor: 'transparent' } },
+        props.label, E(Switch, { small: true, on: props.on, label: props.label, onChange: props.onChange }));
 }
 function Field(props) {
     var ui = useUI();
