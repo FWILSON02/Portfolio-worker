@@ -107,6 +107,13 @@ test('every screen renders with data, with no errors', { skip: !playwright && 'P
 
     for (const name of ['Investments', 'Estate', 'Cash Flow']) await tab(name);
 
+    // Cash Flow's Actual: C&C's drift from Estate, with what left it outside the bills.
+    await page.getByRole('button', { name: 'Actual', exact: true }).click();
+    await settle(); await check('Cash Flow Actual');
+    assert.ok((await page.locator('body').innerText()).includes('Not in bills'), 'Actual should show what left C&C outside the bills');
+    await page.getByRole('button', { name: 'Plan', exact: true }).click();
+    await settle();
+
     // Cash Flow's own pages: Pay and the bills.
     for (const label of ['Pay', 'Bills']) {
         await page.getByRole('button', { name: new RegExp('^' + label + '\\b') }).first().click();

@@ -248,26 +248,26 @@ window.XCircle=_li([{t:'c',cx:12,cy:12,r:10},'M15 9l-6 6','M9 9l6 6']);
 window.MinusCircle=_li([{t:'c',cx:12,cy:12,r:10},'M8 12h8']);
 window.HelpCircle=_li([{t:'c',cx:12,cy:12,r:10},'M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3',{t:'l',x1:12,y1:17,x2:12.01,y2:17}]);</script>
 <!-- Balances screen lives in its own file. Bump ?v= whenever balances.js changes so the Home Screen app never mixes versions. -->
-<script src="balances.js?v=52"></script>
+<script src="balances.js?v=53"></script>
 <!-- Pay (salary, bonus, stock awards) lives in its own file too: the Pay line on the Cash Flow tab opens it. Bump ?v= on change. -->
 <script src="pay.js?v=11"></script>
 <!-- Cash Flow (pay and bills; formerly Life Admin) lives in its own file as well, loaded after balances.js (it uses the Estate
      mortgage and alert banner) and pay.js. Bump ?v= on change. -->
-<script src="lifeadmin.js?v=18"></script>
+<script src="lifeadmin.js?v=19"></script>
 <!-- The app's scripts are core.js, providers.js, sync.js, widgets.js, components.js, performance.js, holdings.js, app.js, settings.js and markets.js (no module system: they share globals, in this order). APP_BUILD is the pull request that last changed the app: Settings → App shows it,
      Reload app compares it with the server's, and CI (tests/build.test.cjs) checks it is this PR's number. Bump it in every PR,
      and the ?v= of those ten with it, so the Home Screen app never runs a cached app.js against a newer index.html. -->
-<script>const APP_BUILD = 129;</script>
-<script src="core.js?v=129"></script>
-<script src="providers.js?v=129"></script>
-<script src="sync.js?v=129"></script>
-<script src="widgets.js?v=129"></script>
-<script src="components.js?v=129"></script>
-<script src="performance.js?v=129"></script>
-<script src="holdings.js?v=129"></script>
-<script src="app.js?v=129"></script>
-<script src="settings.js?v=129"></script>
-<script src="markets.js?v=129"></script>
+<script>const APP_BUILD = 131;</script>
+<script src="core.js?v=131"></script>
+<script src="providers.js?v=131"></script>
+<script src="sync.js?v=131"></script>
+<script src="widgets.js?v=131"></script>
+<script src="components.js?v=131"></script>
+<script src="performance.js?v=131"></script>
+<script src="holdings.js?v=131"></script>
+<script src="app.js?v=131"></script>
+<script src="settings.js?v=131"></script>
+<script src="markets.js?v=131"></script>
 <script>
 class ErrorBoundary extends React.Component {
     constructor(props) { 
