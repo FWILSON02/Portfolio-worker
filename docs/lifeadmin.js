@@ -327,15 +327,17 @@ var VIEW_KEY = 'lifeadmin_view', DRIFT_MONTHS = 6;
 function savedView() { try { return localStorage.getItem(VIEW_KEY) === 'actual' ? 'actual' : 'plan'; } catch (e) { return 'plan'; } }
 // HSBC pays the bonus with March's pay: a window holding a March payday has the bonus in its C&C.
 var BONUS_MONTH = '03';
-// Actual against the plan for the same months. drift: BalancesStore.cashDrift(). pay: take-home over the window (the
-// latest bonus spread over it when one was paid in it); bills: his part; actual: C&C's change; other: what left C&C
-// that isn't a listed bill (spending, and any transfer into savings or investments), so pay − bills − other = actual.
-function actualFlow(t, th, period, drift) {
+// Actual: the plan's pay and bills (Salary / + Bonus as on Plan) less what really left C&C outside the bills over the
+// window, so pay − bills − other = actual. Only `other` is measured: C&C's change against the take-home that came in
+// over the window (the latest bonus too when one was paid in it), i.e. spending and any transfer into savings or
+// investments. Scaling the raw C&C drift to a year would quietly assume no bonus (Fergus caught it).
+function actualFlow(t, th, period, drift, withBonus) {
     if (!th || !drift || !(drift.months > 0)) return null;
-    var mult = period === 'year' ? 12 : 1;
+    var mult = period === 'year' ? 12 : 1, bills = t.mine.monthly;
     var bonusIn = !!(th.bonus && drift.paydays.some(function (d) { return d.slice(5, 7) === BONUS_MONTH; }));
-    var pay = th.monthly + (bonusIn ? th.bonus.net / drift.months : 0), bills = t.mine.monthly, actual = drift.perMonth;
-    return { pay: pay * mult, out: bills * mult, actual: actual * mult, other: (pay - bills - actual) * mult, bonusIn: bonusIn };
+    var other = th.monthly + (bonusIn ? th.bonus.net / drift.months : 0) - bills - drift.perMonth;
+    var pay = th.monthly + (withBonus && th.bonus ? th.bonus.net / 12 : 0);
+    return { pay: pay * mult, out: bills * mult, other: other * mult, actual: (pay - bills - other) * mult, bonusIn: bonusIn };
 }
 var SORTS = [{ id: 'cost', label: 'Biggest' }, { id: 'renews', label: 'Renews' }, { id: 'name', label: 'A–Z' }];
 function sortBills(bills, how) {
@@ -923,7 +925,7 @@ var BONUS_OPTIONS = [{ id: false, label: 'Salary' }, { id: true, label: '+ Bonus
 function CashFlowCard(props) {
     var ui = useUI(), p = props.privacy, per = periodOf(props.period), th = props.pay && props.pay.takeHome;
     var f = cashFlow(props.totals, th, props.period, props.bonus);
-    var a = actualFlow(props.totals, th, props.period, props.drift), actual = a && props.view === 'actual';
+    var a = actualFlow(props.totals, th, props.period, props.drift, props.bonus), actual = a && props.view === 'actual';
     var left = actual ? a.actual : f.left, used = f.inflow > 0 ? Math.min(1, f.out / f.inflow) : null;
     return E('div', { style: cardStyle(ui, { padding: '14px 16px' }) },
         E('div', { style: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 } },
@@ -935,8 +937,7 @@ function CashFlowCard(props) {
             E('div', { style: { display: 'flex', flexDirection: 'column', gap: 6, flexShrink: 0, width: 150 } },
                 E(Segmented, { options: PERIODS, value: props.period, onChange: props.onPeriod, fill: true }),
                 a && E(Segmented, { options: VIEWS, value: props.view, onChange: props.onView, fill: true }),
-                // Actual already holds whatever was paid in, so the bonus switch is for the plan only.
-                !actual && f.bonus != null && E(Segmented, { options: BONUS_OPTIONS, value: !!props.bonus, onChange: props.onBonus, fill: true }))),
+                f.bonus != null && E(Segmented, { options: BONUS_OPTIONS, value: !!props.bonus, onChange: props.onBonus, fill: true }))),
         // Actual: the take-home split into the bills, what else left C&C, and what stayed.
         actual && E('div', { style: { display: 'flex', height: 6, borderRadius: 3, overflow: 'hidden', gap: 2, marginTop: 12 } },
             E('div', { style: { flex: Math.max(a.out, 0.001), background: ui.C.rose } }),

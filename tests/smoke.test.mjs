@@ -111,6 +111,7 @@ test('every screen renders with data, with no errors', { skip: !playwright && 'P
     await page.getByRole('button', { name: 'Actual', exact: true }).click();
     await settle(); await check('Cash Flow Actual');
     assert.ok((await page.locator('body').innerText()).includes('Not in bills'), 'Actual should show what left C&C outside the bills');
+    assert.ok(await page.getByRole('button', { name: '+ Bonus', exact: true }).count() === 1, 'Actual keeps the Salary / + Bonus switch');
     await page.getByRole('button', { name: 'Plan', exact: true }).click();
     await settle();
 
