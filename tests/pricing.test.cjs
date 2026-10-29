@@ -238,3 +238,17 @@ test('secrets file: the retired giltsyield portfolio row is skipped quietly', ()
     assert.equal(r.unknown.length, 0);
     assert.equal(r.updates.length, 0);
 });
+
+test('a gilt held back to an earlier session shows that day\'s move, labelled with the day, outside the totals', () => {
+    const gilt = { ticker: 'TX30', valuationMethod: 'gilt_market_dirty', todaySessionDate: '2026-10-28', todayAbsChange: -73, todayPctChange: -0.0015,
+                   totalCost: 50000, totalProceeds: 0, unrealisedPL: -400 };
+    const held = app.withLatestSessionToday(gilt, '2026-10-29');
+    assert.equal(held.todayAbsChange, null);                    // nothing adds it to Today
+    const v = app.holdingMetricVals(held);
+    assert.equal(v.todayLabel, 'Wed');
+    assert.equal(v.todayAbs, -73);
+    // On its own session it is plain Today; a held-back share keeps "—".
+    assert.equal(app.holdingMetricVals(app.withLatestSessionToday(gilt, '2026-10-28')).todayLabel, 'Today');
+    const share = app.withLatestSessionToday(Object.assign({}, gilt, { valuationMethod: 'live' }), '2026-10-29');
+    assert.equal(app.holdingMetricVals(share).todayAbs, null);
+});

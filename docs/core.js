@@ -1083,10 +1083,13 @@ function isInLatestTodaySession(h, latestSession) {
     return !isHeldBackBySession(h.todaySessionDate, latestSession);
 }
 // THE one place a holding's Today is held back. A holding on an earlier session than the latest has its Today blanked
-// (null → shown as "—" everywhere: hero total, account cards, All Holdings rows, Insights). Its session tag is kept.
+// (null → shown as "—" everywhere: hero total, account cards, All Holdings rows, Insights). Its session tag is kept, and its
+// move is kept apart in heldTodayAbs / heldTodayPct, for display only (a gilt row shows it labelled with its day; see
+// holdingMetricVals). Nothing adds those up.
 function withLatestSessionToday(h, latestSession) {
     if (h.todayAbsChange == null || isInLatestTodaySession(h, latestSession)) return h;
-    return { ...h, todayAbsChange: null, todayPctChange: null, todayHeldBack: true };
+    return { ...h, todayAbsChange: null, todayPctChange: null, todayHeldBack: true,
+             heldTodayAbs: h.todayAbsChange, heldTodayPct: h.todayPctChange };
 }
 
 // Selects the immediately prior completed session close from a raw Yahoo chart series.

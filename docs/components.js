@@ -140,14 +140,21 @@ function formatInsightSpotPrice(h) {
 // RestrictedSchemesWidget hero exactly, independent of ordinary cost-basis derivation; ordinary holdings resolve to
 // unrealisedPL / return-on-cost. An unpriced gilt is carried at its last trade price, so its "gain" would be a
 // meaningless £0: its Total is null (shown as —).
+//
+// A gilt is priced once a day by giltsyield.com, often in the afternoon, so until today's price is out its Today is held
+// back (withLatestSessionToday). Its row then shows the latest move it has, labelled with that day ("Wed") instead of
+// "Today", so it never reads as today's; the totals still leave it out.
 function holdingMetricVals(h) {
     const netCost   = h.totalCost - h.totalProceeds;
     const returnPct = netCost > 0 && h.unrealisedPL != null ? h.unrealisedPL / netCost : null;
     const restricted = h.isRestrictedDisplayOnly === true;
     const totalAbs = (restricted && h.restrictedTotalPnl    !== undefined) ? h.restrictedTotalPnl    : h.unrealisedPL;
     const totalPct = (restricted && h.restrictedTotalPnlPct !== undefined) ? h.restrictedTotalPnlPct : returnPct;
+    const priorDay = h.todayAbsChange == null && h.todayHeldBack && h.heldTodayAbs != null
+        && h.valuationMethod === 'gilt_market_dirty' && /^\d{4}-\d{2}-\d{2}$/.test(h.todaySessionDate || '');
     return {
-        todayAbs: h.todayAbsChange, todayPct: h.todayPctChange,
+        todayLabel: priorDay ? new Date(h.todaySessionDate + 'T12:00:00Z').toLocaleDateString('en-GB', { weekday: 'short', timeZone: 'UTC' }) : 'Today',
+        todayAbs: priorDay ? h.heldTodayAbs : h.todayAbsChange, todayPct: priorDay ? h.heldTodayPct : h.todayPctChange,
         totalAbs: h.isUnpricedGilt ? null : totalAbs,
         totalPct: h.isUnpricedGilt ? null : totalPct,
     };
@@ -209,7 +216,7 @@ function HoldingMetricLine({ vals, cols, privacyMode }) {
             fontFamily: rounded, fontWeight: 400, lineHeight: '16px', fontVariantNumeric: 'tabular-nums', letterSpacing: '-0.02em',
         }
     },
-        E('span', { key: 'tl', style: lbl }, 'Today'),
+        E('span', { key: 'tl', style: lbl }, vals.todayLabel || 'Today'),
         E('span', { key: 'ta', style: num(signColor(vals.todayAbs)) }, t.ta),
         E('span', { key: 'tp', style: num(signColor(vals.todayPct), pad) }, t.tp),
         E('span', { key: 'sp' }),
@@ -690,7 +697,7 @@ function CompactMetricGrid({ todayAbs, todayPct, totalAbs, totalPct, cash, priva
         }
     },
         // TODAY
-        E('span', { key: 'tl', style: lbl }, 'Today'),
+        E('span', { key: 'tl', style: lbl }, vals.todayLabel || 'Today'),
         E('span', { key: 'ta', style: num(13, signColor(todayAbs), { filter: blur }) },
             isValidNumber(todayAbs) ? fmtA(todayAbs) : '—'),
         E('span', { key: 'tp', style: num(13, signColor(todayPct), { ...pctCell }) },
