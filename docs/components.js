@@ -1046,6 +1046,12 @@ function makeContribRange(S, topN) {
         r.sold = Math.abs(vEnd) < 1e-9;
         r.weight = (!r.sold && S.inv[b] > 0) ? vEnd / S.inv[b] : null;
     };
+    // The tickers with a value on any row a..b (bought, held or sold within the range).
+    const heldIn = function (a, b) {
+        const out = new Set();
+        for (let i = a; i <= b; i++) for (const tk in (S.by[i] || {})) if (Math.abs(S.by[i][tk]) > 1e-9) out.add(tk);
+        return out;
+    };
     const contribForRange = function (startDate, endDate) {
         const key = startDate + '|' + endDate;
         if (cache.has(key)) return cache.get(key);
@@ -1065,19 +1071,22 @@ function makeContribRange(S, topN) {
                     other += k * st.o;
                     if (st.c) for (const tk in st.c) tot[tk] = (tot[tk] || 0) + k * st.c[tk];
                 }
+                // Every holding held in the range is listed, even one whose moves netted out to ~0 over it (FLRK.L,
+                // 23 -> 30 Oct 2026: 64.15 -> 64.20, so it vanished from the table) or that never moved. Only float noise
+                // on tickers not held in the range folds into Other.
+                const held = heldIn(a, b);
+                for (const tk of held) if (!(tk in tot)) tot[tk] = 0;
                 const all = Object.keys(tot).map(tk => ({ tk, c: tot[tk] }));
                 all.sort((x, y) => Math.abs(y.c) - Math.abs(x.c));
-                // Only holdings that really moved the line are listed; the rest (however tiny) fold into Other so nothing leaks.
-                const movers = all.filter(r => Math.abs(r.c) >= 5e-6);
-                const top = movers.slice(0, movers.length === N + 1 ? N + 1 : N);
-                const rest = all.filter(r => top.indexOf(r) < 0);
+                const listed = all.filter(r => Math.abs(r.c) >= 5e-6 || held.has(r.tk));
+                const top = listed.slice(0, listed.length === N + 1 ? N + 1 : N);
                 // Listed biggest absolute contribution first, gainers and drags alike: that is what explains the move.
                 // (`all` is already sorted that way, so `top` keeps that order.)
                 const heldStats = r => statsFor(r, a, b);
                 // "Other" = every holding beyond the top N (listed again, with stats, in `rest`) + `tail`, the part no holding
-                // explains (untickered items, dealing costs, the clamp, and contributions too small to list).
-                const restShown = rest.filter(r => Math.abs(r.c) >= 5e-6);
-                const tiny = rest.filter(r => Math.abs(r.c) < 5e-6);
+                // explains (untickered items, dealing costs, the clamp, and noise on tickers not held).
+                const restShown = listed.filter(r => top.indexOf(r) < 0);
+                const tiny = all.filter(r => listed.indexOf(r) < 0);
                 top.forEach(heldStats);
                 restShown.forEach(heldStats);
                 let tail = other;
@@ -1119,13 +1128,14 @@ function makeContribRange(S, topN) {
             }
             all.sort((x, y) => Math.abs(y.c) - Math.abs(x.c));
             const total = S.inv[b] - S.inv[a];
-            const movers = all.filter(r => Math.abs(r.c) >= 0.5);
-            const top = movers.slice(0, movers.length === N + 1 ? N + 1 : N);
-            const rest = all.filter(r => top.indexOf(r) < 0);
-            const restShown = rest.filter(r => Math.abs(r.c) >= 0.5);
+            // As in % mode: every holding held in the range is listed, however small its gain.
+            const held = heldIn(a, b);
+            const listed = all.filter(r => Math.abs(r.c) >= 0.5 || held.has(r.tk));
+            const top = listed.slice(0, listed.length === N + 1 ? N + 1 : N);
+            const restShown = listed.filter(r => top.indexOf(r) < 0);
             let tail = total - flows;
             for (const r of all) tail -= r.c;
-            for (const r of rest) if (Math.abs(r.c) < 0.5) tail += r.c;
+            for (const r of all) if (listed.indexOf(r) < 0) tail += r.c;
             let otherSum = tail;
             for (const r of restShown) otherSum += r.c;
             top.forEach(r => statsFor(r, a, b));
