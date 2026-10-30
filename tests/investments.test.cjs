@@ -73,6 +73,26 @@ test('contribution ranges in £: each holding\'s gain net of what was put in, th
     assert.ok(Math.abs(two.other) < 0.01);
 });
 
+// 30 Oct 2026: FLRK.L went 64.15 -> 67.54 -> 64.20 over the 1W range, so its contribution netted out to ~0 and it
+// vanished from the Analyse table (Other (3) became Other (2)). A holding held in the range is always listed.
+test('contribution ranges: a held holding whose move nets out to zero is still listed', () => {
+    const chart = [{ date: '2026-01-05', investedAll: 1500 }, { date: '2026-01-06', investedAll: 1650 },
+                   { date: '2026-01-07', investedAll: 1700 }];
+    // B goes up and back (FLRK's week); C never moves at all, so no step ever gives it a contribution.
+    const rows = [
+        { date: '2026-01-05', holdingsValue: 1500, byTicker: { A: 1000, B: 400, C: 100 }, pxTicker: { A: 10, B: 4, C: 1 } },
+        { date: '2026-01-06', holdingsValue: 1650, byTicker: { A: 1100, B: 450, C: 100 }, pxTicker: { A: 11, B: 4.5, C: 1 } },
+        { date: '2026-01-07', holdingsValue: 1700, byTicker: { A: 1200, B: 400, C: 100 }, pxTicker: { A: 12, B: 4, C: 1 } },
+    ];
+    const f = app.makeContribRange(app.buildContribSteps(chart, rows, []), 5);
+    const pct = plain(f('2026-01-05', '2026-01-07'));
+    assert.deepEqual(pct.rows.map(r => r.tk), ['A', 'B', 'C']);
+    for (const r of pct.rows.slice(1)) { assert.equal(r.held, 0); assert.equal(r.sold, false); }
+    assert.equal(pct.rows[2].c, 0);
+    const gbp = plain(f.gains('2026-01-05', '2026-01-07'));
+    assert.deepEqual(gbp.rows.map(r => [r.tk, Math.round(r.c)]), [['A', 200], ['B', 0], ['C', 0]]);
+});
+
 // 21 Oct 2026: stored history ended 19 Oct for every LSE line (that day's refresh failed for them), so the chart priced
 // 20 Oct at the 19 Oct close and the 1W chart's last segment showed SMGB.L -1.1% on a +1.2% day.
 test('withLiveTail: completed sessions missing from stored history come from the daily closes, then the live quote', () => {
